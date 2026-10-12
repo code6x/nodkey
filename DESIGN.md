@@ -1,0 +1,737 @@
+# nodkey design
+
+Status: accepted for version 1 on 2026-10-12.
+
+nodkey lets an AI coding agent use a secret or an SSH key only after a
+person approves that one request on a phone.
+
+The keys and the access to the secret stores live on a trusted machine. The
+agent never holds them. When the agent needs one, it asks. The person gets a
+Telegram message with buttons. Nothing happens until the person taps
+**Approve**. No answer means **no**.
+
+This file says how version 1 works. [THREAT-MODEL.md](THREAT-MODEL.md) says
+what it protects against, and what it does not.
+
+## 1. Words
+
+| word | meaning |
+|---|---|
+| agent | An AI coding agent, for example Claude Code. |
+| agent machine | The machine where the agent runs. We do not trust it. The agent may be effectively root there, for example through the `docker` group. |
+| broker | The `nodkey broker` daemon. It runs on a trusted, always-on machine that is not the agent machine. It holds the SSH keys and the secret-store access. |
+| client | The `nodkey` command on the agent machine: `nodkey run`, `nodkey ssh-agent` and `nodkey ssh-grant`. |
+| approver | The person who taps the buttons. Version 1 has exactly one. |
+| request | One ask: a set of secrets for one command, one SSH signature, or one SSH pre-approval. |
+| grant | A short permission. It comes from an "Approve N min" tap. |
+| rule | The setting per secret or key: always ask, ask with a time window, or never ask. |
+| store | Where secret values live: Bitwarden Secrets Manager (`bws`) or the Bitwarden Password Manager (`bw`). |
+| verified | Shown in a message and checked by the broker. The agent cannot fake it. |
+| claimed | Shown in a message but sent by the client. The agent can write anything there. |
+
+## 2. Goals
+
+1. The agent can use a secret or an SSH key only when the approver tapped
+   **Approve** for that request, or a grant or a rule the approver wrote
+   allows it.
+2. An SSH private key never leaves the broker. The broker signs; the client
+   only forwards.
+3. nodkey never prints a secret value. A value goes only into the
+   environment of the one command that asked for it.
+4. Each message shows what the broker checked (verified) apart from what the
+   agent says (claimed).
+5. Plain `ssh`, `git` and Ansible work through `nodkey ssh-agent` with no
+   changes, only `SSH_AUTH_SOCK`.
+6. Every request and every decision goes into an audit log. The broker only
+   appends to it. Each entry holds the hash of the entry before it.
+7. Fail closed. An error, a timeout, a restart or an unclear answer all mean
+   **deny**.
+
+## 3. Not in version 1
+
+- ntfy, a passkey web page, a phone app.
+- An HTTP proxy that injects credentials.
+- An MCP server.
+- Windows and macOS. Version 1 is Linux only.
+- Signing anything that is not an SSH login (for example git commit signing).
+- SSH agent forwarding.
+- SSH clients that do not send `session-bind@openssh.com` (OpenSSH older
+  than 8.9, Paramiko, Go's own SSH client).
+- Keys in hardware (TPM or YubiKey) through an upstream agent.
+- Filtering secrets out of the command's output.
+- More than one approver.
+
+Each of these can become a GitHub issue later.
+
+## 4. The parts
+
+```
+ agent machine (not trusted)                trusted machine
+┌────────────────────────────┐            ┌──────────────────────────────┐
+│ agent                       │            │ nodkey broker                │
+│  ├─ nodkey run ... -- cmd   │  mTLS      │  ├─ SSH private keys (memory) │
+│  └─ ssh / git / ansible     │ ─────────▶ │  ├─ runs bws / bw             │
+│       │ SSH_AUTH_SOCK       │            │  ├─ audit log                 │
+│       ▼                     │            │  └─ Telegram long polling ───┼──▶ Telegram ──▶ phone
+│  nodkey ssh-agent           │            │                              │
+└────────────────────────────┘            └──────────────────────────────┘
+```
+
+One static Go binary holds all parts. The subcommand picks the role:
+
+| command | runs on | job |
+|---|---|---|
+| `nodkey broker` | trusted machine | The daemon. |
+| `nodkey run` | agent machine | Get secrets, then start one command with them. |
+| `nodkey ssh-agent` | agent machine | Serve an SSH agent socket. Send each signature request to the broker. |
+| `nodkey ssh-grant` | agent machine | Ask once for SSH logins to a list of hosts for N minutes (see [decision 4](#13-decision-4-ssh-approval-scope)). |
+| `nodkey keygen` | both | Make a TLS key pair for the broker or a client. Print its pin. |
+| `nodkey audit verify` | trusted machine | Check the hash chain of an audit log. |
+| `nodkey version` | both | Print the version. |
+
+Inside the broker, the approver and the stores sit behind small Go
+interfaces. Version 1 has one approver (Telegram) and two stores (`bws`,
+`bw`). Others, such as ntfy or `sops`, can be added later without changing
+the rest.
+
+Dependencies are kept small on purpose: the Go standard library,
+`golang.org/x/crypto` (`ssh`, `ssh/agent`) and one TOML parser. The
+Telegram client is our own small HTTP code. We do not link the Bitwarden
+SDK; its license is not a standard open-source license. We run the `bws`
+and `bw` programs instead.
+
+## 5. Flow: secrets for one command
+
+```
+nodkey run --secret GH_TOKEN=github-token \
+           --reason "publish the release the user asked for" \
+           -- gh release create v1.2.0
+```
+
+1. The client reads its config, then connects to the broker over mutual TLS
+   (see [section 10](#10-decision-1-how-client-and-broker-connect)).
+2. The client sends: the secret names, the environment variable names, the
+   command line, the working directory, the local user name and the reason.
+   The reason comes from `--reason`, or else from the `NODKEY_REASON`
+   environment variable.
+3. The broker checks that the client is known (its TLS key is pinned in the
+   broker config), that each name exists in the broker config, that this
+   client may use it, and that each variable name matches
+   `[A-Z_][A-Z0-9_]{0,63}`. If any check fails, the answer is **deny**. No
+   message is sent for a name the client may not use. (The client checks
+   the variable names too, but only to give a quick error. The broker does
+   not trust the client's checks.)
+4. The broker checks the rules and grants. If a grant or a "never ask" rule
+   covers every name, it skips to step 6.
+5. Otherwise the broker sends one Telegram message for the whole request and
+   waits. See [section 7](#7-approval-messages). The client prints
+   `nodkey: waiting for approval (request 7qd2)` to stderr, so a person at
+   the terminal can match it with the message on the phone.
+6. On approval, the broker first writes the decision to the audit log and
+   syncs it to disk. Then it gets each value from its store and sends the
+   values back over the same TLS connection.
+7. The client adds `GH_TOKEN=<value>` to its own environment and replaces
+   itself with the command (`execve`). The command's exit code is the exit
+   code of `nodkey run`.
+8. On deny, timeout or error, the client prints one line to stderr, without
+   any value, and exits with code 77.
+
+There is no command that prints a secret. This is on purpose: the agent
+should never see the value in its own output.
+
+The broker fetches a value only after approval, and fetches it again on
+every request. Version 1 keeps no cache of values.
+
+## 6. Flow: an SSH login
+
+```
+export SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/nodkey/agent.sock
+NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
+```
+
+1. `ssh` connects to `web-1` and finishes the key exchange.
+2. OpenSSH 8.9 and newer then sends the agent a `session-bind@openssh.com`
+   message. It holds the server's host key, the session identifier, the
+   server's signature over the session identifier, and an `is_forwarding`
+   flag. The client keeps these for that agent connection.
+3. `ssh` asks the agent for its keys. The client asks the broker. The broker
+   returns the public keys this client may use.
+4. The server accepts one key. `ssh` asks the agent to sign the
+   authentication request.
+5. The client sends the broker: the key, the data to sign, the flags, the
+   session-bind messages of this connection, and some claimed context: the
+   command line of the `ssh` process and its parents (from `/proc`), and
+   `NODKEY_REASON` from the environment of the `ssh` process, if set.
+6. The broker checks, and denies on any failure:
+   - The data is an SSH authentication request (RFC 4252 section 7). The
+     method is `publickey` or `publickey-hostbound-v00@openssh.com`. The
+     public key in the data is the key asked for.
+   - The remote user name in the data matches
+     `[A-Za-z0-9._][A-Za-z0-9._-]{0,31}`.
+   - There is exactly one session-bind, and its `is_forwarding` flag is
+     false. Version 1 does not support agent forwarding.
+   - The host key's signature over the session identifier is valid.
+   - The session identifier in the data is the one in the session-bind. For
+     `publickey-hostbound-v00@openssh.com`, the host key in the data is the
+     one in the session-bind too.
+   - The host key is in the broker's own `known_hosts` file. That gives the
+     host name in the message.
+7. The broker checks the rules and grants for (client, key, host key,
+   remote user), and asks the approver if needed.
+8. On approval, the broker writes and syncs the decision, then signs and
+   returns the signature.
+
+Why this matters: the signature covers the session identifier. The session
+identifier only exists in that one session with that one host. So an
+approved signature for `web-1` cannot log in to `db-1`, and it cannot be
+used again in a later session. The agent cannot lie about the target host,
+because the broker checks the host key against its own list, not a list on
+the agent machine. The remote user name is inside the signed data, so the
+signature works only for that user.
+
+Two limits, said plainly:
+
+- **One login can last long.** An approved session can stay open, and
+  OpenSSH can share it with later commands (`ControlMaster` and
+  `ControlPersist`). Ansible keeps each connection open for 60 seconds after
+  its last use. A hostile agent can keep a connection open much longer and
+  use it without new taps. The approval is for a session, not for one
+  command.
+- **The forwarding flag comes from the agent machine.** Refusing forwarded
+  binds stops honest mistakes. It does not stop a hostile agent, which can
+  send any flag it wants.
+
+**Time limit.** `sshd` drops a login that does not finish within
+`LoginGraceTime` (120 seconds by default). So SSH requests expire after
+90 seconds by default.
+
+**Ansible** opens one SSH connection per host, with up to 5 hosts at the
+same time by default (`forks`). One run makes at least one signature per
+host. See [decision 4](#13-decision-4-ssh-approval-scope).
+
+## 7. Approval messages
+
+### What a message shows
+
+```
+🔐 SSH login · request k3f9
+✅ machine: laptop
+✅ key: deploy
+✅ host: web-1 (host key SHA256:pX2c…)
+✅ remote user: deploy
+— claimed by the agent —
+command: ssh deploy@web-1 ← ansible-playbook site.yml
+reason: apply the nginx fix
+expires 14:03:10 (90 s)
+[ Approve once ] [ Approve 15 min ] [ Deny ]
+```
+
+```
+🔑 Secrets · request 7qd2
+✅ machine: laptop
+✅ secrets: github-token
+— claimed by the agent —
+as: GH_TOKEN
+command: gh release create v1.2.0
+in: /home/dev/src/app
+reason: publish the release the user asked for
+expires 14:05:40 (120 s)
+[ Approve once ] [ Approve 15 min ] [ Deny ]
+```
+
+The verified part holds only text from the broker's own config and from
+checked data: client and secret names from the config, the host name from
+the broker's `known_hosts`, and the remote user name after the strict check
+in section 6.
+
+Rules for the claimed part, because the agent writes it:
+
+- One line per field. Newlines and other control characters become spaces.
+- Unicode direction marks (for example U+202E) and other invisible
+  formatting characters are removed.
+- Values that look like secrets are masked before they are shown or logged:
+  the value of `-p`, `--password`, `--token` and similar options, both as
+  the next word and attached (`-pVALUE`, `--password=VALUE`), the part
+  after `password=`, `token=`, `secret=` and similar, `Authorization:`
+  header values, and long random-looking strings. The broker does the
+  masking, because it does not trust the client.
+- A command line shows the program and at most 8 arguments. Each field is
+  cut to a fixed length, with `…` at the end.
+- All text is HTML-escaped and put inside `<code>`. Link previews are turned
+  off, so a URL from the agent does not become a preview card.
+- The claimed part always comes after the verified part, under the
+  "claimed by the agent" line. So the agent cannot make text that looks
+  like a verified line.
+
+### How an answer is bound to one request
+
+- Each request gets a new random ID: 16 bytes from `crypto/rand`, written
+  as base64url. The short code in the message ("k3f9") is only for people.
+- The button data is `o:<id>` (once), `w:<id>` (window) or `d:<id>` (deny).
+  That fits Telegram's 64-byte limit.
+- The broker accepts a button press only when **all** of these are true:
+  - it comes from the configured Telegram user ID;
+  - it comes from the private chat with that user;
+  - it is on the message the broker sent for that request (same message
+    ID);
+  - the ID belongs to a request that is still waiting;
+  - the request has not expired;
+  - the action is allowed for that request.
+- The first valid answer wins. Taking a request out of the waiting list and
+  deciding it is one step under one lock, so two taps cannot both count.
+- A request is answered once. The broker then forgets its ID. A second tap,
+  a late tap, or a tap on a message from before a restart finds no waiting
+  request. The broker refuses it and edits that message to "expired".
+- The broker answers every button press (`answerCallbackQuery`), so the
+  phone never shows a spinning button.
+- When a request ends, the broker edits the message: it removes the buttons
+  (by sending an empty keyboard, not by leaving it out) and shows the
+  result ("approved once by you at 14:02:41", "denied", "expired — denied",
+  "cancelled by the client").
+- Typed replies never count. Only buttons do. Taps from other users and
+  taps on unknown IDs are written to the audit log.
+- If the client hangs up while waiting (for example `ssh` was killed), the
+  request is cancelled.
+
+### Telegram details
+
+- Long polling with `getUpdates` (timeout 50 s). There is no webhook, so
+  the broker needs no open port to the internet.
+- Only `callback_query` updates are read. Text sent to the bot is ignored.
+- If `getUpdates` fails with a conflict (another program polls with the same
+  token, or a webhook was set), the broker logs an alert and sends a
+  message: the bot token may be stolen.
+- The bot token is in the request URL, and Go's HTTP errors include the
+  URL. The Telegram code removes the URL from every error before it is
+  logged.
+- If Telegram cannot be reached, the request waits until it expires, then
+  it is denied.
+- Messages about "never ask" uses can go to a second chat
+  (`notice_chat_id`), so the approval chat stays for approvals only.
+
+## 8. Rules and grants
+
+Each secret and each key has a rule:
+
+| `ask` | meaning | buttons |
+|---|---|---|
+| `always` | Ask for every request. | Approve once · Deny |
+| `window` | Ask; the approver may also allow the next N minutes. | Approve once · Approve N min · Deny |
+| `never` | Do not ask. See [decision 3](#12-decision-3-unattended-runs). | none |
+
+- A grant covers (client, secret) for secrets, and (client, key, host key,
+  remote user) for SSH keys, until it ends. The host is matched by its host
+  key, not by its name. A grant for `deploy@web-1` does not allow
+  `root@web-1`. Using a grant does not make it longer.
+- A request with several secrets needs one approval for all of them. The
+  "Approve N min" button shows only if every secret in the request has the
+  `window` rule. N is then the shortest window among them. The tap makes one
+  grant for each secret.
+- A window is at most 8 hours.
+- Grants live only in memory. A broker restart removes them all.
+- A secret or key that is not in the broker config does not exist for the
+  client. The client sends names, never store IDs. So the agent cannot ask
+  for any other item in the store.
+
+**Limits per client**, so a broken or hostile agent cannot flood the phone:
+
+- At most 5 messages waiting for an answer, and at most 6 new messages per
+  minute.
+- Other requests wait in a queue of up to 10, without a message, until a
+  place is free. A request leaves the queue only if at least 30 seconds of
+  its time are left; otherwise it is denied, so the person never gets a
+  message they cannot answer in time. If the queue is full, the request is
+  denied at once.
+- After a Deny, new requests from the same client for the same secret or
+  key are denied without a message for 60 seconds.
+- Requests covered by a grant or a "never ask" rule do not count.
+
+## 9. Audit log
+
+- One file, JSON Lines, mode `0600`. The broker opens it with `O_APPEND` and
+  never changes or removes a line. Each entry is written with one `write`
+  call and then synced to disk.
+- Every entry has `seq`, `time` (UTC), `event` and `prev`. `prev` is the
+  SHA-256 of the previous line, as written, in hex. The first entry has 64
+  zeros.
+- Events: `broker_started`, `request`, `decision`, `grant_used`,
+  `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
+  `log_recovered`, `broker_stopped`. Each holds the request ID, the client,
+  the names, the verified host if any, and the claimed command and reason
+  (masked as in section 7).
+- The `request` entry holds the exact message text the approver saw. The
+  `decision` entry holds the Telegram user ID that answered.
+- No entry ever holds a secret value, a signature, or the data that was
+  signed.
+- If an entry cannot be written, the request is denied. Nothing is approved
+  without a record. The `decision` entry is on disk before the broker
+  fetches a value or signs.
+- `nodkey audit verify FILE` checks every link and prints the first broken
+  one. `--anchor SEQ:HASH` also checks that entry `SEQ` has that hash.
+
+**What the chain can and cannot show.** The chain finds accidental damage
+and simple edits. It does not stop a careful attacker who can write the
+file: they can change a line and compute all the later hashes again. To
+catch that, a copy of recent hashes must live somewhere the attacker cannot
+reach. So the broker also writes each entry's number and hash to its normal
+log (stderr, which systemd puts in the journal). The broker's user cannot
+change the journal, so this already helps on one machine, if the journal is
+kept on disk (`Storage=persistent`) long enough. Better, send the journal
+to another machine; then every hash there is an anchor for `--anchor` that
+not even root on the broker host can change later. On Linux, `chattr +a` on
+the file stops anyone except root from changing old lines.
+
+**A torn last line.** A power cut can leave a half-written last line. Then
+the broker appends a newline and a `log_recovered` entry. Its `prev` is the
+hash of the last complete line, and it records the length and SHA-256 of
+the torn bytes. It also sends an alert message. `nodkey audit verify`
+accepts a torn line only when such an entry follows it. So the broker still
+starts on its own after a power cut.
+
+## 10. Decision 1: how client and broker connect
+
+**Decided 2026-10-12: A.**
+
+**A. Mutual TLS with pinned keys.**
+The broker listens on one TCP port on the private network. Each side has
+its own key pair, made with `nodkey keygen`. Each side pins the other side's
+public key (SHA-256 of the SubjectPublicKeyInfo). There is no certificate
+authority. TLS 1.3 only.
+- Good: one binary, no other service to set up. Each client has its own
+  name, so the message shows which machine asks. Easy to test in CI. Go's
+  TLS code is well reviewed.
+- Bad: one more listening port. It must be reachable only from the private
+  network (for example a VPN), and a firewall should limit it.
+- Details: the broker asks every client for a certificate and checks the
+  pin in `VerifyConnection`, which runs on every connection. Session
+  tickets are off, so no connection skips the check. The client name comes
+  only from the pinned key, never from the request.
+
+**B. A Unix socket on the broker host, reached over SSH.**
+The client runs `ssh broker-host` with its own SSH key. On the broker host,
+`authorized_keys` forces a command (`command="nodkey relay --client
+laptop",restrict`). That relay passes the request to the broker's local
+socket.
+- Good: no new port; it uses OpenSSH, which most people already trust.
+- Bad: it opens SSH logins to the most trusted host from untrusted machines.
+  One mistake in the forced command or the `sshd` settings gives the agent
+  a shell on the broker host. It also needs a user account, `sshd` settings
+  and a relay process, and each request starts an SSH connection.
+
+**Why A:** fewer parts to set up, no login from untrusted machines to the
+broker host, and easier to test. B can come later if someone needs it.
+
+With either option, the client's key is on the agent machine, so the agent
+can copy it. That is fine: the key only lets it *ask*. Every answer still
+needs the approver.
+
+## 11. Decision 2: loading keys after a restart
+
+The broker must start on its own after a power cut. Nobody types a
+passphrase on a host.
+
+**Decided 2026-10-12: A now, B later.**
+
+**A. Everything as systemd encrypted credentials.**
+The broker runs as its own system user, from a systemd unit. The SSH
+private keys, the broker's TLS key, the bot token, the `bws` token and the
+`bw` master password are all systemd credentials
+(`LoadCredentialEncrypted=`). They are encrypted with
+`systemd-creds encrypt --with-key=host+tpm2`, so they can be opened only on
+that machine, with its TPM2 chip. A copy of the disk or a backup alone does
+not give them. The broker reads them from `$CREDENTIALS_DIRECTORY` at start.
+An SSH key stored this way needs no passphrase.
+- Without a TPM2 chip, encrypt with `--with-key=host` instead. Then anyone
+  with a full copy of the disk can open them. The docs say this plainly.
+- Plain files (mode `0600`, owned by the broker user) also work, for tests
+  and for machines without systemd. The broker refuses to start if a key or
+  secret file can be read by group or others.
+- Root on the running broker host can still get everything. That is the
+  trust we place in the broker host.
+
+**The `bw` master password.** The Bitwarden Password Manager CLI must be
+unlocked with the account's master password. An API key alone is not
+enough. To restart on its own, the broker must keep that password, so
+anyone who breaks into the broker host gets the whole vault. So nodkey
+supports `bw` only with a separate Bitwarden account that holds nothing but
+the items nodkey may hand out. A person logs in once on the broker host
+with `bw login --apikey`; after that the broker unlocks on its own at each
+start. If the CLI is ever logged out, every `bw` request is denied until a
+person logs in again. Bitwarden Secrets Manager (`bws`) does not have these
+problems: its machine-account token can see only the projects you give it.
+
+**B. Keys inside hardware, through an upstream SSH agent.**
+The broker sends signing to a local agent socket on the broker host, for
+example a TPM-based agent or a YubiKey. Then nobody can copy the key, not
+even root. Root on the broker host can still *use* the key while it has
+access. This is a good next step, but not version 1.
+
+**Not chosen:** typing the passphrase into Telegram. It would pass through
+Telegram's servers and stay in the chat history.
+
+## 12. Decision 3: unattended runs
+
+A cron or timer job on the agent machine cannot tap a button.
+
+**The honest limit:** if a job on the agent machine can get a secret
+without a tap, the agent can too. The agent may be root there, and it can
+read anything the job can read. There is no way around this on the same
+machine.
+
+**Decided 2026-10-12: A where possible, else B.**
+
+**A. Run the job somewhere without an agent.**
+Give that machine its own client identity. A "never ask" rule for that
+client opens no hole on the agent machine.
+
+**B. A "never ask" rule for one client and one secret or key.**
+The hole: anything on that client can get that one secret (or log in to the
+listed hosts with that key) without a tap. To keep it small:
+- The rule names exactly one client.
+- For SSH keys, it must list the hosts (`hosts = [...]`).
+- It can be limited to a time of day (`hours = "03:00-03:20"`, broker
+  local time). Outside those hours, the broker asks as usual.
+- An optional `max_per_day` limit. Over the limit, the broker asks again. If
+  the agent used up the uses, the real job fails, and that is a visible sign.
+- Every use sends a silent Telegram message (`notify = true` by default) to
+  the notice chat, so a strange use is seen.
+- Use a narrow secret: a secret that can do little, or a deploy key that
+  can reach only one repository. For `bws`, the job's secret can live in its
+  own project, read through its own store entry with its own machine
+  account (see the two `bws` stores in section 14).
+
+**Not chosen:** matching the command name ("only for `backup.sh`"). The
+command is claimed. The agent can send any command line it wants.
+
+## 13. Decision 4: SSH approval scope
+
+One Ansible run makes at least one signature per host.
+
+**Decided 2026-10-12: B, plus D.**
+
+| option | taps for one Ansible run on 6 hosts | what a tap allows |
+|---|---|---|
+| A. Ask for every signature | 6, every run | one login |
+| B. Once per N minutes per (client, key, host, user) | 6 on the first run, 0 on the next runs within N minutes | logins as that user to that one host, for N minutes |
+| C. Once per N minutes per (client, key) | 1 | logins to **any** host, for N minutes |
+| D. B, plus a pre-approval command | 1 | logins as that user to the hosts listed in the message, for N minutes |
+
+**D, the pre-approval command:**
+
+```
+nodkey ssh-grant --key deploy --user deploy --host web-1 --host web-2 \
+                 --for 15m --reason "apply the nginx fix"
+ansible-playbook site.yml
+```
+
+`ssh-grant` sends one request. The message lists the key, the remote user,
+every host by its name in the broker's `known_hosts`, and the time the
+grant ends. One tap makes a grant for each listed host, exactly as in B.
+Then the playbook runs without more taps. A host that is not in the list
+still asks. The broker refuses an `ssh-grant` when:
+- the remote user name does not match the pattern in section 6;
+- the key's rule is not `window`;
+- `--for` is longer than the key's window;
+- a host is not in the broker's `known_hosts`, or not in the key's `hosts`
+  list when it has one;
+- it lists more than 20 hosts.
+
+**Why B and D:** the host is the most useful thing a person checks, and both
+keep it in every grant. C is too wide: approving `web-1` would silently allow
+`db-1`. D turns the six taps of B into one, without making the scope wider.
+It also avoids the queue: the playbook does not start 5 requests at the
+same time. D is small to build because it reuses the same message and grant
+code.
+
+**Not chosen for now:** merging requests that arrive at the same time into
+one message. D gives the same result with less risk: the list in the
+message cannot change while the person reads it.
+
+## 14. Configuration
+
+Broker, `/etc/nodkey/broker.toml`:
+
+```toml
+listen = "192.0.2.10:7743"          # an address on your private network only
+tls_key = "${CREDENTIALS_DIRECTORY}/broker-tls-key"
+audit_log = "/var/lib/nodkey/audit.jsonl"
+known_hosts = "/etc/nodkey/known_hosts"
+
+[telegram]
+token_file = "${CREDENTIALS_DIRECTORY}/telegram-token"
+user_id = 123456789                 # the approver
+notice_chat_id = 123456789          # optional; default: the approver's chat
+timeout = "120s"                    # secrets
+ssh_timeout = "90s"                 # SSH signatures
+
+[client.laptop]
+pin = "sha256:Yf3c...base64..."     # printed by `nodkey keygen`
+
+[store.main]                         # any name; `type` picks the program
+type = "bws"
+program = "/usr/local/bin/bws"
+token_file = "${CREDENTIALS_DIRECTORY}/bws-token"
+
+[store.backup-job]                   # a second machine account, one project
+type = "bws"
+program = "/usr/local/bin/bws"
+token_file = "${CREDENTIALS_DIRECTORY}/bws-token-backup"
+
+[store.vault]
+type = "bw"
+program = "/usr/local/bin/bw"
+password_file = "${CREDENTIALS_DIRECTORY}/bw-master-password"
+
+[secret.github-token]
+store = "main"
+id = "00000000-0000-0000-0000-000000000000"
+clients = ["laptop"]
+ask = "window"
+window = "15m"
+
+[key.deploy]
+file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
+clients = ["laptop"]
+ask = "window"
+window = "15m"
+hosts = ["web-1", "web-2"]          # optional; empty means any known host
+```
+
+The broker's `known_hosts` uses the OpenSSH format with stricter rules: one
+plain host name per line, no wildcards, no hashed names, no `@` markers, and
+each host key only once. The broker refuses to start if any rule is broken.
+Cloned machines often share a host key. Then the broker cannot tell them
+apart, so it refuses that file until each host has its own key.
+
+Client, `~/.config/nodkey/client.toml`:
+
+```toml
+broker = "192.0.2.10:7743"
+broker_pin = "sha256:Q2b9...base64..."
+tls_key = "~/.config/nodkey/client.key"
+```
+
+Config files are strict: an unknown key is an error, so a typo cannot turn
+a rule off.
+
+## 15. Commands and exit codes
+
+```
+nodkey broker [--config FILE]
+nodkey run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
+nodkey ssh-agent [--socket PATH]
+nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
+nodkey keygen --out FILE
+nodkey audit verify FILE [--anchor SEQ:HASH]
+nodkey version
+```
+
+`nodkey run` exits with the command's own code, or:
+
+| code | meaning |
+|---|---|
+| 64 | wrong usage |
+| 69 | the broker cannot be reached |
+| 77 | denied, expired or not allowed |
+| 126 | the command was found but cannot be run |
+| 127 | the command was not found |
+
+The command itself may also exit with one of these codes. To tell them
+apart, look at the last line on stderr. Only when nodkey itself exits, its
+last line is `nodkey: <reason> (exit <code>)`, for example
+`nodkey: denied (exit 77)`. When the command runs, nodkey prints nothing
+after it.
+
+`nodkey ssh-agent` creates its socket in a `0700` directory with mode
+`0600`. It refuses connections from other users. It refuses `ssh-add`
+(adding, removing, locking keys).
+
+## 16. Implementation rules
+
+- No secret value in any log, error text, audit entry or Telegram message.
+- The broker runs store programs by absolute path, with no shell, with only
+  the environment they need (tokens and the `bw` session go in environment
+  variables, never in arguments), with a timeout and a cap on output size.
+  Their output is never logged.
+- `bw` keeps a local copy of the vault. The broker runs `bw sync` before each
+  fetch, so a changed or removed item is not handed out from an old copy.
+- `bws` and `bw` write state files in their home directory. The systemd unit
+  gives the broker a private, writable home under its state directory.
+- Limits on every input: request size, number of secrets per request, field
+  lengths. JSON decoding rejects unknown fields.
+- The broker turns off core dumps and marks itself not dumpable
+  (`PR_SET_DUMPABLE`).
+- Time limits use Go's monotonic clock.
+- A systemd unit with sandbox settings ships as an example.
+
+## 17. Testing
+
+- **Unit tests** for each package: config, rules and grants (with a fake
+  clock), limits and the queue, audit chain, tamper checks and torn-line
+  recovery, session-bind and authentication request parsing, masking, message
+  text and escaping, and the Telegram client against a fake Telegram server
+  (wrong user, wrong chat, wrong message, unknown ID, late tap, double tap,
+  polling conflict).
+- **Fake approver**: a test approver that says yes, no, nothing, or answers
+  late, on command.
+- **Fake store**: a small test program that acts like `bws`.
+- **End-to-end test**: a throwaway key, `sshd` in a container, the broker and
+  the client on the test machine, and the fake approver. It checks that
+  `ssh` and `git` over SSH work, that a deny blocks the login, that an
+  unknown host key is refused, that `ssh-grant` covers exactly the listed
+  hosts, and that `nodkey run` passes a secret into a command without
+  printing it. It needs Docker, so it has its own build tag and its own CI
+  job.
+- **Canary test**: the end-to-end test uses a planted secret value and then
+  searches every log, the audit log, every message sent to the fake
+  Telegram server, and the client's output for it. A second canary sits in
+  a parent process's command line, to test the masking. Any hit fails the
+  test.
+- **One manual test with a real Telegram bot**, written down in
+  `docs/manual-telegram-test.md`. The token comes from a local file and is
+  never committed.
+
+## 18. Build, CI and releases
+
+- CI on every pull request: `go test -race`, `go vet`, `golangci-lint`,
+  `govulncheck`, and the end-to-end job.
+- GitHub Actions are pinned to a commit SHA.
+- Pull request titles follow Conventional Commits. Pull requests are squash
+  merged.
+- release-please keeps a release pull request open. Merging it tags the
+  version and creates the GitHub Release. A job then builds static Linux
+  binaries (`CGO_ENABLED=0`, amd64 and arm64, `-trimpath`), a
+  `SHA256SUMS` file, and a build provenance attestation.
+
+## 19. How the work is done
+
+- One GitHub issue per piece of work, each with a "Done when" checklist.
+- One feature branch and one pull request per issue.
+- Each change gets a review from the security reviewer agent in
+  `.claude/agents/security-reviewer.md` before it is committed.
+
+## 20. Prior art
+
+We read these projects on 2026-10-12 for ideas. We copy no code from them.
+
+| project | license | what we take as an idea |
+|---|---|---|
+| [Ladulås](https://github.com/hugowetterberg/ladulas) | MIT | Mutual TLS with pinned keys. The broker parses the signed bytes again and denies what it cannot classify. Host taken from the session-bind and the "hostbound" auth bytes. Grants scoped by key, host key and user. 90 seconds for SSH requests. A pre-approval command. |
+| [secret-gate](https://github.com/johnuopini/secret-gate) | MIT | Telegram long polling; the value only in the child's environment. Also what to avoid: it does not check who pressed the button, and its CLI prints values. |
+| [agentbell](https://github.com/MoodTechBasti/agentbell) | MIT | Only an explicit yes counts. The request ID is in the button. Stale and foreign answers are refused and logged. Buttons are cleared after an answer. |
+| [agent-keyring](https://github.com/devonpmack/agent-keyring) | Apache-2.0 | Strip control characters from the agent's reason and label it unverified. One-time use with one atomic step. Flood limits. A canary leak test. |
+
+We also looked at [Bitwarden Agent Access](https://github.com/bitwarden/agent-access)
+and [opaque](https://github.com/opaque-dev/opaque) and chose not to fork
+them. Agent Access has no SSH support, ties approval to a terminal screen,
+and would need protocol changes that break compatibility with Bitwarden's
+own clients. opaque is very large, has a different focus (it never returns
+values), and has no SSH agent or phone approval.
+
+Standards we use or borrow names from:
+[OpenSSH agent restrictions and `session-bind@openssh.com`](https://www.openssh.com/agent-restrict.html),
+[OpenSSH PROTOCOL (`publickey-hostbound-v00@openssh.com`)](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL),
+[OpenID CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html)
+(a request ID, a short code shown on both sides, an expiry), and
+[RFC 4252](https://www.rfc-editor.org/rfc/rfc4252) (the SSH authentication
+request).
