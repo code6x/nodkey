@@ -1,0 +1,58 @@
+# golangci-lint configuration, v2 format.
+# Reference: https://golangci-lint.run/docs/configuration/file/
+version: "2"
+
+linters:
+  # standard: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose # HTTP response bodies are closed
+    - errorlint # errors are checked with errors.Is/As and wrapped with %w
+    - forbidigo # library code does not print (see settings)
+    - gosec # security problems
+    - misspell # spelling mistakes in comments and strings
+    - noctx # network calls take a context.Context
+    - nolintlint # //nolint comments name the linter and give a reason
+    - unconvert # type conversions that do nothing
+
+  settings:
+    forbidigo:
+      # Library code must never print or log on its own: a secret could end
+      # up in a terminal or a log. Library code gets an io.Writer or a
+      # *slog.Logger from its caller, and returns values and errors.
+      # Code in cmd/ talks to the user, so it may print (see exclusions below).
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: library code must not print; return the value or an error
+        - pattern: ^print(ln)?$
+          msg: library code must not print; return the value or an error
+        - pattern: ^os\.(Stdout|Stderr)$
+          msg: library code must not use stdout or stderr; take an io.Writer
+        - pattern: ^log\.(Logger\.)?(Print|Fatal|Panic).*$
+          msg: library code must not log; return an error or take a *slog.Logger
+        - pattern: ^log\.(Logger\.)?(Output|SetOutput)$
+          msg: library code must not log; return an error or take a *slog.Logger
+        - pattern: ^slog\.(Debug|Info|Warn|Error|Log)(Context|Attrs)?$
+          msg: library code must not use the default logger; take a *slog.Logger
+        - pattern: ^slog\.(Default|SetDefault)$
+          msg: library code must not use the default logger; take a *slog.Logger
+      # Match on types, so an import alias or a *log.Logger cannot hide a call.
+      analyze-types: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    rules:
+      - path: ^cmd/
+        linters:
+          - forbidigo
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/code6x/nodkey

@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Pull request titles look like "chore(deps): bump ...". The chore type
+  # makes no release. See docs/releasing.md for security fixes.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait 7 days after a new version comes out, so that a bad release can
+    # be found and pulled first. Security updates do not wait.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # Pull request titles look like "ci(deps): bump actions/checkout ...".
+  # Dependabot also updates the pinned commit SHA and its version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope
