@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Every Monday: find vulnerabilities that became known since the last push.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a pull request cancels the older run for it.
+  # Each push to main gets its own group, so those runs are never cancelled.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # go.mod: the oldest Go we support (the go line in go.mod).
+        # stable: the newest Go release.
+        go: [go.mod, stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
+          go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not formatted with gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          # Dependabot does not update this version. Update it by hand.
+          version: v2.14.0
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Release binaries are built with the newest Go (see release.yml),
+          # so check the standard library of that version.
+          go-version: stable
+      - name: govulncheck
+        # Dependabot does not update this version. Update it by hand.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  vuln-release:
+    name: vuln (latest release)
+    # Weekly only. The published binaries contain the Go standard library
+    # they were built with, so check the binaries themselves. A finding here
+    # needs a new release (see docs/releasing.md).
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: govulncheck on the binaries of the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts \
+            --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          if [ -z "$tag" ]; then
+            echo "No release yet. Nothing to check."
+            exit 0
+          fi
+          dir="${RUNNER_TEMP}/release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
+            --pattern 'nodkey_*_linux_*.tar.gz'
+          status=0
+          for tarball in "$dir"/*.tar.gz; do
+            out="${tarball%.tar.gz}"
+            mkdir -p "$out"
+            tar -xzf "$tarball" -C "$out" nodkey
+            echo "== ${tag}: $(basename "$tarball")"
+            go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "$out/nodkey" || status=1
+          done
+          exit "$status"

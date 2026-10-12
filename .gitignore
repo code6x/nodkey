@@ -1,0 +1,18 @@
+# Release build output
+/dist/
+
+# Binary from "go build ./..." or "go build ./cmd/nodkey"
+/nodkey
+
+# Test coverage output
+*.out
+*.coverprofile
+coverage.html
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
