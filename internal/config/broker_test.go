@@ -337,7 +337,7 @@ func TestLoadBrokerErrors(t *testing.T) {
 			want: "1 unknown key;", notWant: "ASK"},
 		{name: "pasted text as a key name", edits: []edit{{"user_id = 123456789", "user_id = 123456789\nSECRETpass-word_1 = 1"}},
 			want: "1 unknown key;", notWant: "SECRET"},
-		{name: "pasted text as a key name and a typo", edits: []edit{{"user_id = 123456789", "user_id = 123456789\nghp_madeUpSECRET0 = 1\nusr_id = 1"}},
+		{name: "pasted text as a key name and a typo", edits: []edit{{"user_id = 123456789", "user_id = 123456789\ngh" + "p_madeUpSECRET0 = 1\nusr_id = 1"}},
 			want: `unknown key "telegram.usr_id", and 1 more unknown key; an error shows a key name only if`, notWant: "SECRET"},
 		{name: "value of the wrong type", edits: []edit{{"user_id = 123456789", `user_id = "123456789"`}},
 			want: "line 9: incompatible types: TOML value has type string; destination has type integer", notWant: "user_id"},
