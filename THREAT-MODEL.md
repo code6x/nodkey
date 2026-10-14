@@ -109,9 +109,10 @@ looks strange.
 **T3. The agent fakes the look of the message.**
 It could put new lines, fake "✅ machine:" lines, direction marks, HTML or
 links in its text. Claimed text is made one line per field, control and
-invisible characters are removed, length is capped, HTML is escaped, the
-text sits in `<code>`, link previews are off, and claimed fields always
-come after the verified ones. The verified part holds only names from the
+invisible characters are removed, symbols that draw nothing become spaces,
+stacked combining marks are capped and none starts a field, length is
+capped, HTML is escaped, the text sits in `<code>`, link previews are off,
+and claimed fields always come after the verified ones. The verified part holds only names from the
 broker's config and data the broker checked. The broker itself checks that
 the remote user name matches a strict pattern, and that environment
 variable names match `[A-Z_][A-Z0-9_]{0,63}`; variable names are shown as
@@ -205,10 +206,19 @@ No print command. Values that nodkey fetched are never logged, never in
 errors, never in the audit log, never in Telegram. Store program output is
 never logged. A command line can hold a secret the agent typed in (for
 example `mysql -pSECRET`), and it would go to Telegram and the audit log. So
-the broker masks values that look like secrets, and shows at most 8
-arguments.
-Risk that remains: masking catches common forms only. The command itself
-may print a secret; version 1 does not filter the command's output.
+the broker masks values that look like secrets in every claimed field, and
+shows at most 8 arguments. DESIGN.md section 7 lists what is masked, and
+gives examples of what is not. It masks values of options with secret
+names, `-p`, options of some programs such as `redis-cli -a`, values after
+keys such as `password=` or `"token":`, headers, passwords in URLs, PEM
+blocks, known token shapes, and long random-looking words. A field longer
+than 64 KiB is not shown at all, so no field is cut before it is masked.
+Risk that remains: masking is best effort and finds the common forms only.
+A secret in another form is shown as it is, for example a plain word
+(`htpasswd -b users.txt dev SECRET`) or an option of a program the broker
+does not know. A hostile agent can always get a secret past masking. The
+claimed text stays a claim. The command itself may print a secret; version
+1 does not filter the command's output.
 
 **T16. The broker host is broken into.** Everything is lost. Advice: a
 dedicated user, the systemd sandbox settings in the example unit, secrets
