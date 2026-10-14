@@ -173,7 +173,11 @@ Risk that remains: low.
 
 **T10. Someone on the network reads or changes the traffic.**
 TLS 1.3, with both sides' keys pinned. The pin is checked on every
-connection, and TLS session resumption is off.
+connection, and TLS session resumption is off: the broker sends no session
+tickets, the client keeps no sessions, and both sides refuse a resumed
+session. Each side must send exactly one certificate and prove
+that it holds its private key, so a copy of a certificate is not enough.
+The client never uses a proxy and follows no redirects.
 Risk that remains: low.
 
 **T11. The client's TLS key is copied.**
@@ -309,7 +313,10 @@ Risk that remains: the agent's work stops. That is the safe way to fail.
 
 **T22. A client uses a secret meant for another client.**
 Each secret and key lists its clients. The client name comes from the
-pinned TLS key, not from anything the client says.
+pinned TLS key, not from anything the client says: not from the request,
+not from the names in its certificate, and not from the server name it
+asks for. The TLS layer stores the name for the connection, and the broker
+refuses a request without it.
 Risk that remains: none known.
 
 **T23. Telegram learns about the household or company.**
@@ -352,7 +359,10 @@ all of these below a directory that group or others can write to, also a
 directory that holds a symbolic link on the way.
 nodkey opens each file once, checks the open file, and reads from that
 same open file. So the file cannot be swapped between the check and the
-read. The client checks its own TLS key in the same way.
+read. The client checks its own TLS key in the same way. `nodkey keygen`
+writes a new key file with mode `0600`, never over a file or a link that
+is there. It checks the directories and the new, empty file in the same
+way before it writes the key.
 Risk that remains: root and the broker user can still change everything
 (T16). Programs and libraries that a store program loads are not checked.
 On overlayfs, nodkey sees only the mode bits of the top copy of a file; a
@@ -379,6 +389,38 @@ can show a path, so do not paste a secret into a path setting.
 Risk that remains: a rule that is valid but wider than the approver meant.
 The broker cannot know what the approver meant. Review each change to the
 config.
+
+**T28. A peer sends large, slow, broken or many requests.**
+A hostile agent has the client's key (T11), so it can send any request.
+Any other machine that can reach the broker port can at least start a TLS
+handshake.
+- The broker reads at most 2 MiB of request body, and at most 12 KiB of
+  request headers. It drops a peer that is too slow: 10 seconds for the
+  TLS handshake and the headers, 30 seconds for the whole request, and 30
+  seconds to take each answer.
+- A body must be one strict JSON object: no unknown keys, no repeated
+  keys, keys only in lower case, at most 16 levels deep, at most 256 keys
+  in one object and 65,536 values in all. The broker checks this in one
+  pass over the bytes before it decodes the body. Measured on 2026-10-14
+  on a desktop computer, the worst body of 2 MiB then costs about 70 ms of
+  CPU time and 20 MiB of memory; without the limits, it cost 180 ms and
+  250 MiB.
+- An error answer gives only the HTTP status. A panic in a handler drops
+  the connection, and the log shows where it happened, never the panic
+  value.
+- The broker's log holds no text that a peer chose. A refused handshake
+  gives one short line with the remote address and a fixed reason. The
+  broker logs at most 60 lines about connections per minute (DESIGN.md
+  section 10). So a peer cannot flood the journal, or write a line into
+  it that looks like an audit anchor.
+Risk that remains: there is no limit on the number of connections. Any
+peer that can reach the broker port, even without a key, can hold a
+connection for up to 10 seconds, and makes the broker do a key exchange
+for each new one. A client with a valid key can also send many requests
+at once. Both use memory and CPU on the broker host. That is a denial of
+service, not a way to get a secret or an approval. The answer is a
+firewall that lets only the agent machines reach the broker port
+(DESIGN.md section 10).
 
 ## 7. Assumptions
 

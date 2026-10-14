@@ -113,7 +113,7 @@ nodkey run --secret GH_TOKEN=github-token \
 2. The client sends: the secret names, the environment variable names, the
    command line, the working directory, the local user name and the reason.
    The reason comes from `--reason`, or else from the `NODKEY_REASON`
-   environment variable.
+   environment variable. Section 10 limits their size.
 3. The broker checks that the client is known (its TLS key is pinned in the
    broker config), that each name exists in the broker config, that this
    client may use it, and that each variable name matches
@@ -160,8 +160,9 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
    authentication request.
 5. The client sends the broker: the key, the data to sign, the flags, the
    session-bind messages of this connection, and some claimed context: the
-   command line of the `ssh` process and its parents (from `/proc`), and
-   `NODKEY_REASON` from the environment of the `ssh` process, if set.
+   command lines of the `ssh` process and of at most 3 of its parent
+   processes (from `/proc`), and `NODKEY_REASON` from the environment of
+   the `ssh` process, if set. Section 10 limits their size.
 6. The broker checks, and denies on any failure:
    - The data is an SSH authentication request (RFC 4252 section 7). The
      method is `publickey` or `publickey-hostbound-v00@openssh.com`. The
@@ -438,7 +439,8 @@ Not masked, for example:
 - Typed replies never count. Only buttons do. Taps from other users and
   taps on unknown IDs are written to the audit log.
 - If the client hangs up while waiting (for example `ssh` was killed), the
-  request is cancelled.
+  request is cancelled. (Section 10 has one exception, which the client
+  never uses: HTTP pipelining.)
 
 ### Telegram details
 
@@ -711,6 +713,135 @@ broker host, and easier to test. B can come later if someone needs it.
 With either option, the client's key is on the agent machine, so the agent
 can copy it. That is fine: the key only lets it *ask*. Every answer still
 needs the approver.
+
+### How A works
+
+**The key file.** `nodkey keygen --out FILE` makes a new Ed25519 key and a
+self-signed certificate for it. It writes both to FILE as two PEM blocks:
+`PRIVATE KEY` (PKCS #8) and `CERTIFICATE`. The broker's `tls_key` and the
+client's `tls_key` are such files.
+
+- keygen never overwrites a file. It makes FILE with `O_CREAT`, `O_EXCL`
+  and `O_NOFOLLOW`, so it refuses a file or a symbolic link at that path.
+  The new file has mode `0600`, whatever the umask.
+- Before it writes the key, keygen checks the directories on the way to
+  FILE, and the new empty file, as the broker checks a key file (section
+  14). If a check fails, keygen removes the new file. So it does not leave
+  a key where others can read it, for example on NFS.
+- keygen prints the pin on stdout, and nothing else: `sha256:` and the
+  SHA-256 of the key's SubjectPublicKeyInfo in base64, without padding.
+  Put it into the config of the other side. If the pin cannot be printed,
+  keygen removes the new file.
+- The certificate only carries the key. Neither side checks its names or
+  its dates, and it never ends (`9999-12-31`). To retire a key, remove its
+  pin from the other side's config.
+- The broker and the client read a key file only through the checked
+  reader of section 14. They accept only the form above: one Ed25519
+  private key and one certificate for that key, and nothing else. No other
+  block, no PEM headers (so no encrypted key), no other text.
+
+**Each connection.**
+
+- TLS 1.3 only. Each side checks the other side's pin in
+  `VerifyConnection`. Go runs it on every connection, also on a resumed
+  session.
+- No session is resumed. The broker sends no session tickets, and the
+  client keeps no sessions (no session cache, session tickets off).
+  `VerifyConnection` also refuses a resumed session. So each connection
+  makes a full handshake, with the certificate and the pin check.
+- Each side must send exactly one certificate. There is no certificate
+  authority, so there is no chain.
+- A copy of a certificate is not enough: TLS checks that the other side
+  holds the private key of its certificate.
+- The client turns off Go's usual check of the broker's certificate
+  (`InsecureSkipVerify`), because there is no certificate authority to
+  check it against. The pin check in `VerifyConnection` replaces it.
+- The broker refuses to start when a client's pin is the pin of the
+  broker's own key, or when two clients have the same pin.
+
+**The client name.** The broker finds the client name in the handshake: it
+is the name of the `[client.*]` section that pins the client's key. The
+TLS layer stores the name for that connection, and a handler reads it only
+from there. The request cannot change it. Neither can the names in the
+client's certificate, or the server name (SNI) that the client asks for.
+The broker refuses a request without a stored name (403) before any
+handler sees it.
+
+**HTTP.** HTTP/1.1 inside the TLS connection. No HTTP/2.
+
+- Request headers must arrive within 10 seconds, and the whole request
+  within 30 seconds. The headers, with the request line, are at most
+  12 KiB (net/http allows 4 KiB more than its limit of 8 KiB). The
+  10 seconds also limit the TLS handshake.
+- After the body is read, a request may wait for the approver as long as
+  its timeout. It ends early when the client hangs up, with one
+  exception: if the client has already sent its next request on the same
+  connection (HTTP pipelining), net/http does not see the hang-up, and the
+  request runs until its timeout. The client never does that.
+- A client must take each answer within 30 seconds. An idle connection
+  closes after 60 seconds.
+- An error answer gives only the HTTP status, such as
+  `{"error":"Bad Request"}`. It never says which key or value was wrong.
+- If a handler panics, the broker logs where (function, file and line),
+  but not the panic value, and drops the connection. The value could hold
+  anything from the request.
+- The client connects only to the `broker` address in its config, never
+  through a proxy (it ignores `HTTPS_PROXY`). It follows no redirects.
+
+**The request body.** It is JSON with the content type `application/json`,
+at most 2 MiB (2,097,152 bytes). Every valid request fits:
+
+- A claimed text field, such as the reason, is at most 64 KiB (65,536
+  bytes). A command line has at most 4096 arguments, and at most 64 KiB
+  in all. The client replaces a longer field, or a command line with more
+  arguments, with the text `[hidden: too long]` before it sends the
+  request (a command line becomes one argument with that text). The broker
+  shows it like any claimed text. (A field over 64 KiB that reaches the
+  broker anyway is not shown either; section 7.)
+- An SSH request sends the command lines of `ssh` and of at most 3 of its
+  parent processes (section 6): at most 4 command lines.
+- In JSON, one byte of text takes at most 6 bytes (a control character
+  becomes `\u0001`), and each argument adds 3 bytes (two quotes and a
+  comma). So a text field takes at most 2 + 6 × 65,536 = 393,218 bytes,
+  and a command line at most 1 + 3 × 4096 + 6 × 65,536 = 405,505 bytes.
+- The largest request is an SSH request: 4 command lines and the reason
+  take at most 2,015,238 bytes. A request for secrets has one command line
+  and 3 text fields (the working directory, the local user name and the
+  reason): at most 1,585,159 bytes. All other fields of a request, such as
+  names, keys and the data to sign, must fit in 64 KiB. So every valid
+  request is at most 2,080,774 bytes.
+
+The broker checks the body in one pass over its bytes before it decodes
+it:
+
+- It must be one JSON object and nothing after it, in valid UTF-8.
+- At most 16 levels of objects and arrays, at most 256 keys in one
+  object, and at most 65,536 values in all. The largest valid request has
+  about 16,400 values. Go's JSON decoder makes an error value for each
+  value of the wrong type, so this limit keeps the cost of a hostile body
+  small (T28).
+- Each key may appear once in an object. Each key must be a lower-case
+  name (`[a-z][a-z0-9_]*`, at most 64 characters), also after JSON
+  unescaping. Go matches JSON keys to fields without regard to case, so
+  this rule makes sure that a key matches only its exact field. Unknown
+  keys are refused. So a request never uses data, such as a variable
+  name, as a key; it uses a list of objects instead.
+
+**The broker's log.** Any peer can open a connection, and the log goes to
+the journal next to the audit anchors (section 9). So a log line about a
+connection never holds text that the peer chose, such as its ALPN names,
+a field of its certificate, or a line break:
+
+- A refused TLS handshake gives one short line: the remote address and a
+  fixed reason, such as "the client sent no certificate". The reason
+  depends only on the start of Go's error text, which the peer cannot
+  choose. The rest of that text is never logged.
+- A client key that no `[client.*]` section pins is logged with its pin.
+  That helps to add a new client.
+- Any other line from Go's HTTP server is cut to 1 KiB of printable
+  ASCII.
+- The broker logs at most 60 such lines per minute. When it drops lines,
+  it says how many in its next line.
 
 ## 11. Decision 2: loading keys after a restart
 
@@ -1034,6 +1165,10 @@ last line is `nodkey: <reason> (exit <code>)`, for example
 `nodkey: denied (exit 77)`. When the command runs, nodkey prints nothing
 after it.
 
+`nodkey keygen` prints the pin on stdout, and nothing else. It exits with
+0, with 64 on wrong usage, and with 1 on any other error. Then its last
+line on stderr is `nodkey: <reason> (exit 1)`.
+
 `nodkey ssh-agent` creates its socket in a `0700` directory with mode
 `0600`. It refuses connections from other users. It refuses `ssh-add`
 (adding, removing, locking keys).
@@ -1083,8 +1218,9 @@ text of a line. It exits with:
   fetch, so a changed or removed item is not handed out from an old copy.
 - `bws` and `bw` write state files in their home directory. The systemd unit
   gives the broker a private, writable home under its state directory.
-- Limits on every input: request size, number of secrets per request, field
-  lengths. JSON decoding rejects unknown fields.
+- Limits on every input: request size (2 MiB, see section 10), number of
+  secrets per request, field lengths. JSON decoding rejects unknown and
+  repeated keys.
 - The broker turns off core dumps and marks itself not dumpable
   (`PR_SET_DUMPABLE`).
 - Time limits use Go's monotonic clock.
