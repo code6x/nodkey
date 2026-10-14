@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,9 @@ type coreEnv struct {
 	core   *approval.Core
 	runErr chan error
 	stop   context.CancelFunc
+	// srv serves the fake Telegram to this broker only, so the broker's
+	// connections can end as when its process ends (exit).
+	srv *httptest.Server
 }
 
 // coreConfig is a broker config as LoadBroker would make it: clients
@@ -52,13 +56,16 @@ func coreConfig() *config.Broker {
 func newCoreEnv(t *testing.T, f *fakeTelegram) *coreEnv {
 	t.Helper()
 	e := newEnvFor(t, f)
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close) // after the cleanup below has stopped the core
+	e.a.api.base = srv.URL
 	clock := approvaltest.NewClock(noon)
 	core, err := approval.New(coreConfig(), e.a, approval.Options{Clock: clock})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	ce := &coreEnv{testEnv: e, clock: clock, core: core, runErr: make(chan error, 1), stop: cancel}
+	ce := &coreEnv{testEnv: e, clock: clock, core: core, runErr: make(chan error, 1), stop: cancel, srv: srv}
 	polls := len(f.callsOf("getUpdates"))
 	go func() { ce.runErr <- core.Run(ctx) }()
 	t.Cleanup(func() {
@@ -71,6 +78,23 @@ func newCoreEnv(t *testing.T, f *fakeTelegram) *coreEnv {
 	})
 	f.waitCalls("getUpdates", polls+1)
 	return ce
+}
+
+// exit stops the broker as when its process ends: the core stops, and the
+// connections of its approver to Telegram close. A call can still be on
+// its way when Run returns, such as the getUpdates that confirms the last
+// tap. When exit returns, every call of this broker has reached the fake,
+// or never will. So no call of this broker can change the fake after exit.
+func (ce *coreEnv) exit(t *testing.T) {
+	t.Helper()
+	ce.stop()
+	select {
+	case err := <-ce.runErr:
+		ce.runErr <- err // for the cleanup
+	case <-time.After(waitLimit):
+		t.Fatal("the core's Run did not return")
+	}
+	ce.srv.Close() // waits for the calls that the server still handles
 }
 
 // secretsRequest is a request of laptop for one secret.
@@ -180,6 +204,7 @@ func TestCoreApproveOnce(t *testing.T) {
 		strings.Contains(edit.str("text"), "expires") {
 		t.Errorf("edit %s", edit.Raw)
 	}
+	ce.f.waitHandled(cb)
 	if taps := ce.taps.all(); len(taps) != 0 {
 		t.Errorf("reports %+v, want none", taps)
 	}
@@ -227,6 +252,7 @@ func TestCoreEarlyTap(t *testing.T) {
 	if got := f.waitAnswer(cb).str("text"); got != tapTooEarly {
 		t.Errorf("the phone shows %q, want %q", got, tapTooEarly)
 	}
+	f.waitHandled(cb)
 	if n := len(f.callsOf("editMessageText")); n != 0 {
 		t.Errorf("%d edits after an early tap, want 0", n)
 	}
@@ -234,16 +260,11 @@ func TestCoreEarlyTap(t *testing.T) {
 		t.Errorf("reports %+v after an early tap, want none", taps)
 	}
 	release()
-	// Ask returns, and the request waits. Taps until one counts.
-	for i := 0; ; i++ {
-		cb = f.tap(goodTap(msg, dataDeny+id))
-		if f.waitAnswer(cb).str("text") != tapTooEarly {
-			break
-		}
-		if i > 100 {
-			t.Fatal("the request never took a tap")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Ask returns, and the request waits. Now the next tap counts.
+	ce.waitTimers(t, 1)
+	cb = f.tap(goodTap(msg, dataDeny+id))
+	if got := f.waitAnswer(cb).str("text"); got != tapCountedDeny {
+		t.Errorf("the tap after the early one: the phone shows %q, want %q", got, tapCountedDeny)
 	}
 	checkDeniedBy(t, waitResult(t, ch))
 }
@@ -300,8 +321,8 @@ func TestCoreDoubleTap(t *testing.T) {
 		t.Errorf("second tap: the phone shows %q", got)
 	}
 	ce.f.waitCalls("editMessageText", 1)
-	// The core is done when Decide returned; give a late edit time to come.
-	time.Sleep(50 * time.Millisecond)
+	// The second tap may update the message too, after its report.
+	ce.f.waitHandled(cb2)
 	for _, text := range ce.edits(msg) {
 		if !strings.HasSuffix(text, "👍 approved once by you at 12:00:00") {
 			t.Errorf("an edit shows %q", text)
@@ -355,6 +376,7 @@ func TestCoreWrongMessage(t *testing.T) {
 	if got := ce.f.waitAnswer(cb).str("text"); got != tapRefused {
 		t.Errorf("the phone shows %q", got)
 	}
+	ce.f.waitHandled(cb)
 	if n := len(ce.f.callsOf("editMessageText")); n != 0 {
 		t.Errorf("%d edits, want 0", n)
 	}
@@ -402,8 +424,12 @@ func TestCoreExpiredTap(t *testing.T) {
 	if got := ce.f.waitAnswer(cb).str("text"); got != tapExpired {
 		t.Errorf("the phone shows %q", got)
 	}
+	ce.f.waitHandled(cb) // the report comes after the answer
 	if n := len(ce.f.callsOf("editMessageText")); n != 0 {
 		t.Errorf("%d edits, want 0", n)
+	}
+	if taps := ce.taps.all(); len(taps) != 1 || taps[0].Cause != audit.TapExpired {
+		t.Errorf("reports %+v, want one with cause expired", taps)
 	}
 	ce.clock.Advance(120 * time.Second)
 	r := waitResult(t, ch)
@@ -413,9 +439,6 @@ func TestCoreExpiredTap(t *testing.T) {
 	edit := ce.f.waitCalls("editMessageText", 1)[0]
 	if !strings.HasSuffix(edit.str("text"), "⌛ expired — denied") {
 		t.Errorf("edit %q", edit.str("text"))
-	}
-	if n := len(ce.taps.all()); n != 1 {
-		t.Errorf("%d reports, want 1", n)
 	}
 }
 

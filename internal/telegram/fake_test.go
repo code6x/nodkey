@@ -159,8 +159,15 @@ type fakeTelegram struct {
 	replies    map[string][]fakeReply
 	held       map[string]chan struct{}
 	messages   map[int64]*fakeMessage // by message ID
+	presses    map[string]fakePress   // the presses that tap queued, by callback query ID
 	changed    chan struct{}          // closed and made new on each change
 	pollWait   time.Duration          // how long getUpdates waits for an update
+}
+
+// fakePress is a button press that tap queued.
+type fakePress struct {
+	update int64 // its update ID
+	calls  int   // how many calls the fake had when it was queued
 }
 
 func newFake(t testing.TB) *fakeTelegram {
@@ -173,6 +180,7 @@ func newFake(t testing.TB) *fakeTelegram {
 		replies:    make(map[string][]fakeReply),
 		held:       make(map[string]chan struct{}),
 		messages:   make(map[int64]*fakeMessage),
+		presses:    make(map[string]fakePress),
 		changed:    make(chan struct{}),
 		pollWait:   time.Second,
 	}
@@ -219,15 +227,15 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if q := f.replies[method]; len(q) > 0 {
 		reply = &q[0]
 		f.replies[method] = q[1:]
+	} else {
+		// Telegram has the message, or the edit, even when its answer
+		// comes late. It is kept with the call in one step, so a test
+		// that sees the call also sees the message as the call left it.
+		f.keepLocked(call)
 	}
 	hold := f.held[method]
 	f.notifyLocked()
 	f.mu.Unlock()
-	if reply == nil {
-		// Telegram has the message, or the edit, even when its answer
-		// comes late.
-		f.keep(call)
-	}
 
 	if hold != nil {
 		select {
@@ -268,15 +276,13 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// keep notes what a call that worked changes in the messages, as
-// Telegram keeps them: a new message, or an edit.
-func (f *fakeTelegram) keep(c fakeCall) {
+// keepLocked notes what a call that worked changes in the messages, as
+// Telegram keeps them: a new message, or an edit. f.mu must be held.
+func (f *fakeTelegram) keepLocked(c fakeCall) {
 	var body struct {
 		ReplyMarkup json.RawMessage `json:"reply_markup"`
 	}
 	_ = json.Unmarshal(c.Raw, &body) // the fields come from the client
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	switch c.Method {
 	case "sendMessage":
 		f.messages[c.MsgID] = &fakeMessage{chatID: c.num("chat_id"), markup: body.ReplyMarkup}
@@ -368,10 +374,8 @@ func (f *fakeTelegram) hold(method string) (release func()) {
 	}
 }
 
-// addUpdate queues an update and returns its ID.
-func (f *fakeTelegram) addUpdate(u map[string]any) int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+// addUpdateLocked queues an update and returns its ID. f.mu must be held.
+func (f *fakeTelegram) addUpdateLocked(u map[string]any) int64 {
 	f.nextUpdate++
 	u["update_id"] = f.nextUpdate
 	raw, err := json.Marshal(u)
@@ -415,12 +419,13 @@ func goodTap(msgID int64, data string) tapSpec {
 	return tapSpec{from: approverID, chatID: approverID, chatType: "private", msgID: msgID, data: data}
 }
 
-// tap queues a button press and returns its callback query ID.
+// tap queues a button press and returns its callback query ID. The press
+// holds the message as the fake has it at this moment.
 func (f *fakeTelegram) tap(s tapSpec) string {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.nextTap++
 	id := "cb" + strconv.Itoa(f.nextTap)
-	f.mu.Unlock()
 	q := map[string]any{
 		"id":            id,
 		"from":          map[string]any{"id": s.from, "is_bot": false, "first_name": "Test"},
@@ -443,7 +448,6 @@ func (f *fakeTelegram) tap(s tapSpec) string {
 			"message_id": s.msgID, "date": 1, "text": text,
 			"chat": map[string]any{"id": s.chatID, "type": s.chatType},
 		}
-		f.mu.Lock()
 		if kept := f.messages[s.msgID]; kept != nil && kept.chatID == s.chatID && !s.bare {
 			if !emptyMarkup(kept.markup) {
 				m["reply_markup"] = kept.markup
@@ -452,7 +456,6 @@ func (f *fakeTelegram) tap(s tapSpec) string {
 				m["edit_date"] = kept.editDate
 			}
 		}
-		f.mu.Unlock()
 		if s.edited {
 			m["edit_date"] = 3
 		}
@@ -461,7 +464,8 @@ func (f *fakeTelegram) tap(s tapSpec) string {
 		}
 		q["message"] = m
 	}
-	f.addUpdate(map[string]any{"callback_query": q})
+	update := f.addUpdateLocked(map[string]any{"callback_query": q})
+	f.presses[id] = fakePress{update: update, calls: len(f.calls)}
 	return id
 }
 
@@ -534,17 +538,49 @@ func (f *fakeTelegram) waitCalls(method string, n int) []fakeCall {
 // waitAnswer waits for the answerCallbackQuery of the press id.
 func (f *fakeTelegram) waitAnswer(id string) fakeCall {
 	f.t.Helper()
-	var found fakeCall
-	f.waitFor("the answer to button press "+id, func() bool {
+	return f.waitAnswers(id, 1)[0]
+}
+
+// waitAnswers waits until the press id got n answers, and returns them,
+// oldest first. A press gets more than one when Telegram sends it again,
+// such as after a restart.
+func (f *fakeTelegram) waitAnswers(id string, n int) []fakeCall {
+	f.t.Helper()
+	var found []fakeCall
+	f.waitFor(strconv.Itoa(n)+" answers to button press "+id, func() bool {
+		found = nil
 		for _, c := range f.callsOfLocked("answerCallbackQuery") {
 			if c.str("callback_query_id") == id {
-				found = c
+				found = append(found, c)
+			}
+		}
+		return len(found) >= n
+	})
+	return found
+}
+
+// waitHandled waits until Run is done with the press id, which tap
+// queued: it answered it, reported it if it did not count, and updated its
+// message if it does that. Run handles one update after the other, and it
+// asks for more updates only when it is done with the ones it has. So a
+// getUpdates call that came after the press, with an offset past it,
+// shows that Run is done with the press.
+func (f *fakeTelegram) waitHandled(id string) {
+	f.t.Helper()
+	f.mu.Lock()
+	p, ok := f.presses[id]
+	f.mu.Unlock()
+	if !ok {
+		f.t.Fatalf("tap did not queue a button press %s", id)
+	}
+	f.waitFor("the end of button press "+id, func() bool {
+		for _, c := range f.calls[p.calls:] {
+			if c.Method == "getUpdates" && c.num("offset") > p.update {
 				return true
 			}
 		}
 		return false
 	})
-	return found
 }
 
 // syncBuffer is a bytes.Buffer for many goroutines.
