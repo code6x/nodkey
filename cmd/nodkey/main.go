@@ -24,17 +24,19 @@ const (
 const usageText = `Usage: nodkey <command> [arguments]
 
 Commands:
+  audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
+            check the hash chain of an audit log, and its anchors
   version   print the version
   help      print this help
 `
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 // run runs nodkey with args (without the program name) and returns the
 // exit code.
-func run(args []string, stdout, stderr io.Writer) int {
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nodkey", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { printUsage(stderr) }
@@ -48,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	name, rest := fs.Arg(0), fs.Args()[1:]
 	switch name {
+	case "audit":
+		return runAudit(rest, stdin, stdout, stderr)
 	case "version":
 		return runVersion(rest, stdout, stderr)
 	case "help":

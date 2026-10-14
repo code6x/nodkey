@@ -229,16 +229,44 @@ Risk that remains: real; out of scope.
 **T17. The audit log is changed.**
 Each entry holds the hash of the one before. That finds accidental damage
 and simple edits, but not a careful attacker: with write access they can
-change a line and compute every later hash again. So the broker also
-writes each entry's number and hash to the systemd journal. The broker's
-own user cannot change the journal, so a break-in as that user cannot hide
-its tracks there, if the journal is kept on disk long enough. Forward the
-journal to another machine, and not even root on the broker host can change
-the copies. `nodkey audit verify --anchor` then finds any change before a
-copied hash. On Linux, `chattr +a` makes the file append-only for everyone
-except root.
-Risk that remains: without a copy on another machine, root on the broker
-host can rewrite the log unseen.
+change a line and compute every later hash again, or remove entries from
+the end. So the broker also writes each entry's number and hash to the
+systemd journal (`audit anchor SEQ:HASH`), after the entry is on disk. The
+broker's own user cannot change the journal, so a break-in as that user
+cannot hide its tracks there, if the journal is kept on disk long enough.
+Forward the journal to another machine, and not even root on the broker
+host can change the copies. Check the log with every anchor since it began
+(`nodkey audit verify --anchors`), not only with the newest one: after a
+restart, the broker builds on the log as it finds it, so its new anchors
+also cover a change made while it was stopped. With every anchor, a changed
+entry and a cut log are found, also when the broker wrote more entries
+after the cut. A torn line from a power cut is not part of the chain, but
+its `log_recovered` entry holds the torn line's length and hash, so a
+change to it or its removal is found too. The broker locks the log, so a
+second broker cannot write to it. `nodkey audit verify` never prints the
+text of a line, only line numbers, because a line can hold a secret that
+the masking missed (T15). On Linux, `chattr +a` makes the file append-only
+for everyone except root.
+The anchor lines are trusted only because no other broker output can
+print a line that is exactly `audit anchor SEQ:HASH`: not a log line, a
+panic, a server error or a child program's error output. A false anchor
+line could make a good log fail, or make entries after the newest real
+anchor look checked.
+Risk that remains:
+- Without a copy of the journal on another machine, root on the broker
+  host can rewrite the log unseen.
+- Entries after the newest copied anchor can be removed unseen.
+- `chattr +a` does not stop the broker user from appending entries that
+  look right. An entry appended while the broker is stopped, with the
+  right `seq` and `prev`, becomes the last entry at the next start, and
+  the later anchors cover it. The anchors do not find it; only the missing
+  `audit anchor` line for that entry shows it. An appended
+  `log_recovered` entry can also make the last real entry look like a
+  torn line. The anchor of that entry finds this, but nothing alerts at
+  the start.
+- A log that was removed or moved away looks like a new log. Its anchors
+  and those of the old log differ, so check with the anchors since the
+  current log began, and keep the old file.
 
 **T18. The store programs leak a token.**
 Tokens and the `bw` session go in environment variables, never on the
