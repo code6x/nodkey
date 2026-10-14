@@ -1,0 +1,19 @@
+method: sendMessage
+chat_id: 7000001
+message_id: -
+parse_mode: "HTML"
+entities: -
+link_preview_options: {"is_disabled":true}
+disable_notification: -
+reply_markup: {"inline_keyboard":[[{"text":"Approve","callback_data":"w:AwQFBgcICQoLDA0ODxAREg"},{"text":"Deny","callback_data":"d:AwQFBgcICQoLDA0ODxAREg"}]]}
+text:
+🔐 SSH grant · request m4k2
+✅ machine: laptop
+✅ key: deploy
+✅ hosts: web-1, web-2
+✅ remote user: deploy
+✅ grants end: 14:20:00 (15 min)
+— claimed by the agent —
+command: <code>nodkey ssh-grant --key *** --user deploy --host web-1 --host web-2 --for 15m</code>
+reason: <code>apply the nginx fix</code>
+expires 14:07:00 (120 s)

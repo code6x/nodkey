@@ -119,7 +119,11 @@ the remote user name matches a strict pattern, and that environment
 variable names match `[A-Z_][A-Z0-9_]{0,63}`; variable names are shown as
 claimed. The broker never relies on checks done by the client. The
 approval core checks again that each claimed field is one clean line, and
-denies the request if one is not.
+denies the request if one is not. The Telegram code cleans each claimed
+field once more and escapes all text it shows. It cuts claimed fields so
+that a message fits in one Telegram message, but it never cuts a verified
+line: if the verified lines alone do not fit, no message is sent and the
+request is denied.
 Risk that remains: low.
 
 **T4. An old or repeated tap approves something new.**
@@ -129,7 +133,14 @@ expires. A restart forgets all IDs. The approval core checks all of this
 again after the Telegram code, also the user and the button. Taking the
 request out of the waiting list and deciding it is one step under one
 lock, so two taps cannot both count. A tap that fails a check changes
-nothing.
+nothing. The button data is read strictly. A copy of a message, such as
+one that the bot forwards with a stolen token, has another message ID, so
+its buttons do not count. A tap on a message that was edited, or whose
+buttons are not the ones the broker sent, never counts, because the
+broker never edits a message while its request waits (T6). A second tap
+does not change the result that a message shows, and after a restart,
+the broker only removes the buttons of an old message and keeps its
+text.
 Risk that remains: none known.
 
 **T5. Someone else presses the button.**
@@ -142,9 +153,24 @@ With the token, an attacker can read updates before the broker does, send
 messages as the bot, and edit or delete the bot's messages. They cannot
 press a button as the approver. Stolen updates make requests time out,
 which means deny. A fake message from the bot with fake buttons sends IDs
-the broker does not know, so they are refused. When another program polls
-with the same token, Telegram reports a conflict, and the broker sends an
-alert.
+the broker does not know, so they are refused, and each refused tap is
+written to the audit log with a cause, so a forged button can be told
+from a person's second tap. At most 20 refused taps a minute are logged
+and written; the broker counts the others, so the journal and the disk
+do not fill up. An attacker can also edit a message that waits for an
+answer, to show other names, or swap the labels of its buttons, so that
+the person approves without knowing it. The broker never edits a waiting
+message, so it refuses every tap on an edited message or on one with
+other buttons, writes it with cause `edited_message`, and sends an
+alert, at most one in 10 minutes. When another program polls with the
+same token, Telegram reports a conflict. The broker logs an alert, sends
+an alert message, and stops taking answers: every request that waits for
+the person is denied. With the token, an attacker can stop the broker
+this way, but they can deny service anyway, by reading the updates.
+A proxy that inspects TLS, with its own certificate authority in the
+system's store of the broker host, sees the token, and it can fake
+Telegram's answers, so also taps. The broker logs at start which proxy
+it uses (DESIGN.md section 7). Do not use such a proxy for the broker.
 Risk that remains: denial of service, and misleading text in the chat.
 Keep the token in an encrypted credential; make a new one if it leaks.
 
@@ -184,7 +210,8 @@ already wait in the queue. A request leaves the queue only with at least
 "never ask" rule sends at most 6 notices in any 60 seconds per client; a
 use over that is denied. So a client with such a rule cannot fill the
 notice chat, or use up Telegram's limits so that messages for other
-clients fail.
+clients fail. The Telegram code also sends at most 20 notices in any 60
+seconds for all clients together.
 Risk that remains: low.
 
 **T10. Someone on the network reads or changes the traffic.**
@@ -302,8 +329,17 @@ broker passes only the variables the program needs.
 Risk that remains: low.
 
 **T19. The bot token leaks in an error message.**
-Go's HTTP errors include the URL, and the URL holds the token. The Telegram
-code removes the URL before it logs anything. A test checks it.
+Go's HTTP errors include the URL, and the URL holds the token. So no
+error and no log line of the Telegram code holds Go's error text: only
+the Bot API method, a fixed reason, and at most a number such as
+Telegram's error code. Telegram's description of an error is never shown
+either, because it can quote the message text. The Telegram code speaks
+only HTTP/1.1, so Go's HTTP/2 debug output cannot print the URL, and it
+follows no redirect, so no other server gets the URL. The types that hold
+the token hide it when they are printed. A test with a made-up token
+searches every error, log line and audit report for it. The log line
+about a proxy shows only its host, never a user name or a password from
+the setting.
 Risk that remains: low.
 
 **T20. A dependency or the build is tampered with.**

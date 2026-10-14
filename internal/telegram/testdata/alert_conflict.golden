@@ -1,0 +1,10 @@
+method: sendMessage
+chat_id: 7000001
+message_id: -
+parse_mode: "HTML"
+entities: -
+link_preview_options: {"is_disabled":true}
+disable_notification: -
+reply_markup: -
+text:
+⚠️ nodkey: Telegram reports a conflict: another program reads the updates of this bot, or a webhook is set. The bot token may be stolen. The broker no longer takes answers, so it denies every request that needs a tap. Make a new token with @BotFather, put it in the token file, and restart the broker.

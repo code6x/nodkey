@@ -87,7 +87,7 @@ func sampleEvents() []Event {
 		Request{Subject: grantSubject(), Message: "🔐 SSH grant"},
 		Decision{Subject: grantSubject(), UserID: 123456789, Answer: AnswerDeny},
 		Denied{Subject: grantSubject(), Cause: CauseApprover},
-		ForeignTap{UserID: 987654321, ChatID: 987654321, MessageID: 42, Data: "o:" + testRequestID(9)},
+		ForeignTap{UserID: 987654321, ChatID: 987654321, MessageID: 42, Data: "o:" + testRequestID(9), Cause: TapEditedMessage},
 		Failure{Subject: secretsSubject(), Code: CodeStoreFailed},
 		Failure{Code: CodePollConflict},
 		BrokerStopped{},

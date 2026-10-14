@@ -1,0 +1,18 @@
+method: sendMessage
+chat_id: -100700003
+message_id: -
+parse_mode: "HTML"
+entities: -
+link_preview_options: {"is_disabled":true}
+disable_notification: true
+reply_markup: -
+text:
+🔔 SSH login · request k3f9
+allowed by a &quot;never ask&quot; rule, without a tap
+✅ machine: laptop
+✅ key: deploy
+✅ host: web-1 (host key SHA256:pX2c…)
+✅ remote user: deploy
+— claimed by the agent —
+command: <code>ssh deploy@web-1 ← ansible-playbook site.yml</code>
+reason: <code>apply the nginx fix</code>

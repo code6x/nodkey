@@ -111,6 +111,7 @@ func TestEncodeEventRefusesBadFields(t *testing.T) {
 		{"unknown code", Failure{Code: canary}},
 		{"failure with half a subject", Failure{Subject: Subject{Client: "laptop"}, Code: CodeSignFailed}},
 		{"tap data too long", ForeignTap{UserID: 1, Data: strings.Repeat("d", 65)}},
+		{"unknown tap cause", ForeignTap{UserID: 1, Cause: canary}},
 		{"torn length 0", logRecovered{TornSHA256: zeros}},
 		{"torn hash in capitals", logRecovered{TornLength: 1, TornSHA256: strings.Repeat("A", 64)}},
 	}
