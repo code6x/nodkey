@@ -142,7 +142,8 @@ These settings protect `main` and the releases:
 
 - **Ruleset for `main`**: changes only through a pull request; the CI checks
   and the PR title check must pass; no force push; `main` cannot be deleted.
-- **Ruleset for `v*` tags**: a tag cannot be moved or deleted.
+- **Rulesets for `v*` tags**: nobody can move or delete a tag, not even the
+  release App. Only the release App can create one.
 - **Immutable releases**: on.
 - **Actions**: every action must be pinned to a full commit SHA. Dependabot
   keeps these SHAs up to date.
@@ -168,9 +169,18 @@ after one hour.
 
 ### Steps
 
+One App can serve several repositories of the organization. Give each
+repository its own private key. Then you can delete one key without
+breaking the others. The keys do not keep the repositories apart: any key
+of the App can get a token for every repository the App is installed on.
+If a repository must be kept apart, give it its own App.
+
+If the organization already has a release App (for code6x it is
+`code6x-release`), skip step 1.
+
 1. Create the App. In the **code6x** organization, open
    **Settings → Developer settings → GitHub Apps → New GitHub App**.
-   - **GitHub App name**: any free name, for example `code6x-nodkey-release`.
+   - **GitHub App name**: any free name, for example `<organization>-release`.
    - **Homepage URL**: `https://github.com/code6x/nodkey`.
    - **Webhook**: clear the **Active** box. The App needs no webhook.
    - **Repository permissions**:
@@ -182,32 +192,80 @@ after one hour.
        **Metadata: Read-only** by itself.
    - **Where can this GitHub App be installed?**: **Only on this account**.
    - Click **Create GitHub App**.
-2. On the App page, copy the **Client ID**.
-3. On the same page, under **Private keys**, click
-   **Generate a private key**. Your browser downloads a `.pem` file.
-4. Install the App: **Install App** → **code6x** →
-   **Only select repositories** → `code6x/nodkey` → **Install**.
-5. Save the Client ID as a repository variable, and the private key as a
-   secret of the `release` environment:
+2. In the **code6x** organization, open the App page: **Settings →
+   Developer settings → GitHub Apps → Edit** next to the App. Copy the
+   **Client ID**. If the App already existed, check that its permissions
+   match step 1.
+3. Open **Credentials → Key pairs** and click **New key**. Your browser
+   downloads a `.pem` file. Use this key only for this repository.
+4. Find the key's fingerprint:
+
+   ```sh
+   echo "SHA256:$(openssl rsa -in path/to/key.pem -pubout -outform DER | openssl sha256 -binary | openssl base64 -A)"
+   ```
+
+   Check that the **Key pairs** page shows this exact value next to the new
+   key. If it does not, stop: the path is wrong, or the file is not the new
+   key.
+5. Install the App: **Install App** → **code6x** →
+   **Only select repositories** → add `code6x/nodkey` → **Install**
+   (or **Save**, if the App is already installed on other repositories).
+6. Save the Client ID and the fingerprint as repository variables, and the
+   private key as a secret of the `release` environment:
 
    ```sh
    gh variable set RELEASE_APP_CLIENT_ID --repo code6x/nodkey --body '<Client ID>'
+   gh variable set RELEASE_APP_KEY_FINGERPRINT --repo code6x/nodkey --body '<the line from step 4>'
    gh secret set RELEASE_APP_PRIVATE_KEY --repo code6x/nodkey --env release < path/to/key.pem
    ```
 
-   On the web, the variable is under
+   On the web, the variables are under
    **Settings → Secrets and variables → Actions → Variables**, and the
    secret is under **Settings → Environments → release →
    Environment secrets**. Do not save the key as a repository secret: then
    workflow runs on other branches could read it too.
-6. Delete the `.pem` file from your computer. If you need a key again,
-   generate a new one on the App page and delete the old one there.
-7. Let only the App create release tags. Open
-   **Settings → Rules → Rulesets**, open the ruleset for `v*` tags, turn on
-   **Restrict creations**, and add the App to the bypass list. The App must
-   be the only entry in that list.
+   `RELEASE_APP_KEY_FINGERPRINT` is not used by the workflow. It tells you
+   which key on the **Key pairs** page belongs to this repository.
+7. Delete the `.pem` file from your computer.
+8. Protect the release tags with two rulesets. Open
+   **Settings → Rules → Rulesets**:
+   - **release tags** (tags `v*`): turn on **Restrict updates** and
+     **Restrict deletions**. Leave the bypass list empty.
+   - **release tag creation** (tags `v*`): turn on **Restrict creations**,
+     and add the App to the bypass list. The App must be the only entry in
+     that list.
+
+   Two rulesets are needed because a bypass entry skips every rule of its
+   ruleset. With one ruleset, the App could also move or delete tags.
 
 The next push to `main` runs release-please with the App.
+
+### Change the key
+
+1. Write down the fingerprint of the key in use now:
+
+   ```sh
+   gh variable get RELEASE_APP_KEY_FINGERPRINT --repo code6x/nodkey
+   ```
+
+2. Make a new key and check its fingerprint (setup steps 3 and 4).
+3. Save the new key and the new fingerprint (setup step 6).
+4. Check that the new key works: open **Actions → Release**, open the
+   latest run on `main`, click **Re-run jobs → Re-run all jobs**, and check
+   that its `release-please` job passes. GitHub allows a re-run only up to
+   30 days after a run. If there is no re-run button, merge any pull
+   request and check that new run.
+5. On the **Key pairs** page, delete the key with the fingerprint from
+   step 1. First check that it is not the new key. Delete only that key:
+   the other keys belong to other repositories.
+6. Delete the `.pem` file.
+
+If a key leaked (this repository's key, or the key of another repository
+that uses the App), delete it on the **Key pairs** page at once. For
+this repository's key, do step 1 first; releases then fail until you
+finish steps 2 to 4. Then check nodkey for tags, releases and merged pull
+requests that you did not expect. Tokens made with the key before you
+deleted it can still work for up to one hour.
 
 ## Verify a download
 
@@ -227,6 +285,9 @@ gh release download v0.1.0 --repo code6x/nodkey \
 
    It must print `nodkey_0.1.0_linux_amd64.tar.gz: OK`. `--ignore-missing`
    skips the tarballs that you did not download.
+
+   The checksum alone is not enough. Whoever can publish a release can also
+   publish a matching `SHA256SUMS`. Always do step 2 too.
 
 2. Check the build provenance attestation. It proves that the Release
    workflow on `main` of `code6x/nodkey` built this exact file, on a runner

@@ -286,7 +286,22 @@ The `bws` and `bw` programs are outside nodkey. They can be attacked too:
 a malicious `@bitwarden/cli` 2026.4.0 was on npm for about 90 minutes on
 2026-04-22
 ([Bitwarden's statement](https://community.bitwarden.com/t/bitwarden-statement-on-checkmarx-supply-chain-incident/96127)).
-Risk that remains: normal open-source risk.
+Risk that remains:
+- Normal open-source risk.
+- Accepted on 2026-10-14: the release App `code6x-release` is shared with
+  other code6x repositories, and each of them holds one of its keys. With
+  any of these keys, someone can get a token that writes to nodkey:
+  - They can create a new `v*` tag and publish a release with their own
+    files and their own `SHA256SUMS`, with no pull request and no CI. Only
+    the build attestation shows that the release workflow did not build
+    these files (`gh attestation verify`, see
+    [docs/releasing.md](docs/releasing.md#verify-a-download)).
+  - They can open a pull request, merge it once CI passes (`main` needs no
+    human approval), and get it released. Such a release even has a valid
+    attestation.
+
+  The rulesets still stop them from moving or deleting a `v*` tag, and
+  immutable releases stop changes to a published release.
 
 **T21. Telegram, the network or the phone is down.**
 Requests expire and are denied. The agent waits, then fails.
