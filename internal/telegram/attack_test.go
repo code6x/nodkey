@@ -46,18 +46,19 @@ func alertsSent(f *fakeTelegram) []fakeCall {
 	return out
 }
 
-// TestCoreEditedMessageDoesNotCount: with a stolen token, someone can edit
-// the text of a message that waits for an answer, for example to show a
-// harmless secret name, and keep its buttons. The broker never edits a
-// message while its request waits, so no tap on it counts. Each tap is
-// reported, the approver gets one alert, and the request can only expire.
-// End then writes the true text again.
-func TestCoreEditedMessageDoesNotCount(t *testing.T) {
+// TestCoreApproveOnEditedMessageDoesNotCount: with a stolen token, someone
+// can edit the text of a message that waits for an answer, for example to
+// show a harmless secret name, and keep its buttons. The broker never
+// edits a message while its request waits, so no Approve on it counts,
+// also not one of a button that the request does not offer. Each tap is
+// reported, the approver gets one alert, and without a Deny the request
+// can only expire. End then writes the true text again.
+func TestCoreApproveOnEditedMessageDoesNotCount(t *testing.T) {
 	ce := newCoreEnv(t, newFake(t))
 	ch := ce.decide(secretsRequest("db-password"))
 	id, msg := ce.asked(t, 1)
 	ce.f.editByOther(msg, nil, true)
-	for _, data := range []string{dataOnce + id, dataDeny + id} {
+	for _, data := range []string{dataOnce + id, dataWindow + id} {
 		if got := ce.f.waitAnswer(ce.f.tap(goodTap(msg, data))).str("text"); got != tapChanged {
 			t.Errorf("the phone shows %q, want %q", got, tapChanged)
 		}
@@ -89,7 +90,9 @@ func TestCoreEditedMessageDoesNotCount(t *testing.T) {
 // TestCoreChangedButtonsDoNotCount: someone with the token swaps the labels
 // of the buttons, so that "Deny" approves. Even if Telegram set no edit
 // date for that, the buttons differ from the ones Ask sent, so the tap
-// does not count.
+// does not count. The button with the label "Approve once" now carries
+// the data of Deny. A tap on it denies: that is safe whatever the label
+// says.
 func TestCoreChangedButtonsDoNotCount(t *testing.T) {
 	ce := newCoreEnv(t, newFake(t))
 	ch := ce.decide(secretsRequest("db-password"))
@@ -108,9 +111,252 @@ func TestCoreChangedButtonsDoNotCount(t *testing.T) {
 	if n := len(alertsSent(ce.f)); n != 1 {
 		t.Errorf("%d alerts, want 1", n)
 	}
-	ce.clock.Advance(120 * time.Second)
-	if r := waitResult(t, ch); r.Allowed {
-		t.Errorf("result %+v, want denied", r)
+	cb := ce.f.tap(goodTap(msg, dataDeny+id))
+	checkDeniedBy(t, waitResult(t, ch))
+	if got := ce.f.waitAnswer(cb).str("text"); got != tapChangedDenied {
+		t.Errorf("the phone shows %q, want %q", got, tapChangedDenied)
+	}
+	ce.f.waitHandled(cb)
+	if n := len(alertsSent(ce.f)); n != 1 {
+		t.Errorf("%d alerts, want still 1: at most one in %s", n, changedAlertEvery)
+	}
+	taps := ce.taps.all()
+	if len(taps) != 2 || taps[0].Data != dataOnce+id || taps[1].Data != dataDeny+id ||
+		taps[1].Cause != audit.TapEditedMessage {
+		t.Errorf("reports %+v, want the refused tap and the Deny, both with cause edited_message", taps)
+	}
+}
+
+// TestCoreDenyOnEditedMessageCounts: a Deny is safe whatever the message
+// shows. So the Deny button that Ask sent counts also on a message that
+// someone else edited: it denies the request, starts the pause after a
+// Deny, and ends the client's grants for the secrets of the request
+// (THREAT-MODEL.md T8). Before, it was refused like an Approve, and the
+// request only expired. The approver still gets the alert, the phone says
+// that the message was changed, and the Deny is reported with cause
+// edited_message, so the audit log shows the edit. (Issue #48.)
+func TestCoreDenyOnEditedMessageCounts(t *testing.T) {
+	ce := newCoreEnv(t, newFake(t))
+	// A grant for github-token.
+	ch := ce.decide(secretsRequest("github-token"))
+	id, msg := ce.asked(t, 1)
+	ce.f.tap(goodTap(msg, dataWindow+id))
+	r := waitResult(t, ch)
+	if !r.Allowed || r.Answer != audit.AnswerApproveWindow {
+		t.Fatalf("result %+v, want approved for 15 min", r)
+	}
+	r.StartGrants()
+	if r := waitResult(t, ce.decide(secretsRequest("github-token"))); !r.Allowed || r.Answer != "" {
+		t.Fatalf("result %+v, want allowed by the grant", r)
+	}
+
+	// db-password has no grant, so this request needs a tap.
+	both := secretsRequest("github-token")
+	both.Secrets = []string{"github-token", "db-password"}
+	ch = ce.decide(both)
+	id, msg = ce.asked(t, 2)
+	ce.f.editByOther(msg, nil, true)
+	cb := ce.f.tap(goodTap(msg, dataDeny+id))
+	checkDeniedBy(t, waitResult(t, ch))
+	if got := ce.f.waitAnswer(cb).str("text"); got != tapChangedDenied {
+		t.Errorf("the phone shows %q, want %q", got, tapChangedDenied)
+	}
+	ce.f.waitHandled(cb) // the alert goes out after the answer
+	if n := len(alertsSent(ce.f)); n != 1 {
+		t.Errorf("%d alerts, want 1", n)
+	}
+	if !strings.Contains(ce.logs.String(), "ALERT: someone else changed a message") ||
+		!strings.Contains(ce.logs.String(), "a Deny counted on a message that someone else changed") {
+		t.Errorf("the log does not show the alert and the Deny:\n%s", ce.logs.String())
+	}
+	want := audit.ForeignTap{UserID: approverID, ChatID: approverID, MessageID: msg, Data: dataDeny + id,
+		Cause: audit.TapEditedMessage}
+	if taps := ce.taps.all(); len(taps) != 1 || taps[0] != want {
+		t.Errorf("reports %+v, want %+v next to the counted Deny", taps, want)
+	}
+	ce.f.waitCalls("editMessageText", 2)
+	if texts := ce.edits(msg); len(texts) != 1 || !strings.Contains(texts[0], "db-password") ||
+		!strings.HasSuffix(texts[0], "⛔ denied by you at 12:00:00") {
+		t.Errorf("End wrote %q, want the true text with the Deny", texts)
+	}
+
+	// The grant has ended, and the pause holds new requests for both
+	// secrets: with the grant, github-token would be allowed, and without
+	// the pause, both would get a message.
+	sent := len(ce.f.callsOf("sendMessage"))
+	for _, s := range []string{"github-token", "db-password"} {
+		if r := waitResult(t, ce.decide(secretsRequest(s))); r.Allowed || r.Cause != audit.CauseLimit {
+			t.Errorf("%s: result %+v, want denied by the pause", s, r)
+		}
+	}
+	if n := len(ce.f.callsOf("sendMessage")) - sent; n != 0 {
+		t.Errorf("%d messages during the pause, want 0", n)
+	}
+
+	// After the pause, github-token needs a tap again: its grant is gone.
+	ce.clock.Advance(approval.DenyPause)
+	ch = ce.decide(secretsRequest("github-token"))
+	id, msg = ce.asked(t, 4) // the third message is the alert
+	ce.f.tap(goodTap(msg, dataOnce+id))
+	if r := waitResult(t, ch); !r.Allowed || r.Answer != audit.AnswerApproveOnce {
+		t.Errorf("result %+v, want approved once by a tap", r)
+	}
+}
+
+// TestCoreFloodKeepsEditedReport: someone with the bot token taps more
+// forged buttons than the budget of reports allows, and then edits a
+// waiting message. The person's tap on it is refused and the alert goes
+// out, and its foreign_tap report with cause edited_message is not
+// dropped: the approver's own taps have a budget of their own. (Issue
+// #48, from the second security review of issue #10.)
+func TestCoreFloodKeepsEditedReport(t *testing.T) {
+	ce := newCoreEnv(t, newFake(t))
+	ce.setNow((&fakeNow{t: noon}).now) // all the taps come in one minute
+	ch := ce.decide(secretsRequest("github-token"))
+	id, msg := ce.asked(t, 1)
+	extra := 5
+	for i := range refusedTapsPerMinute + extra {
+		s := tapSpec{from: otherUserID, chatID: otherUserID, chatType: "private", msgID: int64(9000 + i), data: "x"}
+		ce.f.waitAnswer(ce.f.tap(s))
+	}
+	ce.f.editByOther(msg, nil, true)
+	cb := ce.f.tap(goodTap(msg, dataOnce+id))
+	if got := ce.f.waitAnswer(cb).str("text"); got != tapChanged {
+		t.Errorf("the phone shows %q, want %q", got, tapChanged)
+	}
+	ce.f.waitHandled(cb)
+	taps := ce.taps.all()
+	if len(taps) != refusedTapsPerMinute+1 {
+		t.Fatalf("%d reports, want %d forged taps and the tap on the edited message", len(taps), refusedTapsPerMinute+1)
+	}
+	for _, tap := range taps[:refusedTapsPerMinute] {
+		if tap.Cause != audit.TapOtherUser {
+			t.Errorf("report %+v, want cause other_user", tap)
+		}
+	}
+	want := audit.ForeignTap{UserID: approverID, ChatID: approverID, MessageID: msg, Data: dataOnce + id,
+		Cause: audit.TapEditedMessage}
+	if taps[refusedTapsPerMinute] != want {
+		t.Errorf("report %+v, want %+v", taps[refusedTapsPerMinute], want)
+	}
+	ce.a.mu.Lock()
+	others, own := ce.a.reports, ce.a.ownReports
+	ce.a.mu.Unlock()
+	if others.dropped != extra || own.dropped != 0 {
+		t.Errorf("dropped %d reports of other users and %d of the approver, want %d and 0",
+			others.dropped, own.dropped, extra)
+	}
+	if n := len(alertsSent(ce.f)); n != 1 {
+		t.Errorf("%d alerts, want 1", n)
+	}
+	ce.f.tap(goodTap(msg, dataDeny+id))
+	checkDeniedBy(t, waitResult(t, ch))
+}
+
+// TestDenyOnChangedMessageIsAlwaysReported: on a message that someone else
+// changed, every Deny is reported with cause edited_message: the first
+// one, which counts, and the second one of a double tap, which the core
+// refuses because the request has ended. Before, only the second one was,
+// so a single Deny left no trace of the edit in the audit log. Both
+// reports use the approver's budget. (Issue #48, from its review.)
+func TestDenyOnChangedMessageIsAlwaysReported(t *testing.T) {
+	e := newEnv(t)
+	e.a.now = (&fakeNow{t: noon}).now // both taps come in one minute
+	p := secretsPrompt()
+	e.a.remember(messageID(approverID, 70), keyboard(p).InlineKeyboard)
+	core := &stubCore{}
+	e.run(t, core.answer)
+	s := goodTap(70, dataDeny+p.RequestID)
+	s.edited = true
+	first := e.f.tap(s)
+	if got := e.f.waitAnswer(first).str("text"); got != tapChangedDenied {
+		t.Errorf("the first Deny: the phone shows %q, want %q", got, tapChangedDenied)
+	}
+	e.f.waitHandled(first)
+	core.setErr(approval.ErrUnknownRequest) // the first Deny ended the request
+	second := e.f.tap(s)
+	if got := e.f.waitAnswer(second).str("text"); got != tapEnded {
+		t.Errorf("the second Deny: the phone shows %q, want %q", got, tapEnded)
+	}
+	e.f.waitHandled(second)
+	if n := len(core.all()); n != 2 {
+		t.Errorf("the core got %d answers, want both Denies", n)
+	}
+	want := audit.ForeignTap{UserID: approverID, ChatID: approverID, MessageID: 70, Data: dataDeny + p.RequestID,
+		Cause: audit.TapEditedMessage}
+	if taps := e.taps.all(); len(taps) != 2 || taps[0] != want || taps[1] != want {
+		t.Errorf("reports %+v, want two of %+v", taps, want)
+	}
+	logs := e.logs.String()
+	if strings.Count(logs, "a Deny counted on a message that someone else changed") != 1 ||
+		strings.Count(logs, "refused a button press") != 1 {
+		t.Errorf("the log does not say that the first Deny counted and the second was refused:\n%s", logs)
+	}
+	e.a.mu.Lock()
+	own, others := e.a.ownReports.n, e.a.reports.n
+	e.a.mu.Unlock()
+	if own != 2 || others != 0 {
+		t.Errorf("reports in the budget of the approver %d, of other users %d; want 2 and 0", own, others)
+	}
+	if n := len(alertsSent(e.f)); n != 1 {
+		t.Errorf("%d alerts, want 1 in %s", n, changedAlertEvery)
+	}
+}
+
+// btn is an inline button, as JSON.
+func btn(text, data string) map[string]any {
+	return map[string]any{"text": text, "callback_data": data}
+}
+
+// TestCoreDenyPathCannotApprove: on a message that someone else changed,
+// only the Deny data that Ask sent on that very message reaches the core.
+// Approve data under a "Deny" label is refused, and the Deny data of
+// another waiting request, on another message, does not deny that
+// request. (From the review of issue #48.)
+func TestCoreDenyPathCannotApprove(t *testing.T) {
+	ce := newCoreEnv(t, newFake(t))
+	chA := ce.decide(secretsRequest("github-token"))
+	idA, msgA := ce.asked(t, 1)
+	chB := ce.decide(secretsRequest("db-password"))
+	cB := ce.f.waitCalls("sendMessage", 2)[1]
+	idB := cB.requestID()
+	ce.waitTimers(t, 2)
+
+	// The thief puts B's Deny and A's Approve data under A's labels, on A.
+	ce.f.editByOther(msgA, map[string]any{"inline_keyboard": [][]map[string]any{{
+		btn("Approve once", dataDeny+idB), btn("Approve 15 min", dataWindow+idA), btn("Deny", dataOnce+idA)}}}, true)
+	taps := []string{dataDeny + idB, dataWindow + idA, dataOnce + idA}
+	for _, data := range taps {
+		cb := ce.f.tap(goodTap(msgA, data))
+		// This text comes only when the tap is refused before the core.
+		if got := ce.f.waitAnswer(cb).str("text"); got != tapChanged {
+			t.Errorf("%s on the changed message: the phone shows %q, want %q", data[:2], got, tapChanged)
+		}
+		ce.f.waitHandled(cb)
+	}
+	select {
+	case r := <-chA:
+		t.Fatalf("request A ended: %+v", r)
+	case r := <-chB:
+		t.Fatalf("request B ended by data on A's message: %+v", r)
+	default: // the results below show it for sure
+	}
+	reports := ce.taps.all()
+	if len(reports) != len(taps) {
+		t.Fatalf("reports %+v, want one for each tap", reports)
+	}
+	for i, tap := range reports {
+		if tap.Cause != audit.TapEditedMessage || tap.Data != taps[i] {
+			t.Errorf("report %+v, want data %q with cause edited_message", tap, taps[i])
+		}
+	}
+	// A's own Deny data still denies A, whatever the label.
+	ce.f.tap(goodTap(msgA, dataDeny+idA))
+	checkDeniedBy(t, waitResult(t, chA))
+	// B was not touched: its own Approve on its own message counts.
+	ce.f.tap(goodTap(cB.MsgID, dataOnce+idB))
+	if r := waitResult(t, chB); !r.Allowed || r.Answer != audit.AnswerApproveOnce {
+		t.Errorf("request B: %+v, want approved once", r)
 	}
 }
 
@@ -354,6 +600,14 @@ func (c *fakeNow) add(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+// setNow sets the clock of the approver's limits. The approver reads it
+// only with a.mu held, so a test may set it while Run runs.
+func (e *testEnv) setNow(now func() time.Time) {
+	e.a.mu.Lock()
+	defer e.a.mu.Unlock()
+	e.a.now = now
+}
+
 // TestRefusedTapsAreRateLimited: a token holder can make many buttons that
 // do not count. Each press is answered, but at most refusedTapsPerMinute
 // in a minute are logged and reported for the audit log; the others are
@@ -393,7 +647,8 @@ func TestRefusedTapsAreRateLimited(t *testing.T) {
 	}
 	clock.add(time.Minute)
 	deadline = time.Now().Add(waitLimit)
-	for !strings.Contains(e.logs.String(), fmt.Sprintf("dropped=%d", extra)) {
+	logged := fmt.Sprintf("dropped=%d limit_per_minute=%d from=other_users", extra, refusedTapsPerMinute)
+	for !strings.Contains(e.logs.String(), logged) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the dropped reports are not logged:\n%s", e.logs.String())
 		}
@@ -404,4 +659,57 @@ func TestRefusedTapsAreRateLimited(t *testing.T) {
 	s.from = otherUserID
 	e.f.waitAnswer(e.f.tap(s))
 	e.waitReports(t, refusedTapsPerMinute+1)
+}
+
+// TestApproverTapsHaveTheirOwnBudget: the approver's own refused taps have
+// a budget of their own, with the same cap. A person taps only a few times
+// a minute, and an account that someone else uses (THREAT-MODEL.md T7)
+// must not fill the journal either. The taps of other users still get
+// their reports, and the count of dropped reports names its budget.
+// (Issue #48.)
+func TestApproverTapsHaveTheirOwnBudget(t *testing.T) {
+	e := newEnv(t)
+	clock := &fakeNow{t: noon}
+	e.a.now = clock.now
+	e.run(t, (&stubCore{}).answer)
+	extra := 3
+	for i := range refusedTapsPerMinute + extra {
+		e.f.waitAnswer(e.f.tap(goodTap(int64(100+i), "x"))) // bad data
+	}
+	other := tapSpec{from: otherUserID, chatID: otherUserID, chatType: "private", msgID: 300, data: "x"}
+	cb := e.f.tap(other)
+	e.f.waitHandled(cb)
+	taps := e.taps.all()
+	if len(taps) != refusedTapsPerMinute+1 {
+		t.Fatalf("%d reports, want %d of the approver and 1 of another user", len(taps), refusedTapsPerMinute+1)
+	}
+	for _, tap := range taps[:refusedTapsPerMinute] {
+		if tap.UserID != approverID || tap.Cause != audit.TapBadData {
+			t.Errorf("report %+v, want the approver's tap with cause bad_data", tap)
+		}
+	}
+	if last := taps[refusedTapsPerMinute]; last.UserID != otherUserID || last.Cause != audit.TapOtherUser {
+		t.Errorf("report %+v, want the tap of the other user", last)
+	}
+	e.a.mu.Lock()
+	others, own := e.a.reports, e.a.ownReports
+	e.a.mu.Unlock()
+	if own.dropped != extra || others.dropped != 0 || others.n != 1 {
+		t.Errorf("budgets: approver %+v, other users %+v; want %d dropped of the approver, and 1 report of others",
+			own, others, extra)
+	}
+
+	// When the minute has ended, the count is logged with its budget.
+	clock.add(time.Minute)
+	e.f.waitHandled(e.f.tap(other))
+	logs := e.logs.String()
+	if want := fmt.Sprintf("dropped=%d limit_per_minute=%d from=approver", extra, refusedTapsPerMinute); !strings.Contains(logs, want) {
+		t.Errorf("the log does not hold %q:\n%s", want, logs)
+	}
+	if strings.Contains(logs, "from=other_users") {
+		t.Errorf("the log holds a count of dropped reports of other users:\n%s", logs)
+	}
+	if n := len(e.taps.all()); n != refusedTapsPerMinute+2 {
+		t.Errorf("%d reports, want %d: a new minute", n, refusedTapsPerMinute+2)
+	}
 }

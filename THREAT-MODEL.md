@@ -135,12 +135,13 @@ request out of the waiting list and deciding it is one step under one
 lock, so two taps cannot both count. A tap that fails a check changes
 nothing. The button data is read strictly. A copy of a message, such as
 one that the bot forwards with a stolen token, has another message ID, so
-its buttons do not count. A tap on a message that was edited, or whose
-buttons are not the ones the broker sent, never counts, because the
-broker never edits a message while its request waits (T6). A second tap
-does not change the result that a message shows, and after a restart,
-the broker only removes the buttons of an old message and keeps its
-text.
+its buttons do not count. An Approve on a message that was edited, or
+whose buttons are not the ones the broker sent, never counts, because
+the broker never edits a message while its request waits (T6). A Deny
+there still counts: a Deny is safe whatever the message shows. A second
+tap does not change the result that a message shows, and after a
+restart, the broker only removes the buttons of an old message and keeps
+its text.
 Risk that remains: none known.
 
 **T5. Someone else presses the button.**
@@ -155,23 +156,35 @@ press a button as the approver. Stolen updates make requests time out,
 which means deny. A fake message from the bot with fake buttons sends IDs
 the broker does not know, so they are refused, and each refused tap is
 written to the audit log with a cause, so a forged button can be told
-from a person's second tap. At most 20 refused taps a minute are logged
-and written; the broker counts the others, so the journal and the disk
-do not fill up. An attacker can also edit a message that waits for an
-answer, to show other names, or swap the labels of its buttons, so that
-the person approves without knowing it. The broker never edits a waiting
-message, so it refuses every tap on an edited message or on one with
-other buttons, writes it with cause `edited_message`, and sends an
-alert, at most one in 10 minutes. When another program polls with the
-same token, Telegram reports a conflict. The broker logs an alert, sends
-an alert message, and stops taking answers: every request that waits for
-the person is denied. With the token, an attacker can stop the broker
-this way, but they can deny service anyway, by reading the updates.
+from a person's second tap. At most 20 refused taps a minute of other
+users are logged and written, and, as a separate budget, at most 20 of
+the approver's own taps. The broker counts the others, so the journal
+and the disk do not fill up, and forged taps cannot crowd out the
+entries of the person's taps. An attacker can also edit a message that
+waits for an answer, to show other names, or swap the labels of its
+buttons, so that the person approves without knowing it. The broker
+never edits a waiting message, so it refuses every Approve on an edited
+message or on one with other buttons, writes it with cause
+`edited_message`, and sends an alert, at most one in 10 minutes. A Deny
+on such a message still counts, if it is the Deny button that the broker
+sent there: a Deny is safe whatever the message shows, so the pause and
+the end of grants after it still work (T8). The alert goes out then too,
+and the tap is written with cause `edited_message`, next to the Deny.
+When another program polls with the same token, Telegram reports a
+conflict. The broker logs an alert, sends an alert message, and stops
+taking answers: every request that waits for the person is denied. With
+the token, an attacker can stop the broker this way, but they can deny
+service anyway, by reading the updates.
 A proxy that inspects TLS, with its own certificate authority in the
 system's store of the broker host, sees the token, and it can fake
 Telegram's answers, so also taps. The broker logs at start which proxy
 it uses (DESIGN.md section 7). Do not use such a proxy for the broker.
 Risk that remains: denial of service, and misleading text in the chat.
+Only the button data says what a tap is, never the label. So a tap on a
+"Deny" label that the attacker gave the data of an Approve does not
+count: that request only expires, without the pause after a Deny. A tap
+on an "Approve" label with the data of a Deny denies, with the pause and
+the end of grants: that is denial of service too.
 Keep the token in an encrypted credential; make a new one if it leaks.
 
 **T7. Someone else can use the approver's Telegram account.**
@@ -198,7 +211,10 @@ about "never ask" uses can go to a separate chat, so the approval chat
 stays for real decisions. When the person sees something strange and taps
 Deny, the client's grants for that secret or key end at once (for a key:
 at every host and for every user), so a grant does not keep handing it
-out.
+out, and the client's new requests for it are denied for 60 seconds
+(T9). This holds also when someone else changed the message (T6): a
+Deny is safe whatever the message shows, so the Deny button that the
+broker sent on it still counts.
 Risk that remains: the person may still tap without reading.
 
 **T9. The agent floods the phone.**

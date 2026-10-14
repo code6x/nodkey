@@ -522,36 +522,55 @@ Not masked, for example:
     (a button of an inline message has no chat, so it never counts);
   - it is on the message the broker sent for that request (same message
     ID);
-  - that message is as the broker sent it: nobody edited it, and it has
-    the same buttons (see below);
+  - for an Approve, that message is as the broker sent it: nobody edited
+    it, and it has the same buttons. A Deny counts on a changed message
+    too (see below);
   - the ID belongs to a request that is still waiting;
   - the request has not expired;
   - the action is allowed for that request.
 - The first valid answer wins. Taking a request out of the waiting list and
   deciding it is one step under one lock, so two taps cannot both count.
 - The Telegram code checks the user, the chat, and that the message is
-  as the broker sent it. Then the approval core checks the user, the
-  message, the request, the time and the button again. A tap that fails
-  a check changes nothing: the request still waits, or it had already
-  ended.
+  as the broker sent it. For a Deny on a changed message, it checks that
+  the broker sent this Deny button on that message. Then the approval
+  core checks the user, the message, the request, the time and the
+  button again. A tap that fails a check changes nothing: the request
+  still waits, or it had already ended.
 - The broker never edits a message while its request waits. With the bot
   token, someone else can: for example, they can make the message show a
   harmless secret name and keep the buttons, or swap the labels of the
-  buttons. So a tap never counts when Telegram says that its message was
-  edited (`edit_date`), or when the message's buttons differ from the
+  buttons. So an Approve never counts when Telegram says that its message
+  was edited (`edit_date`), or when the message's buttons differ from the
   ones the broker sent, in their labels or their data. If the request of
   that message may still wait, the broker writes a `foreign_tap` entry
   with cause `edited_message`, logs an alert, and sends an alert message:
   the bot token may be stolen. It sends at most one such alert in 10
-  minutes. No tap on that message counts any more, so the request
-  expires. When it ends, the broker writes the whole message again, with
-  the result. Otherwise the broker itself edited the message after its
-  request ended, or the message is from before a restart. Then the tap
-  is only a late tap (below), and no alert goes out. This check needs
-  the buttons that Telegram sends with each tap (`reply_markup` of the
-  message). Without them, no tap would count, and the broker would
-  alert: that fails closed. The manual test of issue #17 checks that
-  Telegram sends them.
+  minutes. No Approve on that message counts any more, so the request
+  expires, unless the person taps Deny (below). When it ends, the broker
+  writes the whole message again, with the result. Otherwise the broker
+  itself edited the message after its request ended, or the message is
+  from before a restart. Then the tap is only a late tap (below), and no
+  alert goes out. This check needs the buttons that Telegram sends with
+  each tap (`reply_markup` of the message). Without them, no Approve
+  would count, and the broker would alert: that fails closed. The manual
+  test of issue #17 checks that Telegram sends them.
+- A Deny is safe whatever the message shows. So when someone else changed
+  a message while its request may still wait, a tap on the Deny button
+  that the broker sent on it still goes to the approval core, as on any
+  message. If it counts, it is a normal Deny: a `decision` entry, the
+  pause, and the end of the client's grants (section 8). The phone shows
+  "Denied. Someone else changed this message.", and the alert goes out as
+  above. Like every tap on that message, the Deny is also written as a
+  `foreign_tap` entry with cause `edited_message`, also when it counts.
+  So the audit log shows the edit: that entry sits next to the
+  `decision` entry of the Deny, and its `data` names the request. If the
+  core refuses the Deny, such as after the request expired, only the
+  `foreign_tap` entry is written. A Deny with the ID of another request
+  does not count on that message. Only the button data says what a tap
+  is, never the label. So if someone gives a button with the label
+  "Deny" the data of an Approve, a tap on it does not count, and the
+  request only expires. A tap on an "Approve" label with the data of a
+  Deny denies.
 - A request is answered once. The broker then forgets its ID. A second tap,
   a late tap, or a tap on a message from before a restart finds no waiting
   request. The broker refuses it and updates that message:
@@ -595,11 +614,21 @@ Not masked, for example:
   button can be told from a person's second tap. The Telegram code logs
   each one, and passes it to the broker, which writes the entry. A tap
   that came too early is not written: it is the person's own tap, and
-  they can tap again.
-- The Telegram code logs and reports at most 20 such taps in a minute.
-  It counts the others and logs how many it dropped, also when no later
-  tap comes. So someone with the bot token cannot fill the journal or the
-  disk with forged buttons. Every tap still gets its answer.
+  they can tap again. But on a message that someone else changed, it is
+  written, as `edited_message`. One tap that counts is written too: a
+  Deny on a message that someone else changed (above).
+- The Telegram code logs and reports at most 20 such taps in a minute
+  from other users. The approver's own taps have a budget of their own,
+  also 20 in a minute. Every tap on a message that someone else changed
+  is the approver's. So forged buttons cannot crowd out the
+  `edited_message` entry, or any other entry of the person's taps. The
+  Telegram code counts the taps over a budget, and logs how many it
+  dropped and from which budget, also when no later tap comes. So someone
+  with the bot token cannot fill the journal or the disk with forged
+  buttons. One person taps only a few times a minute. So the approver's
+  budget is enough for the person, and someone who uses the approver's
+  account (THREAT-MODEL.md T7) cannot fill the journal or the disk
+  either. Every tap still gets its answer.
 - If the client hangs up while waiting (for example `ssh` was killed), the
   request is cancelled. (Section 10 has one exception, which the client
   never uses: HTTP pipelining.)
@@ -821,7 +850,7 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `grant_used` | the request fields; `via`: `grant` or `never_rule` |
 | `secret_sent`, `signed` | the request fields |
 | `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
-| `foreign_tap` | `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7) |
+| `foreign_tap` | `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7). An entry with cause `edited_message` can belong to a Deny that counted: its `data` is `d:` and the request ID, and that request has a `decision` entry with `deny` |
 | `error` | the request fields, if the failure is about one request; `code`: `store_failed`, `sign_failed`, `approver_failed` or `poll_conflict` |
 | `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
 
@@ -1703,9 +1732,10 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   text and escaping, and the Telegram client against a fake Telegram server
   (wrong user, wrong chat, inline message, wrong message, bad button data,
   unknown ID, early tap, late tap, double tap, a tap sent again after a
-  restart, a message that someone else edited, polling conflict, code 429
-  and server errors, and a canary bot token that must not appear in any
-  error or log line). A child process checks the HTTP client with
+  restart, a message that someone else edited, with an Approve and a
+  Deny on it, also after a flood of forged taps, polling conflict, code
+  429 and server errors, and a canary bot token that must not appear in
+  any error or log line). A child process checks the HTTP client with
   `GODEBUG=http2debug=2` and a proxy. The SSH checks also use real data:
   from an in-process SSH server and client, and from the OpenSSH client
   and, when it is installed, `sshd`.

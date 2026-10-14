@@ -200,7 +200,10 @@ type Denied struct {
 
 // ForeignTap records a button press that the broker refused: from another
 // user or chat, on another message, or for a request ID that is not
-// waiting (DESIGN.md section 7). Cause says which.
+// waiting (DESIGN.md section 7). Cause says which. One press that counted
+// is recorded too: a Deny on a message that someone else changed, with
+// cause edited_message. Then the entry shows the edit, next to the
+// decision entry of the Deny.
 type ForeignTap struct {
 	// UserID is the Telegram user ID that pressed the button.
 	UserID int64 `json:"user_id"`
@@ -211,7 +214,8 @@ type ForeignTap struct {
 	// Data is the button data as Telegram sent it, at most 64 bytes.
 	// Anyone who has the bot token can write it (THREAT-MODEL.md T6).
 	Data string `json:"data"`
-	// Cause says why the press did not count. It is empty only for an
+	// Cause says why the press did not count, or for a Deny that counted,
+	// that someone else changed its message. It is empty only for an
 	// approver that does not say why.
 	Cause TapCause `json:"cause,omitempty"`
 }

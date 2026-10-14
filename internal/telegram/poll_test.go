@@ -159,6 +159,85 @@ func TestTapRefusedByCore(t *testing.T) {
 	}
 }
 
+// TestDenyOnChangedMessage checks a press on a message that this approver
+// sent, whose request may still wait, and that someone else changed: it
+// has an edit date, other buttons, or none. Only the Deny button that Ask
+// sent on that message reaches the core: a Deny is safe whatever the
+// message shows. An Approve, and a Deny of another request, never reach
+// it; they are refused. Every such press is reported with cause
+// edited_message, also a Deny that counts. If the core refuses the Deny,
+// the phone says why. Each such press sends the alert, and none changes
+// the message: End writes it when its request ends.
+func TestDenyOnChangedMessage(t *testing.T) {
+	p := secretsPrompt()
+	kb := keyboard(p).InlineKeyboard
+	edited := func(s *tapSpec) { s.edited, s.markup = true, map[string]any{"inline_keyboard": kb} }
+	swapped := func(s *tapSpec) {
+		s.markup = map[string]any{"inline_keyboard": [][]map[string]any{{
+			{"text": "Deny", "callback_data": dataOnce + p.RequestID},
+			{"text": "Approve once", "callback_data": dataDeny + p.RequestID},
+		}}}
+	}
+	bare := func(s *tapSpec) { s.bare = true }
+	for _, tc := range []struct {
+		name   string
+		data   string
+		change func(*tapSpec)
+		err    error // the core's answer
+		core   bool  // the press reaches the core
+		text   string
+	}{
+		{"deny on an edited message", dataDeny + p.RequestID, edited, nil, true, tapChangedDenied},
+		{"deny with swapped labels", dataDeny + p.RequestID, swapped, nil, true, tapChangedDenied},
+		{"deny on a message without buttons", dataDeny + p.RequestID, bare, nil, true, tapChangedDenied},
+		{"deny after the request ended", dataDeny + p.RequestID, edited, approval.ErrUnknownRequest, true, tapEnded},
+		{"deny too early", dataDeny + p.RequestID, edited, approval.ErrTooEarly, true, tapTooEarly},
+		{"deny after the request expired", dataDeny + p.RequestID, edited, approval.ErrExpired, true, tapExpired},
+		{"deny of another request", dataDeny + testID(9), edited, nil, false, tapChanged},
+		{"approve once", dataOnce + p.RequestID, edited, nil, false, tapChanged},
+		{"approve for 15 min", dataWindow + p.RequestID, swapped, nil, false, tapChanged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			m := messageID(approverID, 70)
+			e.a.remember(m, kb)
+			core := &stubCore{err: tc.err}
+			e.run(t, core.answer)
+			s := goodTap(70, tc.data)
+			tc.change(&s)
+			cb := e.f.tap(s)
+			if got := e.f.waitAnswer(cb).str("text"); got != tc.text {
+				t.Errorf("the phone shows %q, want %q", got, tc.text)
+			}
+			e.f.waitHandled(cb)
+			answers := core.all()
+			want := approval.Answer{RequestID: p.RequestID, Action: audit.AnswerDeny, Message: m, UserID: approverID}
+			if tc.core && (len(answers) != 1 || answers[0] != want) || !tc.core && len(answers) != 0 {
+				t.Errorf("the core got %+v, want it %v", answers, tc.core)
+			}
+			wantTap := audit.ForeignTap{UserID: approverID, ChatID: approverID, MessageID: 70, Data: tc.data,
+				Cause: audit.TapEditedMessage}
+			if taps := e.taps.all(); len(taps) != 1 || taps[0] != wantTap {
+				t.Errorf("reports %+v, want %+v", taps, wantTap)
+			}
+			alerts := e.f.callsOf("sendMessage")
+			if len(alerts) != 1 || alerts[0].num("chat_id") != approverID ||
+				!strings.Contains(alerts[0].str("text"), "Someone else changed a message") {
+				t.Errorf("%d alerts, want one to the approver", len(alerts))
+			}
+			if n := len(e.f.callsOf("editMessageText")) + len(e.f.callsOf("editMessageReplyMarkup")); n != 0 {
+				t.Errorf("%d edits, want none: End writes the message", n)
+			}
+			logs := e.logs.String()
+			counted := strings.Contains(logs, "a Deny counted on a message that someone else changed")
+			refused := strings.Contains(logs, "refused a button press")
+			if want := tc.core && tc.err == nil; counted != want || refused == want {
+				t.Errorf("the log says counted %v and refused %v, want counted %v:\n%s", counted, refused, want, logs)
+			}
+		})
+	}
+}
+
 // cbUpdate returns an update with a button press by the approver, as
 // JSON.
 func cbUpdate(t *testing.T, updateID int64, cbID string, msgID int64, data string) string {
