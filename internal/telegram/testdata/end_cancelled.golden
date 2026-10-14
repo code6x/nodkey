@@ -1,0 +1,18 @@
+method: editMessageText
+chat_id: 7000001
+message_id: 77
+parse_mode: "HTML"
+entities: -
+link_preview_options: {"is_disabled":true}
+disable_notification: -
+reply_markup: {"inline_keyboard":[]}
+text:
+🔑 Secrets · request 7qd2
+✅ machine: laptop
+✅ secrets: github-token
+— claimed by the agent —
+as: <code>GH_TOKEN</code>
+command: <code>gh release create v1.2.0</code>
+in: <code>/home/dev/src/app</code>
+reason: <code>publish the release the user asked for</code>
+⛔ cancelled by the client

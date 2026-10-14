@@ -1,0 +1,18 @@
+method: editMessageText
+chat_id: 7000001
+message_id: 77
+parse_mode: "HTML"
+entities: -
+link_preview_options: {"is_disabled":true}
+disable_notification: -
+reply_markup: {"inline_keyboard":[]}
+text:
+🔐 SSH login · request k3f9
+✅ machine: laptop
+✅ key: deploy
+✅ host: web-1 (host key SHA256:pX2c…)
+✅ remote user: deploy
+— claimed by the agent —
+command: <code>ssh deploy@web-1 ← ansible-playbook site.yml</code>
+reason: <code>apply the nginx fix</code>
+⛔ denied by you at 14:02:41

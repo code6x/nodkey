@@ -268,6 +268,45 @@ expires 14:05:40 (120 s)
 [ Approve once ] [ Approve 15 min ] [ Deny ]
 ```
 
+An SSH grant (`nodkey ssh-grant`, section 13) shows every host and the
+time when its grants end. It has only "Approve" (until that time) and
+"Deny":
+
+```
+🔐 SSH grant · request m4k2
+✅ machine: laptop
+✅ key: deploy
+✅ hosts: web-1, web-2
+✅ remote user: deploy
+✅ grants end: 14:20:00 (15 min)
+— claimed by the agent —
+reason: apply the nginx fix
+expires 14:07:00 (120 s)
+[ Approve ] [ Deny ]
+```
+
+A notice of a "never ask" use (section 12) has no buttons and no expiry.
+It goes to the notice chat without a sound:
+
+```
+🔔 Secrets · request 7qd2
+allowed by a "never ask" rule, without a tap
+✅ machine: ci
+✅ secrets: backup-token
+— claimed by the agent —
+command: restic backup /srv
+```
+
+- The host key shows only `SHA256:` and its first 4 characters. The
+  broker has checked the key against its own `known_hosts`, and the host
+  name is what the person reads.
+- Times are in the broker's local time zone. "(120 s)" is the time that
+  was left when the message was made.
+- A claimed field that is empty has no line. Without any claimed field,
+  the "claimed by the agent" line is left out too.
+- The `message` of the `request` audit entry (section 9) is the text that
+  the person sees, as above, with the buttons as its last line.
+
 The verified part holds only text from the broker's own config and from
 checked data: client and secret names from the config, the host name from
 the broker's `known_hosts`, and the remote user name after the strict check
@@ -297,8 +336,23 @@ Rules for the claimed part, because the agent writes it:
   secret that was cut may no longer look like a secret.
 - A command line shows the program and at most 8 arguments. Each field is
   cut to a fixed length, with `…` at the end.
+- A Telegram message holds at most 4096 characters. So the Telegram code
+  cuts each claimed field again, to 200 UTF-16 code units for `as`, 1000
+  for `command`, 300 for `in` and 500 for `reason`. This keeps room for
+  the result line that replaces the expiry when the request ends. If the
+  message is still too long, it halves these lengths, down to 62 for
+  `command`. It never cuts a verified line: the person must see every
+  name they approve. If the verified lines alone do not fit, the message
+  is not sent, and the request is denied.
 - All text is HTML-escaped and put inside `<code>`. Link previews are turned
-  off, so a URL from the agent does not become a preview card.
+  off, so a URL from the agent does not become a preview card. The
+  Telegram code does two steps again, as a cheap extra check: it masks
+  each claimed field (`claim.Mask`, section "What is masked"), and makes
+  it one clean line (`claim.Line`: the rules above for control and
+  invisible characters, spaces and combining marks). It does not apply
+  the other rules, such as the 8 arguments of a command line: those stay
+  the caller's job. It escapes all text it puts into a message, also the
+  verified text.
 - The claimed part always comes after the verified part, under the
   "claimed by the agent" line. So the agent cannot make text that looks
   like a verified line.
@@ -451,56 +505,155 @@ Not masked, for example:
   1, i, l or o, which people mix up). No two requests in progress share an
   ID or a short code.
 - The button data is `o:<id>` (once), `w:<id>` (window) or `d:<id>` (deny).
-  That fits Telegram's 64-byte limit.
+  That fits Telegram's 64-byte limit. The Telegram code reads it strictly:
+  exactly one of these three prefixes and an ID of 22 base64url
+  characters in its one canonical form. Anything else does not count.
+- The broker names a message by its chat ID and its message number
+  (`CHAT:MESSAGE`). So the same message number in another chat is another
+  message.
 - The broker accepts a button press only when **all** of these are true:
   - it comes from the configured Telegram user ID;
-  - it comes from the private chat with that user;
+  - it comes from the private chat with that user, on a message there
+    (a button of an inline message has no chat, so it never counts);
   - it is on the message the broker sent for that request (same message
     ID);
+  - that message is as the broker sent it: nobody edited it, and it has
+    the same buttons (see below);
   - the ID belongs to a request that is still waiting;
   - the request has not expired;
   - the action is allowed for that request.
 - The first valid answer wins. Taking a request out of the waiting list and
   deciding it is one step under one lock, so two taps cannot both count.
-- The Telegram code checks the user and the chat. Then the approval core
-  checks the user, the message, the request, the time and the button
-  again. A tap that fails a check changes nothing: the request still
-  waits, or it had already ended.
+- The Telegram code checks the user, the chat, and that the message is
+  as the broker sent it. Then the approval core checks the user, the
+  message, the request, the time and the button again. A tap that fails
+  a check changes nothing: the request still waits, or it had already
+  ended.
+- The broker never edits a message while its request waits. With the bot
+  token, someone else can: for example, they can make the message show a
+  harmless secret name and keep the buttons, or swap the labels of the
+  buttons. So a tap never counts when Telegram says that its message was
+  edited (`edit_date`), or when the message's buttons differ from the
+  ones the broker sent, in their labels or their data. If the request of
+  that message may still wait, the broker writes a `foreign_tap` entry
+  with cause `edited_message`, logs an alert, and sends an alert message:
+  the bot token may be stolen. It sends at most one such alert in 10
+  minutes. No tap on that message counts any more, so the request
+  expires. When it ends, the broker writes the whole message again, with
+  the result. Otherwise the broker itself edited the message after its
+  request ended, or the message is from before a restart. Then the tap
+  is only a late tap (below), and no alert goes out. This check needs
+  the buttons that Telegram sends with each tap (`reply_markup` of the
+  message). Without them, no tap would count, and the broker would
+  alert: that fails closed. The manual test of issue #17 checks that
+  Telegram sends them.
 - A request is answered once. The broker then forgets its ID. A second tap,
   a late tap, or a tap on a message from before a restart finds no waiting
-  request. The broker refuses it and edits that message to "expired".
+  request. The broker refuses it and updates that message:
+  - If this broker sent the message, it keeps its result. The second tap
+    of a double tap must not change "approved" to "expired". If the
+    result is not on the message yet, the update that ends the request
+    puts it there. If it is, the broker sends it again, in case that
+    update failed.
+  - Otherwise, such as for a message from before a restart, the broker
+    only removes the buttons (`editMessageReplyMarkup` with an empty
+    keyboard). The text stays: it may show a result from before the
+    restart, such as "approved", and the tap may be one that Telegram
+    sends again after the restart, because the old broker could not
+    confirm it. Replacing that text would hide that a secret may already
+    be out.
 - A tap can also come too early: while the broker still waits for Telegram
   to confirm that it sent the message. The broker refuses that tap too,
   but it leaves the message as it is, so the person can tap again. It
-  edits a message to "expired" only when no request with that ID is in
-  progress.
+  changes a message only when no request with that ID is in progress.
+  The phone shows "Not ready yet. Tap again in a moment."
 - The broker answers every button press (`answerCallbackQuery`), so the
-  phone never shows a spinning button.
+  phone never shows a spinning button. The phone shows a short text, such
+  as "Approved." or "This request has ended.", except for a tap from
+  another user, which gets no text.
 - When a request ends, the broker edits the message: it removes the buttons
-  (by sending an empty keyboard, not by leaving it out) and shows the
-  result ("approved once by you at 14:02:41", "denied", "expired — denied",
-  "cancelled by the client").
-- Typed replies never count. Only buttons do. Taps from other users and
-  taps on unknown IDs are written to the audit log.
+  (by sending an empty keyboard, not by leaving it out; Telegram probably
+  removes them also when the keyboard is left out, but that is not sure,
+  and the manual test of issue #17 checks it), and the result replaces
+  the expiry line: "👍 approved once by you at 14:02:41",
+  "👍 approved for 15 min by you at 14:02:41", "👍 approved by you at
+  14:05:12, until 14:20:00" (an SSH grant), "⛔ denied by you at
+  14:02:41", "⌛ expired — denied", "⛔ cancelled by the client" or
+  "⛔ denied: the broker stopped taking answers".
+- Typed replies never count. Only buttons do. Every tap that does not
+  count is written to the audit log as a `foreign_tap` entry, with a
+  fixed `cause`: `other_user`, `other_chat`, `inline_message`,
+  `no_message`, `bad_data`, `edited_message`, `unknown_request` (a late
+  or second tap, or one from before a restart), `expired`,
+  `wrong_message` (such as a copy of the message), `not_allowed` (a
+  button that the request does not offer) or `refused`. So a forged
+  button can be told from a person's second tap. The Telegram code logs
+  each one, and passes it to the broker, which writes the entry. A tap
+  that came too early is not written: it is the person's own tap, and
+  they can tap again.
+- The Telegram code logs and reports at most 20 such taps in a minute.
+  It counts the others and logs how many it dropped, also when no later
+  tap comes. So someone with the bot token cannot fill the journal or the
+  disk with forged buttons. Every tap still gets its answer.
 - If the client hangs up while waiting (for example `ssh` was killed), the
   request is cancelled. (Section 10 has one exception, which the client
   never uses: HTTP pipelining.)
 
 ### Telegram details
 
-- Long polling with `getUpdates` (timeout 50 s). There is no webhook, so
-  the broker needs no open port to the internet.
+- Long polling with `getUpdates` (timeout 50 s, at most 10 updates in one
+  answer). There is no webhook, so the broker needs no open port to the
+  internet. The next call confirms the updates of the call before, so
+  Telegram forgets them. After a crash, Telegram sends the updates that
+  were not confirmed again; their taps find no waiting request.
 - Only `callback_query` updates are read. Text sent to the bot is ignored.
 - If `getUpdates` fails with a conflict (another program polls with the same
   token, or a webhook was set), the broker logs an alert and sends a
-  message: the bot token may be stolen.
+  message: the bot token may be stolen. Then the Telegram code stops
+  taking answers, so the polling stops for good (below), and the broker
+  writes an `error` entry with code `poll_conflict` to the audit log. A
+  conflict says that someone else may read the answers, so the broker
+  does not go on.
+- If Telegram refuses `getUpdates` in another way, with a code from 400
+  to 499 other than 409 and 429, such as 401 for a token that was
+  revoked, the polling stops for good too.
 - The bot token is in the request URL, and Go's HTTP errors include the
-  URL. The Telegram code removes the URL from every error before it is
-  logged.
+  URL. So no error and no log line of the Telegram code holds Go's error
+  text: an error names the Bot API method and a fixed reason, and at most
+  a number such as Telegram's error code. Telegram's own description of
+  an error is never shown either, because it can quote the message text.
+- The Telegram code speaks only HTTP/1.1, because Go's HTTP/2 debug
+  output (`GODEBUG=http2debug`) prints the path of each request, with the
+  token. It follows no redirect. Each try of a call takes at most 15
+  seconds (65 seconds for `getUpdates`), and an answer is at most 4 MiB.
+- It uses a proxy from the environment, as Go reads it: `HTTPS_PROXY` or
+  `https_proxy`, except for the hosts in `NO_PROXY` or `no_proxy`. A
+  normal proxy sees only the host name, because the URL with the token is
+  inside TLS. A proxy that inspects TLS, with its own certificate
+  authority in the system's store, sees the token, and it can fake the
+  answers of Telegram, so also taps. Do not use such a proxy for the
+  broker. At start, the broker logs one line when it uses a proxy: the
+  proxy's host, never a user name or a password from the setting.
+- The token file must hold one bot token: the bot's ID in digits, `:`,
+  and 30 to 64 letters, digits, `_` or `-`. Space around it, such as a
+  newline at the end, is fine.
 - If Telegram cannot be reached, a message cannot be sent or answered. The
   Telegram code may try to send a message again until its request
   expires. If it cannot send it, the request is denied. A request whose
   message was sent waits until it expires, then it is denied.
+  - A call is tried at most 5 times. Before the next try, it waits 0.5
+    seconds, then twice as long each time, at most 8 seconds, but never
+    less than Telegram asks for with code 429 (`retry_after`). It takes
+    that wait as 1 second to 10 minutes; a 429 without the JSON of the
+    Bot API, such as the page of a proxy, counts as 1 second. It never
+    waits past the end of the request. An alert waits at most 30
+    seconds in all, also when the broker gives it no time limit.
+  - A network error can come after Telegram sent the message. Then the
+    message can come twice. Only the message that Telegram confirmed
+    counts; a tap on the other one is refused.
+  - The polling does not stop for such errors. It waits 1 second, then
+    twice as long each time, at most 30 seconds, but never less than
+    Telegram asks for. So it never calls again at once.
 - If the polling stops for good, no answer can come any more. Then every
   request that waits for the person is denied at once, and so is every new
   request that needs a message. A message or a notice that is still being
@@ -509,6 +662,16 @@ Not masked, for example:
   ask" rules with `notify = false`. The broker should stop then.
 - Messages about "never ask" uses can go to a second chat
   (`notice_chat_id`), so the approval chat stays for approvals only.
+  They are silent (`disable_notification`). At most 20 notices go out in
+  any 60 seconds, for all clients together, because Telegram allows
+  about 20 messages per minute in a group. A notice that could not be
+  sent counts too. A use that would need one more notice is denied, but
+  not as for the limit per client in section 8: it is denied as when a
+  notice cannot be sent (cause `error`, code `approver_failed`), and it
+  still counts for `max_per_day`, because the core counts a use before
+  it sends the notice. So with `max_per_day = 1`, a burst of notices of
+  other clients can use up the one use of a night; then the next use asks
+  the person.
 
 ## 8. Rules and grants
 
@@ -581,7 +744,9 @@ name exactly one client. The config check refuses all of these (section
   count for `max_per_day`. Without this limit, one client could fill the
   phone with notices and use up Telegram's limits for the chat, so that
   messages for other clients could not be sent. A "never ask" rule with
-  `notify = false` sends no notice and has no such limit.
+  `notify = false` sends no notice and has no such limit. The Telegram
+  code also sends at most 20 notices in any 60 seconds for all clients
+  together (section 7).
 
 ## 9. Audit log
 
@@ -646,7 +811,7 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `grant_used` | the request fields; `via`: `grant` or `never_rule` |
 | `secret_sent`, `signed` | the request fields |
 | `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
-| `foreign_tap` | `user_id`, `chat_id`, `message_id`, and `data`: the button data, at most 64 bytes |
+| `foreign_tap` | `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7) |
 | `error` | the request fields, if the failure is about one request; `code`: `store_failed`, `sign_failed`, `approver_failed` or `poll_conflict` |
 | `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
 
@@ -1028,7 +1193,8 @@ listed hosts with that key) without a tap. To keep it small:
 - Every use sends a silent Telegram message (`notify = true` by default) to
   the notice chat, so a strange use is seen. If that message cannot be
   sent, the request is denied. At most 6 notices go out in any 60 seconds
-  for one client (section 8); a use over that is denied.
+  for one client (section 8), and at most 20 for all clients together
+  (section 7); a use over that is denied.
 - Use a narrow secret: a secret that can do little, or a deploy key that
   can reach only one repository. For `bws`, the job's secret can live in its
   own project, read through its own store entry with its own machine
@@ -1367,10 +1533,14 @@ text of a line. It exits with:
   clock), limits and the queue, audit chain, tamper checks and torn-line
   recovery, session-bind and authentication request parsing, masking, message
   text and escaping, and the Telegram client against a fake Telegram server
-  (wrong user, wrong chat, wrong message, unknown ID, late tap, double tap,
-  polling conflict). The SSH checks also use real data: from an
-  in-process SSH server and client, and from the OpenSSH client and, when
-  it is installed, `sshd`.
+  (wrong user, wrong chat, inline message, wrong message, bad button data,
+  unknown ID, early tap, late tap, double tap, a tap sent again after a
+  restart, a message that someone else edited, polling conflict, code 429
+  and server errors, and a canary bot token that must not appear in any
+  error or log line). A child process checks the HTTP client with
+  `GODEBUG=http2debug=2` and a proxy. The SSH checks also use real data:
+  from an in-process SSH server and client, and from the OpenSSH client
+  and, when it is installed, `sshd`.
 - **Fake approver**: a test approver that says yes, no, nothing, or answers
   late, on command. It and a fake clock are in
   `internal/approval/approvaltest`, for the tests of the broker too.

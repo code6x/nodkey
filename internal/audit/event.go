@@ -66,6 +66,25 @@ const (
 	CauseError      Cause = "error"       // a failure; an error entry says which
 )
 
+// TapCause says why a button press did not count (DESIGN.md section 7).
+// It tells a forged button apart from a person's second tap.
+type TapCause string
+
+// The causes of a foreign_tap entry.
+const (
+	TapOtherUser      TapCause = "other_user"      // not from the approver
+	TapOtherChat      TapCause = "other_chat"      // not in the private chat with the approver
+	TapInlineMessage  TapCause = "inline_message"  // on an inline message
+	TapNoMessage      TapCause = "no_message"      // the press names no message
+	TapBadData        TapCause = "bad_data"        // the button data is not valid
+	TapEditedMessage  TapCause = "edited_message"  // the message is not as the broker sent it: someone else changed it
+	TapUnknownRequest TapCause = "unknown_request" // no request waits for an answer on it: a late or second tap, or one from before a restart
+	TapExpired        TapCause = "expired"         // its request has expired
+	TapWrongMessage   TapCause = "wrong_message"   // not on the message of its request, such as a copy
+	TapNotAllowed     TapCause = "not_allowed"     // its request does not offer this button
+	TapRefused        TapCause = "refused"         // the approval core refused it for another reason
+)
+
 // Code says what failed. It is a fixed code, never an error message,
 // because an error message can hold text from a store program or from the
 // client.
@@ -181,7 +200,7 @@ type Denied struct {
 
 // ForeignTap records a button press that the broker refused: from another
 // user or chat, on another message, or for a request ID that is not
-// waiting (DESIGN.md section 7).
+// waiting (DESIGN.md section 7). Cause says which.
 type ForeignTap struct {
 	// UserID is the Telegram user ID that pressed the button.
 	UserID int64 `json:"user_id"`
@@ -192,6 +211,9 @@ type ForeignTap struct {
 	// Data is the button data as Telegram sent it, at most 64 bytes.
 	// Anyone who has the bot token can write it (THREAT-MODEL.md T6).
 	Data string `json:"data"`
+	// Cause says why the press did not count. It is empty only for an
+	// approver that does not say why.
+	Cause TapCause `json:"cause,omitempty"`
 }
 
 // Failure is an "error" entry: something failed. Subject is empty when the
@@ -373,7 +395,12 @@ func (e ForeignTap) validate() error {
 	if len(e.Data) > maxTapData {
 		return fmt.Errorf("data is longer than %d bytes", maxTapData)
 	}
-	return nil
+	switch e.Cause {
+	case "", TapOtherUser, TapOtherChat, TapInlineMessage, TapNoMessage, TapBadData, TapEditedMessage,
+		TapUnknownRequest, TapExpired, TapWrongMessage, TapNotAllowed, TapRefused:
+		return nil
+	}
+	return errors.New("cause is not known")
 }
 
 func (e Failure) validate() error {
