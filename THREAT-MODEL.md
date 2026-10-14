@@ -19,7 +19,7 @@ access to another machine and asks a person before each use.
 | asset | where it lives |
 |---|---|
 | SSH private keys | broker memory; encrypted credentials on the broker host's disk |
-| secret-store access (`bws` token, `bw` master password) | broker host |
+| secret-store access (`bws` token, `bw` master password and session key) | broker host |
 | secret values | the store; for a moment the broker; after approval, the one command on the agent machine |
 | the approval decision | Telegram, the broker |
 | the audit log | broker host, and hash copies in the broker's journal |
@@ -324,9 +324,25 @@ Risk that remains:
 
 **T18. The store programs leak a token.**
 Tokens and the `bw` session go in environment variables, never on the
-command line, so other users cannot see them in the process list. The
-broker passes only the variables the program needs.
-Risk that remains: low.
+command line, so other users cannot see them in the process list. The `bw`
+master password is not in a variable either: bw reads the password file
+itself. The broker passes only `HOME`, the one variable with the token
+or the session key, and for bw a fixed `PATH`, and nothing from its own
+environment, so a variable such as `NODE_OPTIONS` or `LD_PRELOAD` cannot
+change what the program does. The broker never logs the programs'
+output, and its errors hold only a fixed text and the exit code. Tests
+check all of this with made-up secrets and fake programs that record what
+they get. If a store program crashes, a core handler such as
+systemd-coredump would write its environment, with the token or the
+session key, into the journal. So the broker sets its soft `RLIMIT_CORE`
+to 1, which the programs inherit, and the example unit sets
+`LimitCORE=1`: with exactly 1 and a pipe (`|`) or file `core_pattern`
+(the systemd default), the kernel calls no core handler. A limit of 0
+does not stop one, and a socket `core_pattern` (`@`) does not look at the
+limit (DESIGN.md section 16).
+Risk that remains: low. The broker clears the token and the session key
+in its memory, but only as best effort: Go strings and the copies that the
+system call makes are not cleared.
 
 **T19. The bot token leaks in an error message.**
 Go's HTTP errors include the URL, and the URL holds the token. So no
@@ -427,8 +443,18 @@ read. The client checks its own TLS key in the same way. `nodkey keygen`
 writes a new key file with mode `0600`, never over a file or a link that
 is there. It checks the directories and the new, empty file in the same
 way before it writes the key.
+Each store program keeps its state, such as bw's copy of the vault, in
+its own home directory, with mode `0700`, owned by the broker user, below
+directories that pass the same checks. The broker refuses a `bw-data`
+directory next to bw's executable, where bw would keep its state instead.
+bw reads its password file by its path; the broker checks the file right
+before each unlock. The directories in bw's `PATH` pass the same checks,
+and the `node` in them passes the checks of a store's program, also after
+its links, so nobody else can put or change the `node` that a bw script
+starts.
 Risk that remains: root and the broker user can still change everything
-(T16). Programs and libraries that a store program loads are not checked.
+(T16); for example, they can swap the bw password file between the check
+and bw's read. The libraries that a store program loads are not checked.
 On overlayfs, nodkey sees only the mode bits of the top copy of a file; a
 lower copy of a key can be readable by others who can reach the lower
 layer (DESIGN.md section 14). Keep keys and tokens out of lower layers and
@@ -490,6 +516,28 @@ at once. Both use memory and CPU on the broker host. That is a denial of
 service, not a way to get a secret or an approval. The answer is a
 firewall that lets only the agent machines reach the broker port
 (DESIGN.md section 10).
+
+**T29. A store program hangs, floods, or answers wrong or old data.**
+The broker gives each run of a store program 30 seconds and caps its
+output: 1 MiB on stdout and 64 KiB on stderr. Over a limit, or when the
+request ends, it kills the program's whole process group, and the request
+is denied. If the broker itself ends during a run, the kernel kills the
+program. The broker reads only one strict JSON object, and denies
+anything else: an answer without the asked ID or for another item, and a
+missing or empty value, or one with a NUL byte. bw keeps a copy of the
+vault, so the broker runs `bw sync --force` before each fetch, and denies
+the request if the sync fails. Without `--force`, bw would compare the
+server's time with the broker's clock, and with that clock ahead it would
+never download again. An item in the trash or in the archive is refused,
+because `bw get item` still returns such an item by its ID. If bw is
+logged out, every request for that store is denied until a person logs in
+again (DESIGN.md sections 11 and 16). With a pipe or file
+`core_pattern`, a crashed program writes no core dump and starts no core
+handler (T18).
+Risk that remains: a process that leaves the program's process group (for
+example with `setsid`) is not killed; systemd stops it when the service
+stops. Such a process keeps the token or the session key in its
+environment.
 
 ## 7. Assumptions
 

@@ -13,6 +13,43 @@ import (
 	"time"
 )
 
+// TestCheckProgram checks CheckProgram, the check of a store's program,
+// which the store package also uses for the node that a bw script starts.
+// CheckFiles tests the same check in more cases.
+func TestCheckProgram(t *testing.T) {
+	dir := privateTempDir(t)
+	bin := mkdir(t, dir, "bin", 0o755)
+	open := mkdir(t, dir, "open", 0o777)
+	good := writeFile(t, bin, "node", "", 0o755)
+	for _, path := range []string{good, symlink(t, good, filepath.Join(bin, "node-link"))} {
+		if err := CheckProgram(path); err != nil {
+			t.Errorf("CheckProgram(%s): %v", path, err)
+		}
+	}
+	writable := writeFile(t, bin, "node-0777", "", 0o777)
+	inOpen := writeFile(t, open, "node", "", 0o755)
+	hop := symlink(t, good, filepath.Join(open, "hop"))
+	tests := []struct{ name, path, want string }{
+		{"others can write it", writable, writable + ": group or others can write to it (mode 0777)"},
+		{"a link to a file that others can write", symlink(t, writable, filepath.Join(bin, "link-0777")),
+			writable + ": group or others can write to it (mode 0777)"},
+		{"a link into a directory that others can write", symlink(t, inOpen, filepath.Join(bin, "link-open")),
+			open + ": group or others can write to this directory (mode 0777)"},
+		{"a link held in a directory that others can write", symlink(t, hop, filepath.Join(bin, "link-hop")),
+			open + ": group or others can write to this directory (mode 0777)"},
+		{"a directory", mkdir(t, bin, "node-dir", 0o755), "is not a regular file"},
+		{"missing", filepath.Join(bin, "missing"), "no such file or directory"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkError(t, CheckProgram(tc.path), tc.want, "")
+		})
+	}
+	if err := CheckProgram(filepath.Join(bin, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("CheckProgram(missing) = %v, want an error that is fs.ErrNotExist", err)
+	}
+}
+
 // TestCheckPrivateFileWithACL sets a real POSIX ACL on a file, like the one
 // systemd puts on a credential, and checks that the group bits it shows in
 // the mode do not count as group access.
