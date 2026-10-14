@@ -497,45 +497,178 @@ Each secret and each key has a rule:
 
 ## 9. Audit log
 
-- One file, JSON Lines, mode `0600`. The broker opens it with `O_APPEND` and
-  `O_NOFOLLOW`, and never changes or removes a line. Each entry is written
-  with one `write` call and then synced to disk.
-- Every entry has `seq`, `time` (UTC), `event` and `prev`. `prev` is the
-  SHA-256 of the previous line, as written, in hex. The first entry has 64
-  zeros.
+- One file, JSON Lines: one entry per line. The broker opens it once, at
+  start, with `O_WRONLY`, `O_APPEND`, `O_CREAT`, `O_NOFOLLOW` and
+  `O_CLOEXEC`, and mode `0600` for a new file. (It also uses `O_NONBLOCK`
+  for the open, so a FIFO put there cannot make it wait.) It never changes
+  or removes a line. Each entry is written with one `write` call and then
+  synced to disk. When the file is new, the broker syncs its directory
+  too.
+- The broker checks the open file again: a regular file, owned by the
+  broker user, with only read and write for the owner. The directories on
+  the way must pass the checks of section 14.
+- The broker takes an exclusive lock (`flock`) on the open file, without
+  waiting. If another process holds it, such as a second broker, the
+  broker does not start. So only one broker writes to one log.
+- Every entry has `seq`, `time` (UTC), `event` and `prev`, in this order,
+  and then the fields of its event (below). `seq` is 1 in the first entry
+  and counts up by one. `prev` is the SHA-256 of the previous line, as
+  written and without its newline, in hex. The first entry has 64 zeros.
+- A line is at most 64 KiB. The broker refuses a longer entry, so the
+  request is denied.
 - Events: `broker_started`, `request`, `decision`, `grant_used`,
   `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
-  `log_recovered`, `broker_stopped`. Each holds the request ID, the client,
-  the names, the verified host if any, and the claimed command and reason
-  (masked as in section 7).
+  `log_recovered`, `broker_stopped`. Each event about a request holds the
+  request ID, the client, the names, the verified host if any, and the
+  claimed command and reason (masked as in section 7).
 - The `request` entry holds the exact message text the approver saw. The
   `decision` entry holds the Telegram user ID that answered.
 - No entry ever holds a secret value, a signature, or the data that was
-  signed.
+  signed. `cause` and `code` hold fixed codes, never an error message,
+  because an error message can hold text from a store program or from the
+  client.
 - If an entry cannot be written, the request is denied. Nothing is approved
   without a record. The `decision` entry is on disk before the broker
-  fetches a value or signs.
-- `nodkey audit verify FILE` checks every link and prints the first broken
-  one. `--anchor SEQ:HASH` also checks that entry `SEQ` has that hash.
+  fetches a value or signs. But a `decision` entry does not show that
+  anything was handed out: the request is still denied if a later step
+  fails, even the sync or the journal write of that entry itself. Only a
+  `secret_sent` or `signed` entry shows that the broker handed something
+  out.
+- After a failed write or sync, every later entry fails too, so every
+  request is denied until the broker starts again. The file may now end in
+  a torn line, and the broker records it at the next start (below).
+- After an entry is on disk, the broker writes `audit anchor SEQ:HASH` to
+  stderr: the entry's number and the hash of its line. It never writes the
+  content of an entry there. If this write fails, it counts as a failed
+  write too.
+- `nodkey audit verify FILE` checks every line and prints the first
+  problem. With anchors (`--anchor SEQ:HASH`, or `--anchors FILE` for a
+  copy of the journal), it also checks that each entry `SEQ` has that
+  hash. The rules are below. The output and the exit codes are in section
+  15.
+
+The fields of each event, after `seq`, `time`, `event` and `prev`:
+
+| event | fields |
+|---|---|
+| `broker_started` | `version` |
+| `broker_stopped` | none |
+| `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
+| `decision` | the request fields; `user_id`: the Telegram user that answered; `answer`: `approve_once`, `approve_window` or `deny`; `window_minutes` for `approve_window` |
+| `grant_used` | the request fields; `via`: `grant` or `never_rule` |
+| `secret_sent`, `signed` | the request fields |
+| `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
+| `foreign_tap` | `user_id`, `chat_id`, `message_id`, and `data`: the button data, at most 64 bytes |
+| `error` | the request fields, if the failure is about one request; `code`: `store_failed`, `sign_failed`, `approver_failed` or `poll_conflict` |
+| `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
+
+The request fields are `request_id`, `client`, `kind` (`secrets`,
+`ssh_login` or `ssh_grant`), `secrets`, `key`, `hosts`, `host_key` (a
+SHA256 fingerprint), `remote_user`, and the claimed `command` and
+`reason`.
+
+These fields hold text that the client, or someone else, chose:
+
+- `command` and `reason`: from the client, cleaned and masked as in
+  section 7.
+- `message`: the broker builds it, but its claimed part comes from the
+  client, cleaned and masked as in section 7.
+- `remote_user`: the client chooses it, and the broker checks it against
+  the pattern of section 6.
+- `data` of `foreign_tap`: from whoever made the button. With the bot
+  token, anyone can (THREAT-MODEL.md T6).
+
+The other fields hold only checked names. A name that failed the broker's
+checks is left out, so a denied request may have no names.
 
 **What the chain can and cannot show.** The chain finds accidental damage
 and simple edits. It does not stop a careful attacker who can write the
-file: they can change a line and compute all the later hashes again. To
-catch that, a copy of recent hashes must live somewhere the attacker cannot
-reach. So the broker also writes each entry's number and hash to its normal
-log (stderr, which systemd puts in the journal). The broker's user cannot
-change the journal, so this already helps on one machine, if the journal is
-kept on disk (`Storage=persistent`) long enough. Better, send the journal
-to another machine; then every hash there is an anchor for `--anchor` that
-not even root on the broker host can change later. On Linux, `chattr +a` on
-the file stops anyone except root from changing old lines.
+file: they can change a line and compute all the later hashes again.
+Removing entries from the end of the file also leaves a chain that passes.
+To catch both, a copy of the hashes must live somewhere the attacker cannot
+reach. So the broker also writes each entry's number and hash to its
+normal log (stderr, which systemd puts in the journal), as described above.
+The broker's user cannot change the journal, so this already helps on one
+machine, if the journal is kept on disk (`Storage=persistent`) long enough.
+Better, send the journal to another machine; then not even root on the
+broker host can change the copies later.
 
-**A torn last line.** A power cut can leave a half-written last line. Then
-the broker appends a newline and a `log_recovered` entry. Its `prev` is the
-hash of the last complete line, and it records the length and SHA-256 of
-the torn bytes. It also sends an alert message. `nodkey audit verify`
-accepts a torn line only when such an entry follows it. So the broker still
-starts on its own after a power cut.
+An anchor proves that the entries up to it have not changed since the
+broker wrote that anchor. It proves nothing about a change made before
+that: after a restart, the broker builds on the log as it finds it, so its
+new anchors cover a change that was made while it was stopped. So the
+newest anchor alone is not enough. Check with every anchor since the log
+began:
+
+```
+journalctl -u nodkey -o cat | nodkey audit verify /var/lib/nodkey/audit.jsonl --anchors -
+```
+
+Then a changed entry shows as an anchor that does not match. A cut log
+shows as an anchor whose entry is not there, or, if the broker wrote more
+entries after the cut, as two anchors for one entry that differ. Entries
+after the newest anchor are not proven.
+
+What the anchors do not find:
+
+- An entry that someone appends while the broker is stopped, with the
+  right `seq` and `prev`. At the next start, the broker takes it as the
+  last entry, and every later anchor covers it. Only the missing
+  `audit anchor` line for that entry shows it.
+- On Linux, `chattr +a` on the file stops anyone except root from changing
+  old lines. It does not stop the broker user from appending. For example,
+  it can append a `log_recovered` entry that names the last real entry as
+  a torn line. The broker does not see this at the next start. The anchor
+  of that last entry then does not match, so check with every anchor.
+- If a person moves the log away, the broker starts a new log at entry 1.
+  The journal then has anchors of both logs, and they differ. Use only the
+  anchors since the new log began, and keep the old file.
+
+THREAT-MODEL.md T17 lists the risk that remains.
+
+**A torn last line.** A power cut can leave a half-written last line: bytes
+after the last newline. At start, the broker reads only the end of the
+file, not the whole file. If it finds a torn line, it appends, with one
+`write` call, a newline and a `log_recovered` entry. That entry has the
+`seq` and `prev` that the torn line would have had: its `prev` is the hash
+of the last complete line. So the torn line is not part of the chain. But
+the entry records the length and SHA-256 of the torn bytes, so a change to
+the torn line, or its removal, is still found. The broker also sends an
+alert message. So the broker still starts on its own after a power cut.
+
+The broker does not start, and a person must look, when the end of the
+file has more than 64 KiB without a newline, or when the last complete line
+is not a valid entry or is longer than 64 KiB. Something other than a
+power cut changed the file then. A second power cut during the recovery
+write itself can also leave the file like this. Then run
+`nodkey audit verify` to see where. Keep the file, move it away, and let
+the broker start a new log. Check the new log only with the anchors since
+it began.
+
+**What `nodkey audit verify` checks.** It reads the file line by line, so
+the file can be large.
+
+- Each line is at most 64 KiB, and the last line ends in a newline.
+- Each line is one JSON object with `seq`, `time`, `event` and `prev`. A
+  field name must match exactly, and none of these fields may be there
+  twice, so every reader sees the same values. A name that differs only in
+  case, such as `SEQ` or `ſeq` (with a long s), is refused too, because
+  Go's JSON reader would take it for the same field.
+- `seq` counts up by one from 1. `prev` is the hash of the entry before it.
+  `time` is an RFC 3339 time in UTC.
+- A torn line is allowed only right before a `log_recovered` entry whose
+  `torn_length` and `torn_sha256` match it. A `log_recovered` entry must
+  come right after its torn line.
+- A file with no entry fails: an emptied log looks the same.
+- It does not check that `time` goes forward. The clock can go back, for
+  example after an NTP correction, or after a power cut on a machine
+  without a clock battery. `seq` and `prev` prove the order, and an
+  attacker who can compute the chain again can fix the times too.
+- It checks the fields above and the fields of `log_recovered`, not the
+  fields of the other events. So a log from a newer nodkey, with new
+  events or fields, still passes.
+- A problem names the line number and what is wrong, never the text of the
+  line, because a line can hold a secret that the masking missed.
 
 ## 10. Decision 1: how client and broker connect
 
@@ -876,7 +1009,7 @@ nodkey run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
 nodkey keygen --out FILE
-nodkey audit verify FILE [--anchor SEQ:HASH]
+nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 nodkey version
 ```
 
@@ -899,6 +1032,40 @@ after it.
 `nodkey ssh-agent` creates its socket in a `0700` directory with mode
 `0600`. It refuses connections from other users. It refuses `ssh-add`
 (adding, removing, locking keys).
+
+`nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]`
+takes `FILE` before or after the options.
+
+- `--anchor SEQ:HASH` may repeat.
+- `--anchors FILE` reads anchors from a file, or from stdin for `-`. It
+  uses every line that is exactly `audit anchor SEQ:HASH`, and skips the
+  other lines, so it takes the output of `journalctl -u nodkey -o cat`.
+  If no line is an anchor, that is wrong usage: a check with no anchor
+  must not pass by mistake.
+- Two anchors for one entry must not differ.
+
+Check with every anchor since the log began (section 9). When the log
+passes, it prints to stdout:
+
+```
+ok: 1234 entries (torn lines: 0)
+anchors: 1234 checked, all match; the newest is entry 1234
+last entry: 1234:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+```
+
+Without anchors, the middle line is `anchors: none checked`. Entries after
+the newest anchor are not proven. When the log fails, it prints the first
+problem to stderr, with the line number, for example
+`nodkey: audit log FILE: line 57: has seq 58, want 57`. It never prints the
+text of a line. It exits with:
+
+| code | meaning |
+|---|---|
+| 0 | the log passed |
+| 1 | the result cannot be printed |
+| 64 | wrong usage, such as an anchor that is not `SEQ:HASH`, or an anchors file without an anchor |
+| 65 | the log failed: a broken link, a line that is not a valid entry, a torn line without its `log_recovered` entry, an anchor that does not match or whose entry is not in the log, or two anchors for one entry that differ |
+| 66 | the log or the anchors file cannot be opened or read |
 
 ## 16. Implementation rules
 

@@ -26,7 +26,7 @@ func TestRun(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(tt.args, &stdout, &stderr)
+			code := run(tt.args, strings.NewReader(""), &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
 			}
@@ -52,7 +52,7 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write fa
 func TestRunReportsFailedOutput(t *testing.T) {
 	for _, args := range [][]string{{"version"}, {"help"}} {
 		var stderr bytes.Buffer
-		if code := run(args, failingWriter{}, &stderr); code != exitFailure {
+		if code := run(args, strings.NewReader(""), failingWriter{}, &stderr); code != exitFailure {
 			t.Errorf("run(%q) with a failing stdout: exit code = %d, want %d", args, code, exitFailure)
 		}
 	}
