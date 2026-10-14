@@ -204,11 +204,18 @@ Risk that remains: same as the agent itself.
 
 **T12. A signature is used for a different host or a different purpose.**
 The broker only signs SSH authentication requests for the asked key. It
-checks the session-bind signature and the session identifier. It refuses
-clients without a session-bind, forwarded binds, and any other kind of data
-(for example git commit signatures). The forwarding flag comes from the
-client, so refusing it stops honest mistakes, not a hostile agent; the
-host check above does not depend on that flag.
+parses the data to sign itself and refuses any other kind of data (for
+example git commit signatures), also a request with bytes after its last
+field. It checks the session-bind signature and the session identifier.
+It refuses a host that is not in the key's `hosts` list, when the key has
+one. It refuses clients without a session-bind, more than one
+session-bind, and forwarded binds. It refuses weak or unclear algorithms:
+a key exchange with SHA-1, RSA signatures with SHA-1 (from the host or from the broker's
+own key), unknown sign flags, and host certificates. Signing takes the
+result of the checks, not raw bytes, so the broker signs only data that
+it checked. The forwarding flag comes from the client, so refusing it
+stops honest mistakes, not a hostile agent; the host check above does not
+depend on that flag.
 Risk that remains: low.
 
 **T13. The agent keeps access after an approved login.** See section 5,
@@ -456,7 +463,8 @@ firewall that lets only the agent machines reach the broker port
 - The approver's Telegram account is not logged in on any agent machine.
 - The approver reads the verified lines before tapping.
 - The `ssh` program on the agent machine is OpenSSH 8.9 or newer, so it
-  sends session-bind.
+  sends session-bind. It uses a key exchange with SHA-2, as it does by
+  default.
 - The broker's `known_hosts` file is correct, and each host has its own
   host key.
 
