@@ -321,8 +321,10 @@ Each secret and each key has a rule:
 
 - A grant covers (client, secret) for secrets, and (client, key, host key,
   remote user) for SSH keys, until it ends. The host is matched by its host
-  key, not by its name. A grant for `deploy@web-1` does not allow
-  `root@web-1`. Using a grant does not make it longer.
+  key, not by its name. A host can have several host keys, one of each key
+  type, and a grant from a login covers only the host key of that login. A
+  grant for `deploy@web-1` does not allow `root@web-1`. Using a grant does
+  not make it longer.
 - A request with several secrets needs one approval for all of them. The
   "Approve N min" button shows only if every secret in the request has the
   `window` rule. N is then the shortest window among them. The tap makes one
@@ -349,8 +351,8 @@ Each secret and each key has a rule:
 ## 9. Audit log
 
 - One file, JSON Lines, mode `0600`. The broker opens it with `O_APPEND` and
-  never changes or removes a line. Each entry is written with one `write`
-  call and then synced to disk.
+  `O_NOFOLLOW`, and never changes or removes a line. Each entry is written
+  with one `write` call and then synced to disk.
 - Every entry has `seq`, `time` (UTC), `event` and `prev`. `prev` is the
   SHA-256 of the previous line, as written, in hex. The first entry has 64
   zeros.
@@ -526,7 +528,8 @@ ansible-playbook site.yml
 
 `ssh-grant` sends one request. The message lists the key, the remote user,
 every host by its name in the broker's `known_hosts`, and the time the
-grant ends. One tap makes a grant for each listed host, exactly as in B.
+grant ends. One tap makes a grant for each host key of each listed host (a
+host can have one host key of each key type), exactly as in B.
 Then the playbook runs without more taps. A host that is not in the list
 still asks. The broker refuses an `ssh-grant` when:
 - the remote user name does not match the pattern in section 6;
@@ -599,7 +602,10 @@ hosts = ["web-1", "web-2"]          # optional; empty means any known host
 
 The broker's `known_hosts` uses the OpenSSH format with stricter rules: one
 plain host name per line, no wildcards, no hashed names, no `@` markers, and
-each host key only once. The broker refuses to start if any rule is broken.
+each host key only once. A name may be on several lines, with at most one
+key of each key type, because a host often has several host keys (for
+example ed25519 and ECDSA). The broker refuses to start if any rule is
+broken.
 Cloned machines often share a host key. Then the broker cannot tell them
 apart, so it refuses that file until each host has its own key.
 
@@ -612,7 +618,108 @@ tls_key = "~/.config/nodkey/client.key"
 ```
 
 Config files are strict: an unknown key is an error, so a typo cannot turn
-a rule off.
+a rule off. Keys must be written exactly as above, in lower case: `ASK`
+is an unknown key. Each key must be below the header of its own section,
+such as `ask` below `[secret.github-token]`. A dotted key such as
+`secret.github-token.ask = "never"` and an inline table (`{ ... }`) are
+errors, because a reader of the section would not see that key.
+
+An error may show a file path, and a section name or key name that looks
+normal, such as `[secret.github-token] window`. It never shows a secret
+value. A key name is shown only if each part is 1 to 16 lower case
+letters, digits and `_`, and starts with a letter. A section name is shown
+only if it follows the name rule below. Otherwise the error does not show
+the name, because it may be a secret that was pasted by mistake. An error
+can show a path, so do not paste a secret into a path setting. A TOML
+syntax error gives only the line and the column, because the text there
+can be a secret that was pasted by mistake.
+
+More rules:
+
+- `listen` is one IP address and a port from 1 to 65535, such as
+  `192.0.2.10:7743` or `[2001:db8::10]:7743`. A host name, a missing
+  address, and `0.0.0.0` or `::` are errors: they would make the broker
+  listen on every network, not only on your private network. A multicast
+  address (such as `224.0.0.1` or `ff02::1`) and the broadcast address
+  `255.255.255.255` are errors too: they are not the address of one
+  machine. An IPv6 zone (the part after `%`, such as `%eth0`) is an error,
+  and so is an IPv6 link-local address (`fe80::/10`), which works only
+  with a zone. A zone is the name of a network interface, and nodkey does
+  not check those names. An IPv4 link-local address (`169.254.0.0/16`) is
+  allowed.
+- Names of clients, stores, secrets, keys and known hosts are 1 to 64
+  letters, digits, `.`, `_` or `-`, and start with a letter or digit.
+- Paths must be absolute. Only `${CREDENTIALS_DIRECTORY}/` and `~/` at the
+  start of a path are expanded; any other `$` is an error.
+- A secret's `id` is the item's UUID in the store, so `bw` never searches
+  items by name.
+- `clients` and `hosts` list each name once. `notice_chat_id` is not 0.
+  `timeout` is 15 s to 10 min. `ssh_timeout` is 15 s to 110 s, below
+  `sshd`'s `LoginGraceTime`.
+- `max_per_day`, if present, is 1 or more. For no limit, leave it out.
+  So `0` cannot mean "no uses" to a person and "no limit" to the broker.
+- Two secrets with `ask = "never"` must not have the same `id`, also not
+  through two `[store.*]` sections. Otherwise two clients could get one
+  item without a tap.
+- In `known_hosts`, the key type must match the key, and certificates are
+  not allowed.
+
+At start, the broker checks the files it reads, and refuses to start on
+any problem:
+
+- Key, token and password files must be regular files, not symbolic links,
+  and at most 1 MiB. They must be owned by the broker user or root, and
+  group and others must have no access. systemd gives a credential to the
+  service as a file owned by root, with an ACL entry that lets the service
+  user read it. That ACL entry is accepted. An ACL entry for any other user
+  or group is not, and neither is an ACL that cannot be read.
+- Key, token and password files must be on a local file system that
+  nodkey knows: ext2, ext3, ext4, xfs, btrfs, zfs, tmpfs, ramfs, f2fs,
+  bcachefs, overlayfs or ecryptfs. overlayfs and ecryptfs are layers over
+  another file system, and the kernel still checks the mode bits and the
+  ACL of the file you name. Every other file system is refused, such as
+  NFS, SMB/CIFS, 9p, Ceph or FUSE, because there the mode bits may not show
+  who can read a file. The error names the file system, such as `nfs`, or
+  gives its number if nodkey has no name for it. The credentials directory
+  of a systemd service is on ramfs or tmpfs.
+- On overlayfs, nodkey sees only the top copy of a file. A lower copy can
+  have other mode bits: a key can be `0644` in the lower layer and `0600`
+  in the overlay after a `chmod`. Other users who can reach the lower layer
+  can read it there, for example below a read-only root such as
+  `/media/root-ro`, or in an overlay made by hand. With `metacopy=on`, the
+  data stays in the lower file. So keep keys and tokens out of lower layers
+  and image layers. Docker keeps its layers where only root can read them,
+  so on the host, only root can read a lower copy.
+- The config file and `known_hosts` must be owned by the broker user or
+  root, and group and others must not be able to write to them. They may
+  be symbolic links.
+- A store's `program` gets a token from the broker, so it must be owned by
+  the broker user or root, and group and others must not be able to write
+  to it. It may be a symbolic link.
+- The audit log may be missing; then the broker makes it. If it is there,
+  it must be a regular file, not a symbolic link, owned by the broker user.
+  Its mode may give only read and write to the owner, such as `0600`: an
+  execute bit, or any bit for group or others, is refused. It must not be
+  another file that the broker reads or runs: a key, token or password
+  file, a store's `program`, the config file or `known_hosts`, also not
+  through a hard link or a linked directory. The broker adds a line to the
+  log for each request, and people read and copy the log. This is a check
+  at start. The broker still opens the file with `O_NOFOLLOW` and checks
+  the open file, so a link that is put there later is refused too.
+- Every directory on the way to any of these files must be owned by the
+  broker user or root, and group and others must not be able to write to
+  it. Otherwise someone else could swap the file. This includes each
+  directory that holds a symbolic link on the way.
+- nodkey opens each file once, checks the open file, and reads from that
+  same open file. So the file cannot be swapped between the check and the
+  read.
+- Two `[key.*]` sections must not name the same file, also not through two
+  paths (a hard link or a linked directory). A copy of a key in a second
+  file passes this check. So when the broker loads the keys, it also
+  refuses two `[key.*]` sections with the same public key.
+
+The client checks its `tls_key` file in the same way as the broker checks
+a key file.
 
 ## 15. Commands and exit codes
 
