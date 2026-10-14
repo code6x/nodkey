@@ -188,17 +188,18 @@ func TestCoreRedeliveredTapKeepsResult(t *testing.T) {
 		t.Fatalf("result %+v, want approved", r)
 	}
 	approved := f.waitCalls("editMessageText", 1)[0].str("text")
-	old.stop()
-	select {
-	case err := <-old.runErr:
-		old.runErr <- err // for the cleanup
-	case <-time.After(waitLimit):
-		t.Fatal("the old core did not stop")
-	}
+	f.waitAnswer("approve")
+	// The getUpdates after the tap confirms it. When the broker stops, that
+	// call may still be on its way. If it reached the fake after the tap
+	// below, the fake would take that tap as confirmed and drop it. After
+	// exit, no call of the old broker reaches the fake any more.
+	old.exit(t)
 
 	f.addRawUpdate(5000, string(raw)) // Telegram sends the tap again
 	ce := newCoreEnv(t, f)
-	f.waitAnswer("approve")
+	if got := f.waitAnswers("approve", 2)[1].str("text"); got != tapEnded {
+		t.Errorf("after the restart, the phone shows %q, want %q", got, tapEnded)
+	}
 	edit := f.waitCalls("editMessageReplyMarkup", 1)[0]
 	if edit.num("message_id") != msg || edit.field("reply_markup") != `{"inline_keyboard":[]}` {
 		t.Errorf("edit %s, want the buttons of message %d removed", edit.Raw, msg)
@@ -206,6 +207,10 @@ func TestCoreRedeliveredTapKeepsResult(t *testing.T) {
 	texts := ce.edits(msg)
 	if len(texts) != 1 || texts[0] != approved || !strings.Contains(approved, "👍 approved once by you") {
 		t.Errorf("the text edits of the message: %q, want only the approval", texts)
+	}
+	// The report comes before the update of the message.
+	if taps := ce.taps.all(); len(taps) != 1 || taps[0].Cause != audit.TapUnknownRequest {
+		t.Errorf("reports %+v, want one with cause unknown_request", taps)
 	}
 }
 
@@ -320,6 +325,7 @@ func TestTapDataCannotForgeAnAnchor(t *testing.T) {
 	s.from = otherUserID
 	e.f.waitAnswer(e.f.tap(s))
 	e.f.waitAnswer(e.f.tap(goodTap(6, "x\naudit anchor 2:"+strings.Repeat("b", 44))))
+	e.waitReports(t, 2) // each press is logged after its answer
 	if anchorLine.MatchString(e.logs.String()) {
 		t.Errorf("the log holds a line that looks like an audit anchor:\n%s", e.logs.String())
 	}
