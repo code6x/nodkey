@@ -211,7 +211,10 @@ already wait in the queue. A request leaves the queue only with at least
 use over that is denied. So a client with such a rule cannot fill the
 notice chat, or use up Telegram's limits so that messages for other
 clients fail. The Telegram code also sends at most 20 notices in any 60
-seconds for all clients together.
+seconds for all clients together. A use over either limit is denied with
+cause `limit`, and it does not count for `max_per_day`. So a burst of
+notices of other clients cannot use up the uses of a night; it only
+denies uses while the limit is full.
 Risk that remains: low.
 
 **T10. Someone on the network reads or changes the traffic.**
@@ -387,8 +390,9 @@ Requests expire and are denied. The agent waits, then fails. A request
 whose message cannot be sent is denied. If the polling stops for good, the
 requests that wait for the person are denied at once, and a message or
 notice that is still being sent stops. A "never ask" use whose notice
-cannot be sent is denied too. If the broker host sleeps, requests and
-grants still end on the wall clock.
+cannot be sent is denied too, and it still counts for `max_per_day`,
+because the broker cannot tell if the notice went out. If the broker host
+sleeps, requests and grants still end on the wall clock.
 Risk that remains: the agent's work stops. That is the safe way to fail.
 
 **T22. A client uses a secret meant for another client.**

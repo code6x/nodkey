@@ -519,12 +519,15 @@ func TestCoreSendFails(t *testing.T) {
 	}
 }
 
-// TestCoreGlobalNoticeLimit shows what happens to a "never ask" use when
-// Notify refuses it because of the limit for all clients together: the
-// core denies it with cause error and code approver_failed, as when a
-// notice cannot be sent, and the use still counts for max_per_day,
-// because the core counts it before it sends the notice. So the next use
-// asks the person. DESIGN.md section 7 says so.
+// TestCoreGlobalNoticeLimit checks a "never ask" use when Notify refuses
+// it because of the limit for all clients together. For the core,
+// ErrNoticeLimit is a limit: it denies the use with cause limit, as for
+// its own limit per client, without an error, and the use does not count
+// for max_per_day. So with max_per_day = 1, the next use on the same day
+// still goes without a tap once the limit has room, and the one after it
+// asks the person. Before, the refused use was an approver failure, and
+// it used up the one use of the day. DESIGN.md section 7 says so. (Issue
+// #47.)
 func TestCoreGlobalNoticeLimit(t *testing.T) {
 	f := newFake(t)
 	e := newEnvFor(t, f)
@@ -550,17 +553,35 @@ func TestCoreGlobalNoticeLimit(t *testing.T) {
 	req := &approval.Request{Client: "ci", Kind: audit.KindSecrets, Secrets: []string{"backup-token"},
 		Claim: approval.Claim{Command: "restic backup /srv"}}
 	r := core.Decide(context.Background(), req)
-	if r.Allowed || r.Cause != audit.CauseError || r.ErrorCode != audit.CodeApproverFailed || !errors.Is(r.Err, ErrNoticeLimit) {
-		t.Errorf("result %+v, want denied with approver_failed and ErrNoticeLimit", r)
+	if r.Allowed || r.Cause != audit.CauseLimit || r.ErrorCode != "" || r.Err != nil {
+		t.Errorf("result %+v, want denied with cause limit, and no error", r)
 	}
 	if n := len(f.callsOf("sendMessage")); n != 0 {
 		t.Errorf("%d messages, want 0", n)
 	}
+	if !strings.Contains(e.logs.String(), "too many notices") {
+		t.Error("the refused notice is not logged")
+	}
+
+	// The limit has room again. The refused use did not count, so this use
+	// goes without a tap, and its notice goes out. (If it asked the person,
+	// the context would end it after waitLimit.)
 	clock.add(2 * time.Minute)
+	actx, acancel := context.WithTimeout(context.Background(), waitLimit)
+	defer acancel()
+	r = core.Decide(actx, req)
+	if !r.Allowed || r.Answer != "" {
+		t.Fatalf("result %+v, want allowed without a tap", r)
+	}
+	if notice := f.waitCalls("sendMessage", 1)[0]; notice.num("chat_id") != noticeChatID || notice.has("reply_markup") {
+		t.Errorf("notice %s", notice.Raw)
+	}
+
+	// That was the one use of the day: the next use asks the person.
 	dctx, dcancel := context.WithCancel(context.Background())
 	done := make(chan *approval.Result, 1)
 	go func() { done <- core.Decide(dctx, req) }()
-	asked := f.waitCalls("sendMessage", 1)[0]
+	asked := f.waitCalls("sendMessage", 2)[1]
 	dcancel()
 	<-done
 	if asked.num("chat_id") != approverID || !asked.has("reply_markup") {

@@ -2,6 +2,7 @@ package approval_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -459,6 +460,56 @@ func TestLimitNotices(t *testing.T) {
 		checkAllowed(t, e.now(secretsReq("ci", "backup-token")))
 		checkAllowed(t, e.now(secretsReq("ci", "backup-token")))
 		ch := e.decide(secretsReq("ci", "backup-token")) // over max_per_day: it asks
+		mustWait(t, ch)
+		e.asked(1)
+	})
+}
+
+// TestLimitApproverRefusesNotice checks a "never ask" use whose notice a
+// limit of the approver itself stops, such as the limit of the Telegram
+// code for all clients together. The use is denied with cause limit, as
+// for the limit per client, without an error entry, and it does not count
+// for max_per_day: with max_per_day = 1, the next use in the same night
+// still works. The refused notices still count for the limit per client.
+// Before, such a use was an approver failure, and it used up the one use
+// of the night. (Issue #47.)
+func TestLimitApproverRefusesNotice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg, h := testConfig(t)
+		night := parseHours(t, "23:30-00:30")
+		setSecretRule(cfg, "backup-token", config.Rule{Ask: config.AskNever, Notify: true, Hours: &night, MaxPerDay: 1})
+		e := newEnvWith(t, cfg, h, approvaltest.NewClock(time.Date(2026, 10, 14, 23, 50, 0, 0, time.UTC)))
+		defer e.stop()
+
+		e.fake.FailNotify(fmt.Errorf("the notice chat is full: %w", approval.ErrLimit))
+		for range approval.MaxNoticesPerMinute {
+			r := e.now(secretsReq("ci", "backup-token"))
+			checkDenied(t, r, audit.CauseLimit)
+			if r.ErrorCode != "" || r.Err != nil {
+				t.Errorf("code %q, err %v; want no error", r.ErrorCode, r.Err)
+			}
+			checkEvents(t, r, "request", "denied:limit")
+		}
+		// The refused notices count for the limit per client: in this
+		// minute no notice goes out, also when the approver has room again.
+		e.fake.FailNotify(nil)
+		checkDenied(t, e.now(secretsReq("ci", "backup-token")), audit.CauseLimit)
+		if n := len(e.fake.Notices()); n != 0 {
+			t.Errorf("%d notices, want 0", n)
+		}
+		e.asked(0)
+
+		// 00:10 is the next day, but the same night: its uses count for
+		// October 14, and none of the refused uses counted.
+		e.clock.Advance(20 * time.Minute)
+		r := e.now(secretsReq("ci", "backup-token"))
+		checkAllowed(t, r)
+		checkEvents(t, r, "request", "grant_used:never_rule")
+		if n := len(e.fake.Notices()); n != 1 {
+			t.Errorf("%d notices, want 1", n)
+		}
+		// That was the one use of the night: the next one asks the person.
+		ch := e.decide(secretsReq("ci", "backup-token"))
 		mustWait(t, ch)
 		e.asked(1)
 	})

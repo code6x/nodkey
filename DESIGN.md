@@ -670,13 +670,14 @@ Not masked, for example:
   They are silent (`disable_notification`). At most 20 notices go out in
   any 60 seconds, for all clients together, because Telegram allows
   about 20 messages per minute in a group. A notice that could not be
-  sent counts too. A use that would need one more notice is denied, but
-  not as for the limit per client in section 8: it is denied as when a
-  notice cannot be sent (cause `error`, code `approver_failed`), and it
-  still counts for `max_per_day`, because the core counts a use before
-  it sends the notice. So with `max_per_day = 1`, a burst of notices of
-  other clients can use up the one use of a night; then the next use asks
-  the person.
+  sent counts too. A use that would need one more notice is denied as
+  for the limit per client in section 8: with cause `limit`, and it does
+  not count for `max_per_day`, because no notice went out. So a burst of
+  notices of other clients cannot use up the one use of a night. Any
+  other failure to send a notice denies the use with cause `error` (code
+  `approver_failed`), and the use still counts, because the core cannot
+  tell if the notice went out. That holds for Telegram's own code 429
+  after the last try too: an earlier try may have sent the notice.
 
 ## 8. Rules and grants
 
@@ -751,7 +752,11 @@ name exactly one client. The config check refuses all of these (section
   messages for other clients could not be sent. A "never ask" rule with
   `notify = false` sends no notice and has no such limit. The Telegram
   code also sends at most 20 notices in any 60 seconds for all clients
-  together (section 7).
+  together (section 7). A use that this limit stops is denied in the same
+  way: cause `limit`, and it does not count for `max_per_day`. A notice
+  that the Telegram code refused, or could not send, still counts toward
+  the 6 of its client, so a client cannot try again and again within the
+  minute.
 
 ## 9. Audit log
 
@@ -1222,7 +1227,10 @@ listed hosts with that key) without a tap. To keep it small:
   the notice chat, so a strange use is seen. If that message cannot be
   sent, the request is denied. At most 6 notices go out in any 60 seconds
   for one client (section 8), and at most 20 for all clients together
-  (section 7); a use over that is denied.
+  (section 7). A use over that is denied with cause `limit`, and it does
+  not count for `max_per_day`, because no message went out. A use whose
+  message failed for another reason still counts, because the broker
+  cannot tell if the message went out.
 - Use a narrow secret: a secret that can do little, or a deploy key that
   can reach only one repository. For `bws`, the job's secret can live in its
   own project, read through its own store entry with its own machine

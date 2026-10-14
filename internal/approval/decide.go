@@ -51,6 +51,10 @@ type pending struct {
 	windowMinutes   int  // the message has "Approve N min" with this N; 0: no
 	notify          bool // a "never ask" rule with notify allowed it
 
+	// counted holds the uses of "never ask" rules that begin counted for
+	// p, so that notify can take them back. Under Core.mu.
+	counted []countedUse
+
 	// Under Core.mu:
 	state  state
 	msg    MessageID
@@ -207,10 +211,14 @@ func (c *Core) begin(p *pending) *Result {
 			}
 			cs.notices = cs.notices.add(now.mono, MaxNoticesPerMinute)
 		}
+		// The uses count now, under the lock, so requests at the same
+		// time cannot pass max_per_day. If the approver's limit stops the
+		// notice, notify takes them back.
 		for i, it := range p.items {
 			if vias[i] == audit.ViaNeverRule {
 				k := useKey{p.client, it.ref}
 				c.uses[k] = c.uses[k].add(useDay(it.rule, now.wall))
+				p.counted = append(p.counted, countedUse{key: k, day: c.uses[k].day})
 			}
 		}
 		p.notify = notify
@@ -527,18 +535,39 @@ func (c *Core) end(ctx context.Context, p *pending, prompt Prompt, res *Result) 
 // notify sends the notice of a use of a "never ask" rule. If the notice
 // cannot be sent, the request is denied: notify = true promises that no
 // use goes unseen (DESIGN.md section 12).
+//
+// If the approver's own limit stopped the notice (ErrLimit), nothing was
+// sent, so the use did not happen: the cause is limit, as for the limit
+// per client, and the use does not count for max_per_day. After any other
+// error, or a hang-up, the notice may have gone out, so the use still
+// counts: an unclear case keeps the stricter count, and the next use may
+// ask the person.
 func (c *Core) notify(ctx context.Context, p *pending, res *Result) *Result {
 	now := c.now()
 	nctx, cancel := c.callContext(ctx, now.until(p.deadline))
 	err := c.approver.Notify(nctx, p.notice(now))
 	cancel()
 	switch {
+	case errors.Is(err, ErrLimit):
+		c.uncount(p)
+		return c.denied(p, audit.CauseLimit)
 	case ctx.Err() != nil:
 		return c.denied(p, audit.CauseCancelled)
 	case err != nil:
 		return c.failed(p, err)
 	}
 	return res
+}
+
+// uncount takes back the uses of "never ask" rules that begin counted for
+// p.
+func (c *Core) uncount(p *pending) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, u := range p.counted {
+		c.uses[u.key] = c.uses[u.key].remove(u.day)
+	}
+	p.counted = nil
 }
 
 // newResult returns the result of p, not yet decided.

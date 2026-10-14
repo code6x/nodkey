@@ -62,7 +62,7 @@ const (
 	CauseExpired    Cause = "expired"     // no answer in time
 	CauseCancelled  Cause = "cancelled"   // the client hung up
 	CauseNotAllowed Cause = "not_allowed" // a check failed: an unknown name, a name this client may not use, bad input
-	CauseLimit      Cause = "limit"       // a limit per client, the queue, or the pause after a Deny (DESIGN.md section 8)
+	CauseLimit      Cause = "limit"       // a limit per client, the queue, the pause after a Deny, or a limit of the approver itself (DESIGN.md section 8)
 	CauseError      Cause = "error"       // a failure; an error entry says which
 )
 

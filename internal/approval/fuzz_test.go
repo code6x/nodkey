@@ -3,6 +3,7 @@ package approval_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -19,8 +20,9 @@ import (
 
 // FuzzCore runs random steps against the core: requests of each kind from
 // three clients, taps (also ones that must not count), cancels, clock
-// steps, StartGrants, and an approver that fails or stops. After each step
-// it checks what the core promises:
+// steps, StartGrants, and an approver that fails, refuses notices because
+// of its own limit, or stops. After each step it checks what the core
+// promises:
 //
 //   - a request is allowed only by one counted tap on Approve, or, without
 //     a tap, by grants and "never ask" rules that a model of them allows;
@@ -31,6 +33,10 @@ import (
 //   - no message for a secret or key within 60 seconds after a Deny for
 //     it, and no grant for it from a tap before that Deny;
 //   - per client, at most 6 notices of "never ask" uses in any 60 seconds;
+//   - a use whose notice a limit of the approver refused is denied with
+//     cause limit, and it does not count for max_per_day; a use whose
+//     notice failed in another way counts: the core counts the same uses
+//     as the model;
 //   - an SSH grant is approved only before its grants end;
 //   - every message is updated exactly once, and every request ends.
 //
@@ -42,6 +48,10 @@ func FuzzCore(f *testing.F) {
 	f.Add([]byte{4, 0x00, 0x0f, 0x03, 5, 0x01, 9, 0, 3, 0x00, 0x00, 3, 0x08, 0x00, 7, 255, 7, 255, 7, 255, 7, 255})
 	f.Add([]byte{0, 0x03, 0, 0x03, 0, 0x03, 0, 0x03, 0, 0x03, 0, 0x03, 0, 0x0b, 3, 0x83, 0x02, 3, 0x83, 0x02, 7, 100, 3, 0x83, 0x02})
 	f.Add([]byte{0, 0x08, 8, 0, 6, 0, 10, 0, 0, 0x08, 10, 0, 11, 0, 0, 0x0b, 12, 0, 0, 0x08})
+	// backup-token by ci, max_per_day = 2: a notice fails, and that use
+	// counts; the approver's limit refuses two notices, and those uses do
+	// not count. So one more use goes without a tap, and the next asks.
+	f.Add([]byte{11, 0, 0x20, 11, 0, 0x20, 0, 0x20, 11, 7, 61, 0, 0x20, 0, 0x20, 0, 0x20})
 	f.Fuzz(runFuzzInput)
 }
 
@@ -113,6 +123,9 @@ func (fakeTB) Fatalf(f string, args ...any) { panic(f) }
 var (
 	errAskFails    = errors.New("fuzz: Ask fails")
 	errNotifyFails = errors.New("fuzz: Notify fails")
+	// errNotifyLimit is a limit of the approver itself: Notify sends
+	// nothing.
+	errNotifyLimit = fmt.Errorf("fuzz: Notify is over its limit: %w", approval.ErrLimit)
 )
 
 type fuzzReq struct {
@@ -163,10 +176,11 @@ type model struct {
 	quit  context.CancelFunc
 	run   chan error
 
-	mu      sync.Mutex // guards seq, asks and notices, which the core's goroutines touch
+	mu      sync.Mutex // guards seq, asks, notices and refused, which the core's goroutines touch
 	seq     int
 	asks    []fuzzAsk
 	notices []fuzzNotice
+	refused map[string]bool // the requests whose notice the approver's limit refused, by ID
 
 	reqs       []*fuzzReq
 	taps       map[string]fuzzTap // the counted taps, by request ID
@@ -174,7 +188,7 @@ type model struct {
 	grants     map[scope]fuzzEnd
 	uses       map[string]int // never item and day → uses
 	failAsk    bool
-	failNotify bool
+	notifyMode int // Notify 0: works; 1: fails; 2: refuses because of its own limit
 	stopped    bool
 }
 
@@ -196,10 +210,13 @@ func (r recorder) Ask(ctx context.Context, p approval.Prompt) (approval.Shown, e
 
 func (r recorder) Notify(ctx context.Context, p approval.Prompt) error {
 	err := r.Approver.Notify(ctx, p)
-	if err == nil {
-		r.m.mu.Lock()
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	switch {
+	case err == nil:
 		r.m.notices = append(r.m.notices, fuzzNotice{client: p.Client, at: r.m.clock.Now()})
-		r.m.mu.Unlock()
+	case errors.Is(err, approval.ErrLimit):
+		r.m.refused[p.RequestID] = true
 	}
 	return err
 }
@@ -207,7 +224,8 @@ func (r recorder) Notify(ctx context.Context, p approval.Prompt) error {
 func newModel(t *testing.T, cfg *config.Broker, h hosts) *model {
 	m := &model{
 		t: t, cfg: cfg, h: h, clock: approvaltest.NewClock(noon), fake: approvaltest.NewApprover(approverID),
-		taps: map[string]fuzzTap{}, grants: map[scope]fuzzEnd{}, uses: map[string]int{}, run: make(chan error, 1),
+		refused: map[string]bool{}, taps: map[string]fuzzTap{}, grants: map[scope]fuzzEnd{}, uses: map[string]int{},
+		run: make(chan error, 1),
 	}
 	core, err := approval.New(cfg, recorder{m.fake, m}, approval.Options{Clock: m.clock})
 	if err != nil {
@@ -312,9 +330,9 @@ func (m *model) step(ops []byte, i int) int {
 		m.failAsk = !m.failAsk
 		m.fake.FailAsk(map[bool]error{true: errAskFails}[m.failAsk])
 		return i + 1
-	case 11:
-		m.failNotify = !m.failNotify
-		m.fake.FailNotify(map[bool]error{true: errNotifyFails}[m.failNotify])
+	case 11: // Notify works, fails, or refuses because of its own limit, in turn
+		m.notifyMode = (m.notifyMode + 1) % 3
+		m.fake.FailNotify([]error{nil, errNotifyFails, errNotifyLimit}[m.notifyMode])
 		return i + 1
 	case 12: // the approver stops, rarely
 		if arg(1) == 0x5a && !m.stopped {
@@ -466,6 +484,13 @@ func (m *model) checkResult(r *fuzzReq) {
 			t.Fatalf("request %s has a message text, but no message was sent", res.RequestID)
 		}
 	}
+	m.mu.Lock()
+	refused := m.refused[res.RequestID]
+	m.mu.Unlock()
+	if refused && (res.Allowed || res.Cause != audit.CauseLimit || res.ErrorCode != "" || res.Err != nil) {
+		t.Fatalf("the approver's limit refused the notice of request %s: allowed %v, cause %q, code %q, err %v; want cause limit",
+			res.RequestID, res.Allowed, res.Cause, res.ErrorCode, res.Err)
+	}
 	switch {
 	case res.Answer != "":
 		tap, ok := m.taps[res.RequestID]
@@ -479,7 +504,9 @@ func (m *model) checkResult(r *fuzzReq) {
 		m.checkCovered(r)
 	case errors.Is(res.Err, errNotifyFails), res.Cause == audit.CauseError && errors.Is(res.Err, context.Canceled):
 		// The notice failed, or could not go out because Run had returned.
-		// The core counted the uses before.
+		// The core counted the uses before, and keeps them: the notice may
+		// have gone out. A notice that the approver's limit refused ends
+		// with cause limit (checked above), and its uses do not count.
 		m.checkCovered(r)
 	default:
 		switch res.Cause {
@@ -577,6 +604,22 @@ func (m *model) check() {
 		}
 		if n > approval.MaxNoticesPerMinute {
 			t.Fatalf("%s sent %d notices in a minute", a.client, n)
+		}
+	}
+	// The core counts the same uses of the "never ask" rules as the model:
+	// also those whose notice failed, but not those whose notice the
+	// approver's limit refused.
+	now := m.clock.Wall()
+	for _, it := range []struct {
+		key  bool
+		name string
+	}{{false, "backup-token"}, {true, "backup"}} {
+		item := "secret:" + it.name
+		if it.key {
+			item = "key:" + it.name
+		}
+		if got, want := m.core.Uses("ci", it.key, it.name, now), m.uses[item+now.Format(time.DateOnly)]; got != want {
+			t.Fatalf("the core counts %d uses of %s today, the model %d", got, item, want)
 		}
 	}
 }

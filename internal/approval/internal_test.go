@@ -61,6 +61,40 @@ func TestDayUses(t *testing.T) {
 	}
 }
 
+// TestDayUsesRemove checks that a use taken back comes off the count of
+// its own day only: not off a count that a later day started again, and
+// never below 0. (Issue #47: a notice that the approver's limit stopped.)
+func TestDayUsesRemove(t *testing.T) {
+	d1 := dayOf(time.Date(2026, 10, 14, 23, 59, 59, 0, time.UTC))
+	d2 := dayOf(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC))
+	d0 := dayOf(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))
+
+	u := dayUses{}.add(d1).add(d1)
+	if u = u.remove(d1); u.on(d1) != 1 {
+		t.Errorf("after one use was taken back, the count is %d, want 1", u.on(d1))
+	}
+	if u = u.remove(d1).remove(d1); u.on(d1) != 0 {
+		t.Errorf("the count is %d, want 0", u.on(d1))
+	}
+	// A later day started again: a use of the day before is not in it.
+	u = u.add(d1).add(d2)
+	if u = u.remove(d1); u.on(d2) != 1 {
+		t.Errorf("a use of the day before came off the new count: %d, want 1", u.on(d2))
+	}
+	// While the clock is back, a use counts on the later day. add returns
+	// that day, and the use comes off its count.
+	u = u.add(d0)
+	if u.day != d2 || u.on(d2) != 2 {
+		t.Fatalf("a use while the clock is back: day %v, count %d; want %v and 2", u.day, u.on(d2), d2)
+	}
+	if u = u.remove(u.day); u.on(d2) != 1 {
+		t.Errorf("the count is %d, want 1", u.on(d2))
+	}
+	if u = u.remove(d0); u.on(d2) != 1 {
+		t.Errorf("a remove for an earlier day changed the count to %d", u.on(d2))
+	}
+}
+
 // TestWindowMinutes checks the N of "Approve N min".
 func TestWindowMinutes(t *testing.T) {
 	w := func(d time.Duration) item { return item{rule: config.Rule{Ask: config.AskWindow, Window: d}} }

@@ -122,7 +122,7 @@ func TestRuleNever(t *testing.T) {
 			t.Errorf("notice %+v; want the request without buttons", n)
 		}
 
-		// The deny path: no notice, no use.
+		// The deny path: no notice, so the use is denied.
 		e.fake.FailNotify(errors.New("telegram is down"))
 		r = e.now(secretsReq("ci", "backup-token"))
 		checkDenied(t, r, audit.CauseError)
@@ -130,6 +130,37 @@ func TestRuleNever(t *testing.T) {
 			t.Errorf("code %q, err %v; want approver_failed and the error", r.ErrorCode, r.Err)
 		}
 		checkEvents(t, r, "request", "error:approver_failed", "denied:error")
+	})
+}
+
+// TestRuleNeverNoticeFails checks a "never ask" use whose notice fails for
+// another reason than a limit of the approver: it is still denied with
+// cause error, and it still counts for max_per_day, because the notice may
+// have gone out. So with max_per_day = 1, the next use asks the person.
+// Only a limit of the approver does not count (issue #47).
+func TestRuleNeverNoticeFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, func(cfg *config.Broker) {
+			setSecretRule(cfg, "backup-token", config.Rule{Ask: config.AskNever, Notify: true, MaxPerDay: 1})
+		})
+		defer e.stop()
+		down := errors.New("telegram cannot be reached")
+		e.fake.FailNotify(down)
+		r := e.now(secretsReq("ci", "backup-token"))
+		checkDenied(t, r, audit.CauseError)
+		if r.ErrorCode != audit.CodeApproverFailed || !errors.Is(r.Err, down) || errors.Is(r.Err, approval.ErrLimit) {
+			t.Errorf("code %q, err %v; want approver_failed and the error", r.ErrorCode, r.Err)
+		}
+		checkEvents(t, r, "request", "error:approver_failed", "denied:error")
+
+		// The use counted: the next one asks, also when notices work again.
+		e.fake.FailNotify(nil)
+		ch := e.decide(secretsReq("ci", "backup-token"))
+		mustWait(t, ch)
+		e.asked(1)
+		if n := len(e.fake.Notices()); n != 0 {
+			t.Errorf("%d notices, want 0", n)
+		}
 	})
 }
 

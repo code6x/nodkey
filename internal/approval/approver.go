@@ -31,6 +31,12 @@ type Approver interface {
 	// request p without a tap (DESIGN.md section 12). The prompt has no
 	// buttons. ctx ends as for Ask. If Notify returns an error, the core
 	// denies the request, so a use without a tap is never unseen.
+	//
+	// If a limit of the approver itself stops the notice, Notify returns
+	// an error that wraps ErrLimit. Then the cause is limit, and the use
+	// does not count for max_per_day. After any other error, the notice
+	// may have gone out, so the use counts. The cause is then error (code
+	// approver_failed), or cancelled when the client hung up.
 	Notify(ctx context.Context, p Prompt) error
 
 	// Run gets the person's answers and passes each one to answer, until
@@ -45,6 +51,13 @@ type Approver interface {
 	// only on ErrUnknownRequest; on ErrTooEarly the person may tap again.
 	Run(ctx context.Context, answer func(Answer) error) error
 }
+
+// ErrLimit says that a limit of the approver itself stopped a notice, such
+// as the notices per minute that Telegram allows. Notify may return it, or
+// an error that wraps it, only when it sent nothing. The core then denies
+// the use with cause limit, and the use does not count for max_per_day
+// (DESIGN.md section 8).
+var ErrLimit = errors.New("approval: over a limit of the approver")
 
 // MessageID names a message that an approver sent. The approver chooses
 // its form: for Telegram it holds the chat and the message number. An

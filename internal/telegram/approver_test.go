@@ -172,8 +172,8 @@ func TestNotifyRateLimit(t *testing.T) {
 		}
 		now = now.Add(time.Second)
 	}
-	if err := e.a.Notify(context.Background(), p); !errors.Is(err, ErrNoticeLimit) {
-		t.Errorf("notice %d: %v, want ErrNoticeLimit", NoticesPerMinute+1, err)
+	if err := e.a.Notify(context.Background(), p); !errors.Is(err, ErrNoticeLimit) || !errors.Is(err, approval.ErrLimit) {
+		t.Errorf("notice %d: %v, want ErrNoticeLimit, a limit for the core", NoticesPerMinute+1, err)
 	}
 	if n := len(e.f.callsOf("sendMessage")); n != NoticesPerMinute {
 		t.Errorf("%d notices sent, want %d", n, NoticesPerMinute)
@@ -192,8 +192,8 @@ func TestNotifyRateLimit(t *testing.T) {
 		e.f.reply("sendMessage", 400, `{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`)
 	}
 	for range NoticesPerMinute {
-		if err := e.a.Notify(context.Background(), p); err == nil || errors.Is(err, ErrNoticeLimit) {
-			t.Fatalf("Notify: %v, want the error of Telegram", err)
+		if err := e.a.Notify(context.Background(), p); err == nil || errors.Is(err, approval.ErrLimit) {
+			t.Fatalf("Notify: %v, want the error of Telegram, not a limit", err)
 		}
 	}
 	if err := e.a.Notify(context.Background(), p); !errors.Is(err, ErrNoticeLimit) {
@@ -201,6 +201,25 @@ func TestNotifyRateLimit(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), "too many notices") {
 		t.Error("the refused notice is not logged")
+	}
+}
+
+// TestNoticeLimitIsALimit checks which errors of Notify the approval core
+// takes as a limit of the approver (approval.ErrLimit): ErrNoticeLimit,
+// when Notify sent nothing. An error of Telegram is not one, also not its
+// code 429 "too many requests": an earlier try may have sent the notice.
+// (Issue #47.)
+func TestNoticeLimitIsALimit(t *testing.T) {
+	if !errors.Is(ErrNoticeLimit, approval.ErrLimit) {
+		t.Error("ErrNoticeLimit does not wrap approval.ErrLimit")
+	}
+	e := newEnv(t)
+	e.f.reply("sendMessage", 429, `{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":60}}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := e.a.Notify(ctx, noticeOf(secretsPrompt()))
+	if ce := callErr(t, err); ce.code != 429 || errors.Is(err, approval.ErrLimit) {
+		t.Errorf("Notify after a 429: %v, want the 429 error, not a limit", err)
 	}
 }
 

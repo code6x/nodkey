@@ -171,7 +171,9 @@ func (a *Approver) FailAsk(err error) {
 	a.askErr = err
 }
 
-// FailNotify makes Notify fail with err. nil makes it work again.
+// FailNotify makes Notify fail with err. nil makes it work again. An err
+// that wraps approval.ErrLimit acts as a limit of the approver itself:
+// Notify keeps nothing, as it sent nothing.
 func (a *Approver) FailNotify(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
