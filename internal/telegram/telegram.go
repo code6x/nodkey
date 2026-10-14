@@ -75,8 +75,10 @@ var (
 	ErrPollConflict = errors.New("telegram: another program polls with the bot token, or a webhook is set; " +
 		"the bot token may be stolen")
 	// ErrNoticeLimit: Notify sent NoticesPerMinute notices in the last 60
-	// seconds, so it sends no more. The core then denies the use.
-	ErrNoticeLimit = errors.New("telegram: too many notices in the last minute")
+	// seconds, so it sends no more. It wraps approval.ErrLimit, because
+	// nothing was sent: the core denies the use with cause limit, and the
+	// use does not count for max_per_day.
+	ErrNoticeLimit = fmt.Errorf("telegram: too many notices in the last minute: %w", approval.ErrLimit)
 )
 
 // Options are the optional parts of an Approver.
@@ -254,7 +256,9 @@ func (a *Approver) End(ctx context.Context, m approval.MessageID, p approval.Pro
 // Notify sends a silent notice of the "never ask" use p to the notice
 // chat. It sends nothing when ctx has ended, and nothing when it sent
 // NoticesPerMinute notices in the last 60 seconds: then it returns
-// ErrNoticeLimit, and the core denies the use.
+// ErrNoticeLimit, and the core denies the use with cause limit. Only
+// ErrNoticeLimit is a limit for the core. Telegram's own code 429 after
+// the last try is not: an earlier try may have sent the notice.
 func (a *Approver) Notify(ctx context.Context, p approval.Prompt) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -1,6 +1,9 @@
 package approval
 
-import "io"
+import (
+	"io"
+	"time"
+)
 
 // SetRandom replaces the source of random bytes for request IDs and short
 // codes, for tests of what happens when IDs repeat or the source fails.
@@ -27,4 +30,16 @@ func (c *Core) Live() (ids, codes, waiting int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.ids), len(c.codes), len(c.waiting)
+}
+
+// Uses returns how many uses of the "never ask" rule of the secret name,
+// or of the key name if key, by client count for the wall time at.
+func (c *Core) Uses(client string, key bool, name string, at time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rule := c.cfg.Secrets[name].Rule
+	if key {
+		rule = c.cfg.Keys[name].Rule
+	}
+	return c.uses[useKey{client, ref{key: key, name: name}}].on(useDay(rule, at))
 }

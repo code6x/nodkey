@@ -95,6 +95,23 @@ func (u dayUses) add(d day) dayUses {
 	return dayUses{day: u.day, n: u.n + 1}
 }
 
+// remove takes back one use from the count of the day d: the day that
+// the count had after add counted the use. If the count has moved on to a
+// later day since, the use is not in it, and nothing changes.
+func (u dayUses) remove(d day) dayUses {
+	if u.day == d && u.n > 0 {
+		u.n--
+	}
+	return u
+}
+
+// countedUse is a use of a "never ask" rule that the core counted: the
+// rule's client and item, and the day of the count that holds the use.
+type countedUse struct {
+	key useKey
+	day day
+}
+
 // rateLog holds the times of the newest events of one kind, oldest first,
 // on the monotonic clock: at most as many as the limit per minute allows.
 type rateLog []time.Time
