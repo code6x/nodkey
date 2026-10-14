@@ -60,6 +60,26 @@ func TestZeroRuleIsNoRule(t *testing.T) {
 	}
 }
 
+// TestParseRuleWindow checks the bounds of a window: 1 minute to 8 hours.
+// A shorter window would give grants of 0 whole minutes, so the rule would
+// quietly act like "always".
+func TestParseRuleWindow(t *testing.T) {
+	const sec = "[secret.github-token]"
+	for in, want := range map[string]time.Duration{"1m": time.Minute, "90s": 90 * time.Second, "15m": 15 * time.Minute, "8h": 8 * time.Hour} {
+		r, err := parseRule(sec, ruleKeys{Ask: "window", Window: &in})
+		if err != nil || r.Ask != AskWindow || r.Window != want {
+			t.Errorf("window %q: %+v, %v; want a window of %v", in, r, err, want)
+		}
+	}
+	for _, in := range []string{"0s", "1s", "59s", "59.999s", "-1m", "8h0m1s", "9h"} {
+		r, err := parseRule(sec, ruleKeys{Ask: "window", Window: &in})
+		checkError(t, err, sec+" window: must be at least 1m and at most 8h", "")
+		if r != (Rule{}) {
+			t.Errorf("window %q: rule %+v with the error, want none", in, r)
+		}
+	}
+}
+
 func TestParseHours(t *testing.T) {
 	valid := []struct {
 		in       string

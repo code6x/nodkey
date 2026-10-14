@@ -20,8 +20,14 @@ const (
 	AskNever  Ask = "never"  // do not ask (DESIGN.md section 12)
 )
 
-// MaxWindow is the longest window a "window" rule may have.
-const MaxWindow = 8 * time.Hour
+// MinWindow and MaxWindow are the shortest and the longest window a
+// "window" rule may have. A grant lasts whole minutes, so a shorter window
+// could give no grant at all, and the rule would quietly act like
+// "always".
+const (
+	MinWindow = time.Minute
+	MaxWindow = 8 * time.Hour
+)
 
 // Rule is the rule of one secret or key. Rules come only from LoadBroker,
 // which checks them. Do not build one by hand.
@@ -38,7 +44,7 @@ type Rule struct {
 	Ask Ask
 
 	// Window is the longest grant an "Approve N min" tap may give. Only
-	// for AskWindow: 0 < Window <= MaxWindow.
+	// for AskWindow: MinWindow <= Window <= MaxWindow.
 	Window time.Duration
 
 	// The rest is only for AskNever.
@@ -108,9 +114,9 @@ func parseRule(section string, k ruleKeys) (Rule, error) {
 		if err != nil {
 			return Rule{}, err
 		}
-		if w <= 0 || w > MaxWindow {
-			return Rule{}, fmt.Errorf("%s: must be more than 0 and at most %s",
-				place(section, "window"), formatDuration(MaxWindow))
+		if w < MinWindow || w > MaxWindow {
+			return Rule{}, fmt.Errorf("%s: must be at least %s and at most %s",
+				place(section, "window"), formatDuration(MinWindow), formatDuration(MaxWindow))
 		}
 		return Rule{Ask: AskWindow, Window: w}, nil
 	case AskNever:

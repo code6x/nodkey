@@ -274,6 +274,10 @@ Rules for the claimed part, because the agent writes it:
 - The claimed part always comes after the verified part, under the
   "claimed by the agent" line. So the agent cannot make text that looks
   like a verified line.
+- The approval core checks that each claimed field is one clean line, as
+  the rules above make it, and denies the request if a field is not. So
+  text that missed the cleaning cannot reach a message or the audit log.
+  The core cannot check the masking.
 
 ### What is masked
 
@@ -415,6 +419,9 @@ Not masked, for example:
 
 - Each request gets a new random ID: 16 bytes from `crypto/rand`, written
   as base64url. The short code in the message ("k3f9") is only for people.
+  It is 4 random characters from `23456789abcdefghjkmnpqrstuvwxyz` (no 0,
+  1, i, l or o, which people mix up). No two requests in progress share an
+  ID or a short code.
 - The button data is `o:<id>` (once), `w:<id>` (window) or `d:<id>` (deny).
   That fits Telegram's 64-byte limit.
 - The broker accepts a button press only when **all** of these are true:
@@ -427,9 +434,18 @@ Not masked, for example:
   - the action is allowed for that request.
 - The first valid answer wins. Taking a request out of the waiting list and
   deciding it is one step under one lock, so two taps cannot both count.
+- The Telegram code checks the user and the chat. Then the approval core
+  checks the user, the message, the request, the time and the button
+  again. A tap that fails a check changes nothing: the request still
+  waits, or it had already ended.
 - A request is answered once. The broker then forgets its ID. A second tap,
   a late tap, or a tap on a message from before a restart finds no waiting
   request. The broker refuses it and edits that message to "expired".
+- A tap can also come too early: while the broker still waits for Telegram
+  to confirm that it sent the message. The broker refuses that tap too,
+  but it leaves the message as it is, so the person can tap again. It
+  edits a message to "expired" only when no request with that ID is in
+  progress.
 - The broker answers every button press (`answerCallbackQuery`), so the
   phone never shows a spinning button.
 - When a request ends, the broker edits the message: it removes the buttons
@@ -453,8 +469,16 @@ Not masked, for example:
 - The bot token is in the request URL, and Go's HTTP errors include the
   URL. The Telegram code removes the URL from every error before it is
   logged.
-- If Telegram cannot be reached, the request waits until it expires, then
-  it is denied.
+- If Telegram cannot be reached, a message cannot be sent or answered. The
+  Telegram code may try to send a message again until its request
+  expires. If it cannot send it, the request is denied. A request whose
+  message was sent waits until it expires, then it is denied.
+- If the polling stops for good, no answer can come any more. Then every
+  request that waits for the person is denied at once, and so is every new
+  request that needs a message. A message or a notice that is still being
+  sent stops too, and no new notice goes out, so a "never ask" use that
+  needs a notice is denied as well. Grants still work, and so do "never
+  ask" rules with `notify = false`. The broker should stop then.
 - Messages about "never ask" uses can go to a second chat
   (`notice_chat_id`), so the approval chat stays for approvals only.
 
@@ -468,17 +492,34 @@ Each secret and each key has a rule:
 | `window` | Ask; the approver may also allow the next N minutes. | Approve once · Approve N min · Deny |
 | `never` | Do not ask. See [decision 3](#12-decision-3-unattended-runs). | none |
 
+Any other `ask` value, also an empty one, denies the request. So does a
+`never` rule for a key without `hosts`, and a `never` rule that does not
+name exactly one client. The config check refuses all of these (section
+14); the approval core denies them again.
+
 - A grant covers (client, secret) for secrets, and (client, key, host key,
   remote user) for SSH keys, until it ends. The host is matched by its host
   key, not by its name. A host can have several host keys, one of each key
   type, and a grant from a login covers only the host key of that login. A
   grant for `deploy@web-1` does not allow `root@web-1`. Using a grant does
-  not make it longer.
+  not make it longer. A second "Approve N min" for the same scope keeps the
+  end that is later.
 - A request with several secrets needs one approval for all of them. The
   "Approve N min" button shows only if every secret in the request has the
-  `window` rule. N is then the shortest window among them. The tap makes one
-  grant for each secret.
-- A window is at most 8 hours.
+  `window` rule. N is then the shortest window among them, in whole
+  minutes, rounded down, so a grant is never longer than a window. The tap
+  makes one grant for each secret.
+- A grant ends N minutes after the tap. It starts only once the `decision`
+  entry of the tap is on disk (section 9). If that entry cannot be written,
+  the grant never starts.
+- A Deny ends the grants of that client for each secret or key of the
+  denied request, at once. For a key, that is every grant of the client
+  for the key: at every host key and for every remote user, as wide as the
+  pause below. A Deny says that something looks wrong, so it ends more
+  than the one host. It also stops a grant from an earlier tap that has
+  not started yet. Grants of other clients stay.
+- A window is 1 minute to 8 hours. A shorter one would give grants of 0
+  whole minutes, so the rule would quietly act like `always`.
 - Grants live only in memory. A broker restart removes them all.
 - A secret or key that is not in the broker config does not exist for the
   client. The client sends names, never store IDs. So the agent cannot ask
@@ -486,16 +527,33 @@ Each secret and each key has a rule:
 
 **Limits per client**, so a broken or hostile agent cannot flood the phone:
 
-- At most 5 messages waiting for an answer, and at most 6 new messages per
-  minute.
-- Other requests wait in a queue of up to 10, without a message, until a
-  place is free. A request leaves the queue only if at least 30 seconds of
-  its time are left; otherwise it is denied, so the person never gets a
+- At most 5 messages waiting for an answer, and at most 6 new messages in
+  any 60 seconds. A message counts as waiting from just before it is sent
+  until its request ends. A message that could not be sent still counts
+  toward the 6.
+- Other requests wait in a queue of up to 10, without a message, until
+  both limits allow a new message. The oldest request leaves first. A
+  request leaves the queue only if at least 30 seconds of its time are
+  left. As soon as less is left, it is denied, so the person never gets a
   message they cannot answer in time. If the queue is full, the request is
-  denied at once.
-- After a Deny, new requests from the same client for the same secret or
-  key are denied without a message for 60 seconds.
-- Requests covered by a grant or a "never ask" rule do not count.
+  denied at once. So is a request that would have to wait, but has less
+  than 30 seconds left.
+- After the person taps Deny, new requests from the same client for any
+  secret or key of the denied request are denied without a message, for 60
+  seconds from the tap. Requests for them that already wait in the queue
+  are denied too, because their messages would come during the pause.
+  Messages that are already shown stay. A request that expired starts no
+  pause.
+- Requests covered by a grant or a "never ask" rule do not count, and no
+  limit or pause applies to them. A request that is covered only in part
+  needs a message, so it counts.
+- One limit applies to them: at most 6 notices of "never ask" uses in any
+  60 seconds, for all secrets and keys of the client together. A use that
+  would need one more notice is denied, without a notice, and does not
+  count for `max_per_day`. Without this limit, one client could fill the
+  phone with notices and use up Telegram's limits for the chat, so that
+  messages for other clients could not be sent. A "never ask" rule with
+  `notify = false` sends no notice and has no such limit.
 
 ## 9. Audit log
 
@@ -568,6 +626,20 @@ The request fields are `request_id`, `client`, `kind` (`secrets`,
 `ssh_login` or `ssh_grant`), `secrets`, `key`, `hosts`, `host_key` (a
 SHA256 fingerprint), `remote_user`, and the claimed `command` and
 `reason`.
+
+For each request, the broker writes its entries in this order. First
+`request`. Then one of these: `decision` (and `denied` with cause
+`approver` after a Deny); `grant_used`; or `denied` (with an `error` entry
+before it when the cause is `error`). After an approval, `secret_sent` or
+`signed` follows once the broker has handed something out. When grants and
+a "never ask" rule allow one request together, it gets two `grant_used`
+entries, one for each, and each lists the secrets it covered.
+
+The broker writes the `request` entry only when the request has ended,
+together with the entries after it, because it holds the exact text of
+the message. So a request that was still waiting when the broker stopped,
+such as in a crash or a power cut, leaves no entry. Nothing was handed out
+for it.
 
 These fields hold text that the client, or someone else, chose:
 
@@ -908,11 +980,27 @@ listed hosts with that key) without a tap. To keep it small:
 - The rule names exactly one client.
 - For SSH keys, it must list the hosts (`hosts = [...]`).
 - It can be limited to a time of day (`hours = "03:00-03:20"`, broker
-  local time). Outside those hours, the broker asks as usual.
+  local time: the time zone of the broker process). The end is not part of
+  the hours: `03:20:00` is outside. Outside those hours, the broker asks as
+  usual, with "Approve once" and "Deny".
+- Hours are read on the local clock, so summer time changes them. On the
+  day the clocks go back, the hour before the change comes twice, and
+  hours in it, such as `03:00-03:20` in most of Europe, open twice. On the
+  day the clocks go forward, an hour is skipped, and hours in it do not
+  open at all. If your time zone has summer time, choose hours outside the
+  change (often 01:00 to 04:00), or run the broker in UTC.
 - An optional `max_per_day` limit. Over the limit, the broker asks again. If
   the agent used up the uses, the real job fails, and that is a visible sign.
+  A day is a calendar day in broker local time. But when the hours go past
+  midnight, such as `23:30-00:30`, the uses after midnight count for the
+  day the hours began, so `max_per_day = 1` gives one use a night. On the
+  day the clocks go back, hours that open twice still share one count. If
+  the clock is set back to an earlier day, the uses of the later day still
+  count, so a clock change cannot give more uses.
 - Every use sends a silent Telegram message (`notify = true` by default) to
-  the notice chat, so a strange use is seen.
+  the notice chat, so a strange use is seen. If that message cannot be
+  sent, the request is denied. At most 6 notices go out in any 60 seconds
+  for one client (section 8); a use over that is denied.
 - Use a narrow secret: a secret that can do little, or a deploy key that
   can reach only one repository. For `bws`, the job's secret can live in its
   own project, read through its own store entry with its own machine
@@ -944,16 +1032,23 @@ ansible-playbook site.yml
 
 `ssh-grant` sends one request. The message lists the key, the remote user,
 every host by its name in the broker's `known_hosts`, and the time the
-grant ends. One tap makes a grant for each host key of each listed host (a
-host can have one host key of each key type), exactly as in B.
+grant ends. That time is fixed when the request comes: its time plus
+`--for`, in whole minutes, rounded down. A late tap does not move it. The
+message has only "Approve" (until that time) and "Deny". It waits for an
+answer as long as a request for secrets (`timeout`), because it is not an
+SSH login, but never past the time the grants end: after that, an
+approval would grant nothing. One tap makes a grant for each host key of
+each listed host (a host can have one host key of each key type), exactly
+as in B.
 Then the playbook runs without more taps. A host that is not in the list
-still asks. The broker refuses an `ssh-grant` when:
+still asks. A host that is listed twice counts once. The broker refuses
+an `ssh-grant` when:
 - the remote user name does not match the pattern in section 6;
 - the key's rule is not `window`;
-- `--for` is longer than the key's window;
+- `--for` is longer than the key's window, or shorter than one minute;
 - a host is not in the broker's `known_hosts`, or not in the key's `hosts`
   list when it has one;
-- it lists more than 20 hosts.
+- it lists no host, or more than 20 hosts.
 
 **Why B and D:** the host is the most useful thing a person checks, and both
 keep it in every grant. C is too wide: approving `web-1` would silently allow
@@ -1070,6 +1165,7 @@ More rules:
 - A secret's `id` is the item's UUID in the store, so `bw` never searches
   items by name.
 - `clients` and `hosts` list each name once. `notice_chat_id` is not 0.
+  A `window` is 1 minute to 8 hours.
   `timeout` is 15 s to 10 min. `ssh_timeout` is 15 s to 110 s, below
   `sshd`'s `LoginGraceTime`.
 - `max_per_day`, if present, is 1 or more. For no limit, leave it out.
@@ -1223,7 +1319,13 @@ text of a line. It exits with:
   repeated keys.
 - The broker turns off core dumps and marks itself not dumpable
   (`PR_SET_DUMPABLE`).
-- Time limits use Go's monotonic clock.
+- Time limits use Go's monotonic clock, so setting the wall clock does not
+  move them. The monotonic clock stops while the host sleeps (suspend), so
+  a request and a grant also end when the wall clock reaches their end:
+  they end at whichever clock gets there first. A grant from 11:55 for 15
+  minutes ends at 12:10 on the wall clock, also if the host slept from
+  12:00 to 20:00. A request whose end the wall clock has passed takes no
+  answer.
 - A systemd unit with sandbox settings ships as an example.
 
 ## 17. Testing
@@ -1235,7 +1337,8 @@ text of a line. It exits with:
   (wrong user, wrong chat, wrong message, unknown ID, late tap, double tap,
   polling conflict).
 - **Fake approver**: a test approver that says yes, no, nothing, or answers
-  late, on command.
+  late, on command. It and a fake clock are in
+  `internal/approval/approvaltest`, for the tests of the broker too.
 - **Fake store**: a small test program that acts like `bws`.
 - **End-to-end test**: a throwaway key, `sshd` in a container, the broker and
   the client on the test machine, and the fake approver. It checks that
