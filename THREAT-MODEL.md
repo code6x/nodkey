@@ -58,7 +58,8 @@ access to another machine and asks a person before each use.
    that prints a secret. Values go only into the environment of the one
    command.
 6. **A record.** Every request and decision is in a hash-chained log, and
-   nothing is approved unless its record is on disk first.
+   nothing is approved unless its record is on disk first. A grant from an
+   "Approve N min" tap starts only after its decision is on disk.
 
 ## 5. What nodkey does not promise
 
@@ -116,13 +117,19 @@ and claimed fields always come after the verified ones. The verified part holds 
 broker's config and data the broker checked. The broker itself checks that
 the remote user name matches a strict pattern, and that environment
 variable names match `[A-Z_][A-Z0-9_]{0,63}`; variable names are shown as
-claimed. The broker never relies on checks done by the client.
+claimed. The broker never relies on checks done by the client. The
+approval core checks again that each claimed field is one clean line, and
+denies the request if one is not.
 Risk that remains: low.
 
 **T4. An old or repeated tap approves something new.**
 Each request has a new random 128-bit ID in the button. It works once, only
 on its own message, only while the request waits, and only before it
-expires. A restart forgets all IDs.
+expires. A restart forgets all IDs. The approval core checks all of this
+again after the Telegram code, also the user and the button. Taking the
+request out of the waiting list and deciding it is one step under one
+lock, so two taps cannot both count. A tap that fails a check changes
+nothing.
 Risk that remains: none known.
 
 **T5. Someone else presses the button.**
@@ -162,13 +169,22 @@ A passkey page is a possible later step.
 Grants for N minutes and `ssh-grant` cut the number of taps. Limits stop
 floods. The message is short and puts the verified lines first. Notices
 about "never ask" uses can go to a separate chat, so the approval chat
-stays for real decisions.
+stays for real decisions. When the person sees something strange and taps
+Deny, the client's grants for that secret or key end at once (for a key:
+at every host and for every user), so a grant does not keep handing it
+out.
 Risk that remains: the person may still tap without reading.
 
 **T9. The agent floods the phone.**
-Per client: at most 5 waiting messages and 6 new messages per minute; a
-queue of at most 10; after a Deny, requests for the same secret or key are
-denied without a message for 60 seconds.
+Per client: at most 5 waiting messages and 6 new messages in any 60
+seconds; a queue of at most 10; after a Deny, requests for the same secret
+or key are denied without a message for 60 seconds, also those that
+already wait in the queue. A request leaves the queue only with at least
+30 seconds left, so no message comes that cannot be answered in time. A
+"never ask" rule sends at most 6 notices in any 60 seconds per client; a
+use over that is denied. So a client with such a rule cannot fill the
+notice chat, or use up Telegram's limits so that messages for other
+clients fail.
 Risk that remains: low.
 
 **T10. Someone on the network reads or changes the traffic.**
@@ -308,7 +324,12 @@ Risk that remains:
   immutable releases stop changes to a published release.
 
 **T21. Telegram, the network or the phone is down.**
-Requests expire and are denied. The agent waits, then fails.
+Requests expire and are denied. The agent waits, then fails. A request
+whose message cannot be sent is denied. If the polling stops for good, the
+requests that wait for the person are denied at once, and a message or
+notice that is still being sent stops. A "never ask" use whose notice
+cannot be sent is denied too. If the broker host sleeps, requests and
+grants still end on the wall clock.
 Risk that remains: the agent's work stops. That is the safe way to fail.
 
 **T22. A client uses a secret meant for another client.**
@@ -375,10 +396,15 @@ A typo must never turn a rule off. Config files are strict: an unknown key,
 a key in another case (`ASK`), a key outside the header of its own section
 (a dotted key or an inline table), a missing key, or a value out of range is
 an error, and the broker does not start. A "never ask" rule names exactly
-one client. Two "never ask" secrets cannot use one store item, and two
-`[key.*]` sections cannot use one key file. A copy of a key in a second
-file passes that file check, so when the broker loads the keys, it also
-refuses two `[key.*]` sections with the same public key. `max_per_day = 0`
+one client. A `window` shorter than one minute is an error, so it cannot
+quietly act like `always`. The approval core checks the rules again: it
+denies an `ask` value it does not know (also an empty one), a `window`
+outside 1 minute to 8 hours, a "never ask" rule that does not name
+exactly one client, and a "never ask" rule for a key without hosts. Two
+"never ask" secrets cannot use one store item, and two `[key.*]` sections
+cannot use one key file. A copy of a key in a second file passes that file
+check, so when the broker loads the keys, it also refuses two `[key.*]`
+sections with the same public key. `max_per_day = 0`
 is an error, not "no limit". `listen` must be one IP address, so the
 broker does not listen on every network by mistake; a multicast or
 broadcast address, an IPv6 zone and an IPv6 link-local address are
