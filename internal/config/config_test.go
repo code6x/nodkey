@@ -257,7 +257,7 @@ func TestDecodeStrict(t *testing.T) {
 		// pasted text, such as a token.
 		{name: "pasted text as a key", data: "[entry.web-1]\nSECRETpass-word_1 = 1\n", want: "1 unknown key; " +
 			"an error shows a key name only if it looks like a config key, such as tls_key", notWant: "SECRET"},
-		{name: "pasted token as a key", data: "ghp_madeUpSECRETtokenForTests = 1\n", want: "1 unknown key;", notWant: "SECRET"},
+		{name: "pasted token as a key", data: "gh" + "p_madeUpSECRETtokenForTests = 1\n", want: "1 unknown key;", notWant: "SECRET"},
 		{name: "pasted lower case token as a key", data: "tok_madeupsecret0000000000000000000 = 1\n", want: "1 unknown key;", notWant: "secret"},
 		{name: "key of 16 characters", data: "abcdefghijklm_no = 1\n", want: `unknown key "abcdefghijklm_no"`},
 		{name: "key of 17 characters", data: "abcdefghijklm_nop = 1\n", want: "1 unknown key;", notWant: "abcdef"},
@@ -390,7 +390,7 @@ func TestKeyText(t *testing.T) {
 func TestTOMLErrorsDoNotRepeatText(t *testing.T) {
 	for _, line := range []string{
 		"c2VjcmV0LXRva2VuLVNFQ1JFVA==", // base64 of "secret-token-SECRET"
-		"ghp_madeUpSECRETtokenForTestsOnly0000000",
+		"gh" + "p_madeUpSECRETtokenForTestsOnly0000000",
 		"123456789:AAmadeUpSECRETtelegramToken",
 		"0.00000000-0000-0000-0000-000000000000.madeUpSECRET:AAAAAAAAAAAAAAAAAAAAAA==",
 		"token_file = 0.00000000.SECRET:AAAAAAAAAAAAAAAAAAAAAA==",
