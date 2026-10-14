@@ -36,6 +36,18 @@ linters:
           msg: library code must not use the default logger; take a *slog.Logger
         - pattern: ^slog\.(Default|SetDefault)$
           msg: library code must not use the default logger; take a *slog.Logger
+        # Key, token and password files are read only through the config
+        # package, which checks who can read and change them (DESIGN.md
+        # section 14). The tls.LoadX509KeyPair rule holds everywhere, in
+        # cmd/ and in tests too. The os.ReadFile rule holds only in library
+        # code under internal/, outside internal/config and outside tests
+        # (see the exclusions below).
+        - pattern: ^tls\.LoadX509KeyPair$
+          pkg: ^crypto/tls$
+          msg: read the key with config.ReadPrivateFile, then use tls.X509KeyPair
+        - pattern: ^os\.ReadFile$
+          pkg: ^os$
+          msg: use the config package's checked reader for keys and tokens (config.ReadPrivateFile), or open and stream the file (for the audit log and /proc)
       # Match on types, so an import alias or a *log.Logger cannot hide a call.
       analyze-types: true
     nolintlint:
@@ -44,9 +56,26 @@ linters:
 
   exclusions:
     rules:
+      # Code in cmd/ may print. Only the rules about printing and logging
+      # (their messages start with "library code must not") are off there.
       - path: ^cmd/
         linters:
           - forbidigo
+        text: library code must not
+      # os.ReadFile is forbidden only in library code under internal/. The
+      # config package has the file readers, and tests read their own files.
+      - path-except: ^internal/
+        linters:
+          - forbidigo
+        text: use of `os\.ReadFile` forbidden
+      - path: ^internal/config/
+        linters:
+          - forbidigo
+        text: use of `os\.ReadFile` forbidden
+      - path: _test\.go$
+        linters:
+          - forbidigo
+        text: use of `os\.ReadFile` forbidden
 
 formatters:
   enable:

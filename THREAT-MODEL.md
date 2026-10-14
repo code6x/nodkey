@@ -279,6 +279,54 @@ file where one key has two names.
 Risk that remains: a host key that was copied to a machine the broker does
 not know about.
 
+**T26. Another user on the broker host reads a key or changes what the
+broker trusts.**
+A key, token or password file that others can read gives them the secret.
+A config file, `known_hosts` file or store program that others can change
+lets them change the rules, the host names, or the program that gets the
+store token. So at start the broker checks these files (DESIGN.md section
+14). It refuses a key, token or password file that group or others can
+read, also through an ACL entry. It refuses such a file if it is a
+symbolic link, or if it is not on a local file system that nodkey knows
+(such as ext4 or tmpfs); a network file system or FUSE is refused. On
+overlayfs and ecryptfs, nodkey checks the file you name. It refuses a
+config file, `known_hosts` file or store program that group or others can
+write to. It refuses an audit log that is a symbolic link, that another
+user owns, whose mode gives more than read and write to its owner, or that
+is another file the broker reads or runs, such as a key file or the config
+file (people read and copy the log, and the broker adds to it). It refuses
+all of these below a directory that group or others can write to, also a
+directory that holds a symbolic link on the way.
+nodkey opens each file once, checks the open file, and reads from that
+same open file. So the file cannot be swapped between the check and the
+read. The client checks its own TLS key in the same way.
+Risk that remains: root and the broker user can still change everything
+(T16). Programs and libraries that a store program loads are not checked.
+On overlayfs, nodkey sees only the mode bits of the top copy of a file; a
+lower copy of a key can be readable by others who can reach the lower
+layer (DESIGN.md section 14). Keep keys and tokens out of lower layers and
+image layers.
+
+**T27. A mistake in the config file allows more than the approver meant.**
+A typo must never turn a rule off. Config files are strict: an unknown key,
+a key in another case (`ASK`), a key outside the header of its own section
+(a dotted key or an inline table), a missing key, or a value out of range is
+an error, and the broker does not start. A "never ask" rule names exactly
+one client. Two "never ask" secrets cannot use one store item, and two
+`[key.*]` sections cannot use one key file. A copy of a key in a second
+file passes that file check, so when the broker loads the keys, it also
+refuses two `[key.*]` sections with the same public key. `max_per_day = 0`
+is an error, not "no limit". `listen` must be one IP address, so the
+broker does not listen on every network by mistake; a multicast or
+broadcast address, an IPv6 zone and an IPv6 link-local address are
+refused too. An error may show a file path, or a section name or key name
+that looks normal, but never a secret value. A name that does not look
+normal is not shown, because a mistake can put a token there. An error
+can show a path, so do not paste a secret into a path setting.
+Risk that remains: a rule that is valid but wider than the approver meant.
+The broker cannot know what the approver meant. Review each change to the
+config.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has
