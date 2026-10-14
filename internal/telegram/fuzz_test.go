@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"path"
 	"regexp"
@@ -99,14 +100,17 @@ var coreErrors = []error{
 }
 
 // FuzzHandleUpdate handles any update, as getUpdates reads it, and checks
-// the rules of a button press. The core gets only a press of the
-// approver, in the private chat, on a message, with valid button data, on
-// a message that is as Ask sent it, and with the fields of that press.
-// Every press with an ID gets exactly one answer. A message is updated
-// only when no request waits on it: its result again if this approver
-// ended it, else only its buttons are removed. A report holds a known
-// cause and at most 64 bytes of data. choice picks the core's answer, and
-// whether the approver sent message 5 and ended its request.
+// the rules of a button press. The core gets only a press of the approver,
+// in the private chat, on a message, with valid button data, on a message
+// that is as Ask sent it, and with the fields of that press. On a message
+// that someone else changed while its request may wait, it gets only the
+// Deny that Ask sent on it, and every press there is reported with cause
+// edited_message, also a Deny that counted. Every press with an ID gets
+// exactly one answer. A message is updated only when no request waits on
+// it: its result again if this approver ended it, else only its buttons
+// are removed. A report holds a known cause and at most 64 bytes of data.
+// choice picks the core's answer, and whether the approver sent message 5
+// and ended its request.
 func FuzzHandleUpdate(f *testing.F) {
 	token := newCanaryToken(f)
 	seed := func(u map[string]any) {
@@ -146,6 +150,14 @@ func FuzzHandleUpdate(f *testing.F) {
 				{"text": "Deny", "callback_data": dataOnce + testID(1)},
 			}}}}}}
 	seed(swapped)
+	// Deny on a changed message: the one of its request, and another.
+	for _, data := range []string{dataDeny + testID(1), dataDeny + testID(2)} {
+		for _, u := range []map[string]any{edited, swapped} {
+			q := maps.Clone(u["callback_query"].(map[string]any))
+			q["data"] = data
+			seed(map[string]any{"update_id": 6, "callback_query": q})
+		}
+	}
 	seed(map[string]any{"update_id": 4, "callback_query": map[string]any{
 		"id": "cb", "from": map[string]any{"id": otherUserID}, "data": dataDeny + testID(2), "inline_message_id": "i"}})
 	seed(map[string]any{"update_id": 5, "message": map[string]any{"text": "approve"}})
@@ -193,14 +205,19 @@ func FuzzHandleUpdate(f *testing.F) {
 		ours := valid && known && q.Message.MessageID == 5 // this approver sent the message
 		waits := ours && !ended                            // and has not ended its request
 		changed := valid && (q.Message.EditDate != 0 || (waits && !sameKeyboard(kb, q.Message.ReplyMarkup)))
+		// A Deny is safe whatever the message shows: the Deny that Ask
+		// sent on a changed message whose request may wait still counts.
+		deny := changed && waits && q.Data == dataDeny+testID(1)
+		toCore := valid && (!changed || deny)
 
-		// The core gets exactly the valid presses on unchanged messages.
+		// The core gets exactly the valid presses on unchanged messages,
+		// and the Deny of its request on a changed one.
 		switch {
-		case (!valid || changed) && len(answers) != 0:
+		case !toCore && len(answers) != 0:
 			t.Fatalf("the core got a press that must not count: %+v", answers)
-		case valid && !changed && len(answers) != 1:
+		case toCore && len(answers) != 1:
 			t.Fatalf("the core got %d answers for a valid press", len(answers))
-		case valid && !changed:
+		case toCore:
 			want := approval.Answer{RequestID: id, Action: action, Message: messageID(approverID, q.Message.MessageID),
 				UserID: approverID}
 			if answers[0] != want {
@@ -218,6 +235,7 @@ func FuzzHandleUpdate(f *testing.F) {
 		case !valid:
 			cause = "any"
 		case changed && waits:
+			// Also a Deny that counted: the entry shows the edit.
 			cause = audit.TapEditedMessage
 		case changed, errors.Is(coreErr, approval.ErrUnknownRequest):
 			cause = audit.TapUnknownRequest
@@ -259,8 +277,8 @@ func FuzzHandleUpdate(f *testing.F) {
 			}
 		}
 		// An alert goes out only for a changed message whose request may
-		// wait.
-		if alerts := len(mem.of("sendMessage")); (alerts == 1) != (cause == audit.TapEditedMessage) || alerts > 1 {
+		// wait, also when a Deny on it counted.
+		if alerts := len(mem.of("sendMessage")); (alerts == 1) != (changed && waits) || alerts > 1 {
 			t.Fatalf("%d alerts for cause %q", alerts, cause)
 		}
 	})

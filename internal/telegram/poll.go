@@ -46,6 +46,7 @@ const (
 	tapExpired        = "This request has expired."
 	tapRefused        = "This button does not count."
 	tapChanged        = "Someone else changed this message. This tap does not count."
+	tapChangedDenied  = "Denied. Someone else changed this message."
 )
 
 // Run gets the button presses with long polling (getUpdates) and passes
@@ -58,19 +59,28 @@ const (
 //     the approver, on an inline message, or with button data that is not
 //     valid never reaches answer. It is logged and goes to
 //     Options.ForeignTap, and so does every press that answer refuses,
-//     except one that came too early.
-//   - A press on a message that is not as Ask sent it, because someone
+//     except one that came too early on a message that nobody else
+//     changed.
+//   - An Approve on a message that is not as Ask sent it, because someone
 //     edited it (edit_date) or its buttons differ, never reaches answer.
 //     The broker never edits a message while its request waits. If its
 //     request may still wait, Run also sends an alert, at most one in
-//     changedAlertEvery: the bot token may be stolen.
+//     changedAlertEvery: the bot token may be stolen. A Deny is safe
+//     whatever the message shows: while the request may wait, the Deny
+//     button that Ask sent on such a message still reaches answer. So the
+//     pause and the end of grants after a Deny still work. Like every
+//     press on that message, it is reported with cause edited_message,
+//     also when it counts, and the alert goes out after it.
 //   - On approval.ErrTooEarly, the message stays as it is, so the person
 //     can tap again. Only when no request waits on the message does Run
 //     update it: if this approver ended it, it shows its result again; if
 //     not, such as a message from before a restart, only its buttons are
 //     removed, and its text stays.
-//   - At most refusedTapsPerMinute refused presses in a minute are logged
-//     and reported; Run logs how many more it dropped.
+//   - At most refusedTapsPerMinute refused presses of the approver in a
+//     minute are logged and reported, and as many of other users. So
+//     forged presses cannot crowd out the reports of the approver's own,
+//     such as a press on a message that someone else changed. Run logs
+//     how many more it dropped.
 //   - While Telegram cannot be reached, Run keeps trying, with a growing
 //     wait of at most pollMaxBackoff, and never shorter than Telegram asks
 //     for with code 429.
@@ -183,35 +193,61 @@ func (a *Approver) handle(ctx context.Context, u update, answer func(approval.An
 		a.report(ctx, q, cause)
 		return
 	}
-	if a.changed(tctx, q, ans.Message) {
+	handled, changedDeny := a.changed(tctx, q, ans)
+	if handled {
 		return
 	}
 	err := answer(ans)
-	switch {
-	case err == nil:
-		text := tapCountedApprove
-		if ans.Action == audit.AnswerDeny {
-			text = tapCountedDeny
+	text, cause := tapResult(ans.Action, err)
+	if changedDeny {
+		// A Deny on a message that someone else changed (see changed).
+		// Like every tap on that message, it is reported with cause
+		// edited_message, also when it counted. So the audit log shows
+		// the edit next to the decision entry of the Deny.
+		cause = audit.TapEditedMessage
+		if err == nil {
+			text = tapChangedDenied
 		}
-		a.answerTap(tctx, q, text)
+	}
+	a.answerTap(tctx, q, text)
+	switch {
+	case changedDeny && err == nil:
+		a.reportAs(ctx, q, cause, "telegram: a Deny counted on a message that someone else changed")
+	case cause != "":
+		a.report(ctx, q, cause)
 	case errors.Is(err, approval.ErrTooEarly):
 		// The message is still being sent. It stays as it is, so the
 		// person can tap again. That is no foreign tap.
-		a.answerTap(tctx, q, tapTooEarly)
 		a.log.LogAttrs(ctx, slog.LevelInfo, "telegram: a button press came before its message was sent; the person may tap again",
 			slog.String("request_id", ans.RequestID))
-	case errors.Is(err, approval.ErrUnknownRequest):
-		a.answerTap(tctx, q, tapEnded)
-		a.report(ctx, q, audit.TapUnknownRequest)
-		a.ended(tctx, q.Message)
-	default:
-		text := tapRefused
-		if errors.Is(err, approval.ErrExpired) {
-			text = tapExpired // the core ends it, and End updates the message
-		}
-		a.answerTap(tctx, q, text)
-		a.report(ctx, q, refusalCause(err))
 	}
+	if errors.Is(err, approval.ErrUnknownRequest) {
+		a.ended(tctx, q.Message)
+	}
+	if changedDeny {
+		// After the core, so that a slow alert cannot delay the Deny.
+		a.alertChanged(ctx, q)
+	}
+}
+
+// tapResult returns what the phone shows after the core's answer err to a
+// press of the button action, and why the press did not count: "" when it
+// counted, or when it came too early (approval.ErrTooEarly), so that it is
+// not reported.
+func tapResult(action audit.Answer, err error) (string, audit.TapCause) {
+	switch {
+	case err == nil && action == audit.AnswerDeny:
+		return tapCountedDeny, ""
+	case err == nil:
+		return tapCountedApprove, ""
+	case errors.Is(err, approval.ErrTooEarly):
+		return tapTooEarly, ""
+	case errors.Is(err, approval.ErrUnknownRequest):
+		return tapEnded, audit.TapUnknownRequest
+	case errors.Is(err, approval.ErrExpired):
+		return tapExpired, audit.TapExpired // the core ends it, and End updates the message
+	}
+	return tapRefused, refusalCause(err)
 }
 
 // check makes the checks of the Telegram code: the user, the chat, the
@@ -242,42 +278,65 @@ func (a *Approver) check(q *callbackQuery) (approval.Answer, audit.TapCause) {
 
 // changed handles a press on a message that is not as Ask sent it: it was
 // edited (edit_date), or its buttons are not the ones Ask sent. The broker
-// never edits a message while its request waits, so such a press never
-// reaches the core. It reports whether it handled the press.
+// never edits a message while its request waits. It reports whether it
+// handled the press; if not, the press goes to the core. deny says that
+// the press is a Deny on a message that someone else changed.
 //
 //   - If this approver sent the message and End has not changed it, its
 //     request may still wait: someone else changed it, so the bot token
-//     may be stolen (THREAT-MODEL.md T6). The press is refused, and the
-//     approver gets an alert, at most one in changedAlertEvery. End later
-//     writes the whole text again, with the result.
+//     may be stolen (THREAT-MODEL.md T6). An Approve on it never counts:
+//     it is refused and reported, and the approver gets an alert, at most
+//     one in changedAlertEvery. End later writes the whole text again,
+//     with the result. A Deny is safe whatever the message shows, so the
+//     Deny button that Ask sent on that message goes to the core, as on
+//     any message (THREAT-MODEL.md T8). Then handle reports it with cause
+//     edited_message, also when it counted, and sends the alert.
 //   - Else End changed it, or this approver does not know it, such as a
 //     message from before a restart. No request of this approver waits on
 //     it, so this is a late press.
-func (a *Approver) changed(ctx context.Context, q *callbackQuery, m approval.MessageID) bool {
-	sent, known := a.lookup(m)
+func (a *Approver) changed(ctx context.Context, q *callbackQuery, ans approval.Answer) (handled, deny bool) {
+	sent, known := a.lookup(ans.Message)
 	edited := q.Message.EditDate != 0
 	if known && sent.final == "" && !sameKeyboard(sent.keyboard, q.Message.ReplyMarkup) {
 		edited = true
 	}
-	if !edited {
-		return false
-	}
-	if known && sent.final == "" {
+	switch {
+	case !edited:
+		return false, false
+	case known && sent.final == "" && ans.Action == audit.AnswerDeny && sentData(sent.keyboard, q.Data):
+		return false, true
+	case known && sent.final == "":
 		a.answerTap(ctx, q, tapChanged)
 		a.report(ctx, q, audit.TapEditedMessage)
-		if a.takeChangedAlert() {
-			a.log.LogAttrs(ctx, slog.LevelError, "telegram: ALERT: someone else changed a message of the broker "+
-				"while its request waited; the bot token may be stolen", slog.Int64("message_id", q.Message.MessageID))
-			if err := a.Alert(context.WithoutCancel(ctx), changedAlert); err != nil {
-				a.log.LogAttrs(ctx, slog.LevelError, "telegram: cannot send the alert message", slog.String("error", err.Error()))
-			}
-		}
-		return true
+		a.alertChanged(ctx, q)
+		return true, false
 	}
 	a.answerTap(ctx, q, tapEnded)
 	a.report(ctx, q, audit.TapUnknownRequest)
 	a.ended(ctx, q.Message)
-	return true
+	return true, false
+}
+
+// alertChanged alerts that someone else changed a message of the broker
+// whose request may still wait: it logs an alert, and sends an alert
+// message, at most one in changedAlertEvery.
+func (a *Approver) alertChanged(ctx context.Context, q *callbackQuery) {
+	if !a.takeChangedAlert() {
+		return
+	}
+	a.log.LogAttrs(ctx, slog.LevelError, "telegram: ALERT: someone else changed a message of the broker "+
+		"while its request waited; the bot token may be stolen", slog.Int64("message_id", q.Message.MessageID))
+	if err := a.Alert(context.WithoutCancel(ctx), changedAlert); err != nil {
+		a.log.LogAttrs(ctx, slog.LevelError, "telegram: cannot send the alert message", slog.String("error", err.Error()))
+	}
+}
+
+// sentData reports whether one of kb, the buttons that Ask sent, has the
+// button data data.
+func sentData(kb [][]inlineButton, data string) bool {
+	return slices.ContainsFunc(kb, func(row []inlineButton) bool {
+		return slices.ContainsFunc(row, func(b inlineButton) bool { return b.CallbackData == data })
+	})
 }
 
 // sameKeyboard reports whether got, the buttons of a message as Telegram
@@ -322,11 +381,24 @@ func (a *Approver) answerTap(ctx context.Context, q *callbackQuery, text string)
 }
 
 // report logs a button press that did not count, and passes it to
-// Options.ForeignTap, at most refusedTapsPerMinute in a minute. It counts
-// the others, and logs how many it dropped.
+// Options.ForeignTap, at most refusedTapsPerMinute in a minute for each
+// budget: the presses of the approver, and those of other users. So
+// forged presses cannot crowd out the reports of the approver's own. It
+// counts the others, and logs how many it dropped.
 func (a *Approver) report(ctx context.Context, q *callbackQuery, cause audit.TapCause) {
-	ok, dropped := a.takeReport()
-	a.logDropped(ctx, dropped)
+	a.reportAs(ctx, q, cause, "telegram: refused a button press")
+}
+
+// reportAs is report with the log message msg. handle uses it for a Deny
+// that counted on a message that someone else changed: it is reported
+// with cause edited_message too, but it was not refused.
+func (a *Approver) reportAs(ctx context.Context, q *callbackQuery, cause audit.TapCause, msg string) {
+	// A press on a message that someone else changed is always the
+	// approver's, as check runs first. It is named here too, so that its
+	// report can never move to the budget of other users.
+	own := q.From.ID == a.userID || cause == audit.TapEditedMessage
+	ok, dropped := a.takeReport(own)
+	a.logDropped(ctx, dropped, own)
 	if !ok {
 		return
 	}
@@ -335,7 +407,7 @@ func (a *Approver) report(ctx context.Context, q *callbackQuery, cause audit.Tap
 		tap.ChatID = q.Message.Chat.ID
 		tap.MessageID = q.Message.MessageID
 	}
-	a.log.LogAttrs(ctx, slog.LevelWarn, "telegram: refused a button press",
+	a.log.LogAttrs(ctx, slog.LevelWarn, msg,
 		slog.String("cause", string(cause)), slog.Int64("user_id", tap.UserID), slog.Int64("chat_id", tap.ChatID),
 		slog.Int64("message_id", tap.MessageID), slog.String("data", tap.Data))
 	if a.foreignTap != nil {
@@ -343,17 +415,26 @@ func (a *Approver) report(ctx context.Context, q *callbackQuery, cause audit.Tap
 	}
 }
 
-// endedReports logs how many reports were dropped in the last minute, if
-// that minute has ended.
+// endedReports logs how many reports of each budget were dropped in the
+// last minute, if that minute has ended.
 func (a *Approver) endedReports(ctx context.Context) {
-	a.logDropped(ctx, a.endReports())
+	others, own := a.endReports()
+	a.logDropped(ctx, others, false)
+	a.logDropped(ctx, own, true)
 }
 
-func (a *Approver) logDropped(ctx context.Context, dropped int) {
-	if dropped > 0 {
-		a.log.LogAttrs(ctx, slog.LevelWarn, "telegram: dropped reports of refused button presses, to keep the log small",
-			slog.Int("dropped", dropped), slog.Int("limit_per_minute", refusedTapsPerMinute))
+// logDropped logs how many reports of one budget were dropped: of the
+// approver's own presses (own), or of other users.
+func (a *Approver) logDropped(ctx context.Context, dropped int, own bool) {
+	if dropped <= 0 {
+		return
 	}
+	from := "other_users"
+	if own {
+		from = "approver"
+	}
+	a.log.LogAttrs(ctx, slog.LevelWarn, "telegram: dropped reports of refused button presses, to keep the log small",
+		slog.Int("dropped", dropped), slog.Int("limit_per_minute", refusedTapsPerMinute), slog.String("from", from))
 }
 
 // cutData cuts button data to maxTapData bytes, at the start of a

@@ -13,11 +13,14 @@
 //
 // A button press counts only if all of these are true (DESIGN.md section
 // 7): it is from the configured user ID, in the private chat with that
-// user, on the message of its request, which nobody else changed, for a
-// request that waits, before it expires, with a button that the request
-// offers. This package checks the user, the chat, the button data, and
-// that the message is as Ask sent it. Then the approval core checks the
-// user, the message, the request, the time and the button again.
+// user, on the message of its request, for a request that waits, before
+// it expires, with a button that the request offers. An Approve counts
+// only on a message that nobody else changed. A Deny is safe whatever the
+// message shows, so it counts on a changed message too. This package
+// checks the user, the chat, the button data, and that the message is as
+// Ask sent it; for a Deny on a changed message, that Ask sent this Deny
+// button on it. Then the approval core checks the user, the message, the
+// request, the time and the button again.
 package telegram
 
 import (
@@ -48,9 +51,14 @@ const NoticesPerMinute = 20
 const maxRemembered = 1024
 
 // refusedTapsPerMinute is the most button presses that did not count that
-// the approver logs and reports for the audit log in one minute. It
-// counts the others, and logs how many it dropped. So a holder of the bot
-// token cannot fill the journal or the disk with forged buttons.
+// the approver logs and reports for the audit log in one minute, for each
+// of two budgets: the presses of other users, and the approver's own
+// presses. Every press on a message that someone else changed is the
+// approver's. So forged buttons cannot crowd out the reports of the
+// approver's taps, and neither budget can fill the journal or the disk.
+// One person taps only a few times a minute, so 20 is enough for the
+// approver's own. The approver counts the reports over a budget, and logs
+// how many it dropped.
 const refusedTapsPerMinute = 20
 
 const (
@@ -64,8 +72,8 @@ const (
 // changedAlert is the alert message when someone else changed a message
 // of the broker whose request may still wait.
 const changedAlert = "Someone else changed a message of the broker while its request waited for an answer. " +
-	"The bot token may be stolen. Taps on that message do not count. Make a new token with @BotFather, put it " +
-	"in the token file, and restart the broker."
+	"The bot token may be stolen. Approve on that message does not count; Deny still does. Make a new token " +
+	"with @BotFather, put it in the token file, and restart the broker."
 
 var (
 	// ErrPollConflict: getUpdates failed with a conflict. Another program
@@ -86,15 +94,20 @@ type Options struct {
 	// Logger gets refused button presses and problems with Telegram. The
 	// default drops them. No line holds the bot token or message text.
 	Logger *slog.Logger
-	// ForeignTap, if set, gets each button press that did not count,
-	// except one that came too early (approval.ErrTooEarly): from another
-	// user or chat, on an inline message, with button data that is not
-	// valid, on a message that someone else changed, on another message,
-	// or for a request that no longer waits. Its Cause says which. It
-	// gets at most refusedTapsPerMinute in a minute; Run logs how many
-	// more it dropped. The broker writes each to the audit log as a
-	// foreign_tap entry (DESIGN.md section 9). Run calls it from its own
-	// goroutine, so it must not block for long.
+	// ForeignTap, if set, gets each button press that did not count: from
+	// another user or chat, on an inline message, with button data that
+	// is not valid, on a message that someone else changed, on another
+	// message, or for a request that no longer waits. Its Cause says
+	// which. A press that came too early (approval.ErrTooEarly) is not
+	// passed, unless someone else changed its message. A Deny on a
+	// message that someone else changed is passed, with cause
+	// edited_message, also when it counted: then this entry shows the
+	// edit next to the decision entry of the Deny. ForeignTap gets at
+	// most refusedTapsPerMinute presses of the approver in a minute, and
+	// as many of other users; Run logs how many more it dropped. The
+	// broker writes each to the audit log as a foreign_tap entry
+	// (DESIGN.md section 9). Run calls it from its own goroutine, so it
+	// must not block for long.
 	ForeignTap func(audit.ForeignTap)
 }
 
@@ -107,7 +120,7 @@ type Approver struct {
 	noticeChat int64
 	log        *slog.Logger
 	foreignTap func(audit.ForeignTap)
-	now        func() time.Time // the clock of the notice limit; tests replace it
+	now        func() time.Time // the clock of the limits; read with mu held; tests replace it
 
 	running atomic.Bool // Run runs
 
@@ -118,8 +131,11 @@ type Approver struct {
 	order []approval.MessageID
 	// notices holds when the newest notices were sent.
 	notices []time.Time
-	// reports counts the reports of refused taps in the current minute.
-	reports reportWindow
+	// reports counts the reports of refused taps of other users in the
+	// current minute, and ownReports those of the approver's own taps.
+	// Each is a budget of its own, so the taps of others cannot crowd out
+	// the reports of the approver's taps.
+	reports, ownReports reportWindow
 	// changedAlertAt is when the last alert about a changed message went
 	// out.
 	changedAlertAt time.Time
@@ -127,18 +143,47 @@ type Approver struct {
 
 // sentMessage is what the approver knows about a message that Ask sent.
 type sentMessage struct {
-	// keyboard is the buttons that Ask sent. A tap on the message counts
-	// only while the message has exactly these buttons.
+	// keyboard is the buttons that Ask sent. An Approve on the message
+	// counts only while the message has exactly these buttons. A Deny
+	// counts if it is the Deny among them.
 	keyboard [][]inlineButton
 	// final is the HTML text that End gave the message, or "" before End.
 	final string
 }
 
-// reportWindow counts the reports of refused taps in one minute.
+// reportWindow counts the reports of refused taps of one budget in one
+// minute.
 type reportWindow struct {
 	start   time.Time // when the minute began; zero before the first report
 	n       int       // the reports let through
 	dropped int       // the reports dropped
+}
+
+// take reports whether one more report fits in the minute at now, and
+// counts it. dropped is the number of reports dropped in the minute
+// before, when that minute has just ended.
+func (w *reportWindow) take(now time.Time) (ok bool, dropped int) {
+	if w.start.IsZero() || now.Sub(w.start) >= time.Minute {
+		dropped = w.dropped
+		*w = reportWindow{start: now}
+	}
+	if w.n >= refusedTapsPerMinute {
+		w.dropped++
+		return false, dropped
+	}
+	w.n++
+	return true, dropped
+}
+
+// end returns the number of reports dropped in the minute, when it has
+// ended at now, and starts a new count.
+func (w *reportWindow) end(now time.Time) int {
+	if w.dropped == 0 || now.Sub(w.start) < time.Minute {
+		return 0
+	}
+	dropped := w.dropped
+	*w = reportWindow{}
+	return dropped
 }
 
 var _ approval.Approver = (*Approver)(nil)
@@ -365,36 +410,29 @@ func (a *Approver) lookup(m approval.MessageID) (e sentMessage, known bool) {
 }
 
 // takeReport reports whether a refused tap may be logged and reported now,
-// and counts it. dropped is the number of reports dropped in the minute
-// before, when that minute has just ended, so the caller logs it.
-func (a *Approver) takeReport() (ok bool, dropped int) {
+// and counts it in its budget: the approver's own taps (own), or the taps
+// of other users. dropped is the number of reports of that budget dropped
+// in the minute before, when that minute has just ended, so the caller
+// logs it.
+func (a *Approver) takeReport(own bool) (ok bool, dropped int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	w := &a.reports
+	if own {
+		w = &a.ownReports
+	}
+	return w.take(a.now())
+}
+
+// endReports returns the number of reports dropped in the last minute of
+// each budget, of other users and of the approver, when that minute has
+// ended, and starts a new count for it. Run calls it after each
+// getUpdates, so the counts are logged even when no tap comes.
+func (a *Approver) endReports() (others, own int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
-	if a.reports.start.IsZero() || now.Sub(a.reports.start) >= time.Minute {
-		dropped = a.reports.dropped
-		a.reports = reportWindow{start: now}
-	}
-	if a.reports.n >= refusedTapsPerMinute {
-		a.reports.dropped++
-		return false, dropped
-	}
-	a.reports.n++
-	return true, dropped
-}
-
-// endReports returns the number of reports dropped in the last minute,
-// when that minute has ended, and starts a new count. Run calls it after
-// each getUpdates, so the count is logged even when no tap comes.
-func (a *Approver) endReports() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.reports.dropped == 0 || a.now().Sub(a.reports.start) < time.Minute {
-		return 0
-	}
-	dropped := a.reports.dropped
-	a.reports = reportWindow{}
-	return dropped
+	return a.reports.end(now), a.ownReports.end(now)
 }
 
 // takeChangedAlert reports whether an alert about a changed message may go
