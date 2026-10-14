@@ -131,7 +131,9 @@ nodkey run --secret GH_TOKEN=github-token \
    the terminal can match it with the message on the phone.
 6. On approval, the broker first writes the decision to the audit log and
    syncs it to disk. Then it gets each value from its store and sends the
-   values back over the same TLS connection.
+   values back over the same TLS connection. To get a value, it runs the
+   store's program (section 16). If one value cannot be fetched, the
+   whole request is denied, and no value is sent.
 7. The client adds `GH_TOKEN=<value>` to its own environment and replaces
    itself with the command (`execve`). The command's exit code is the exit
    code of `nodkey run`.
@@ -142,7 +144,10 @@ There is no command that prints a secret. This is on purpose: the agent
 should never see the value in its own output.
 
 The broker fetches a value only after approval, and fetches it again on
-every request. Version 1 keeps no cache of values.
+every request. Version 1 keeps no cache of values. For `bw`, it first
+runs `bw sync --force`, which downloads the whole vault, so it never hands
+out a value from an old copy of the vault. A sync without `--force` would
+depend on the broker's clock (section 16).
 
 ## 6. Flow: an SSH login
 
@@ -1137,11 +1142,34 @@ unlocked with the account's master password. An API key alone is not
 enough. To restart on its own, the broker must keep that password, so
 anyone who breaks into the broker host gets the whole vault. So nodkey
 supports `bw` only with a separate Bitwarden account that holds nothing but
-the items nodkey may hand out. A person logs in once on the broker host
-with `bw login --apikey`; after that the broker unlocks on its own at each
-start. If the CLI is ever logged out, every `bw` request is denied until a
-person logs in again. Bitwarden Secrets Manager (`bws`) does not have these
-problems: its machine-account token can see only the projects you give it.
+the items nodkey may hand out. Bitwarden Secrets Manager (`bws`) does not
+have these problems: its machine-account token can see only the projects
+you give it.
+
+How the broker uses `bw`:
+
+- A person logs in once on the broker host, as the broker user, with the
+  store's `program` and with the store's home directory (section 16) as
+  `HOME`, for example:
+  `sudo -u nodkey env -i HOME=/var/lib/nodkey/stores/vault PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/bw login --apikey`.
+  For Bitwarden's EU cloud or your own server, run `bw config server URL`
+  in the same way first.
+- At start, the broker unlocks with
+  `bw unlock --passwordfile FILE --raw --nointeraction`. bw reads the
+  password file itself, so the password never passes through the broker,
+  and it is never in an argument or a variable. Right before each unlock,
+  the broker checks the file again as at start (section 14).
+- bw prints a session key. The broker keeps it only in memory, and gives
+  it to each later run of bw in the variable `BW_SESSION`.
+- If bw is logged out, every request for that store is denied until a
+  person logs in again. Each request tries to unlock again, so no restart
+  is needed after the new login.
+- If the session key stops working, for example because someone ran
+  `bw lock` or `bw unlock` in the store's home directory, the request is
+  denied. The broker forgets the key, and the next request unlocks again.
+- Only one bw program runs at a time for one store. bw keeps the state of
+  the account in one file, and each unlock ends the session key before it.
+  A second request waits for its turn, or until it ends.
 
 **B. Keys inside hardware, through an upstream SSH agent.**
 The broker sends signing to a local agent socket on the broker host, for
@@ -1355,9 +1383,14 @@ More rules:
 - Names of clients, stores, secrets, keys and known hosts are 1 to 64
   letters, digits, `.`, `_` or `-`, and start with a letter or digit.
 - Paths must be absolute. Only `${CREDENTIALS_DIRECTORY}/` and `~/` at the
-  start of a path are expanded; any other `$` is an error.
+  start of a path are expanded; any other `$` is an error. A store's
+  `program`, `token_file` and `password_file` must also be clean: no `//`,
+  and no `.` or `..` parts.
 - A secret's `id` is the item's UUID in the store, so `bw` never searches
-  items by name.
+  items by name. For `bws`, nodkey hands out the secret's value. For `bw`,
+  the item must be a login item, and nodkey hands out its password. An
+  item in the trash or in the archive is refused, because `bw` still
+  returns such an item by its ID.
 - `clients` and `hosts` list each name once. `notice_chat_id` is not 0.
   A `window` is 1 minute to 8 hours.
   `timeout` is 15 s to 10 min. `ssh_timeout` is 15 s to 110 s, below
@@ -1407,6 +1440,26 @@ any problem:
 - A store's `program` gets a token from the broker, so it must be owned by
   the broker user or root, and group and others must not be able to write
   to it. It may be a symbolic link.
+- The `bws` token file is read once, at start; the broker keeps the token
+  in memory. The `bw` password file is checked at start and again before
+  each unlock, also that it holds 1 byte to 1 MiB; bw reads it itself
+  (section 11).
+- For a `bw` store, each directory in bw's `PATH` (section 16) must pass
+  the same checks as the directories on the way to a key file, so that
+  nobody else can put a program, such as `node`, there. A directory that
+  is not there passes if the way to it passes. A `node` in one of those
+  directories must pass the same checks as a store's `program`, also
+  after its links, and so must every directory on the way to it: a bw
+  script starts it, and it reads the master password and gets the session
+  key. A `node` link whose target is missing is refused too. There must be
+  no `bw-data` next to the store's `program`, next to the file that it
+  links to, or next to `node` in one of those directories, also not after
+  its links: bw would keep its state there, not in its home directory.
+- Each store's program gets its own home directory, `NAME` in the store
+  directory (section 16). The broker makes it with mode `0700` if it is
+  missing. If it is there, it must be a directory, not a symbolic link,
+  owned by the broker user, with mode `0700`. The directories on the way
+  must pass the same checks as those on the way to a key file.
 - The audit log may be missing; then the broker makes it. If it is there,
   it must be a regular file, not a symbolic link, owned by the broker user.
   Its mode may give only read and write to the owner, such as `0600`: an
@@ -1508,16 +1561,30 @@ text of a line. It exits with:
 - The broker runs store programs by absolute path, with no shell, with only
   the environment they need (tokens and the `bw` session go in environment
   variables, never in arguments), with a timeout and a cap on output size.
-  Their output is never logged.
-- `bw` keeps a local copy of the vault. The broker runs `bw sync` before each
-  fetch, so a changed or removed item is not handed out from an old copy.
-- `bws` and `bw` write state files in their home directory. The systemd unit
-  gives the broker a private, writable home under its state directory.
+  Their output is never logged. The details are below.
+- `bw` keeps a local copy of the vault. The broker runs `bw sync --force`
+  before each fetch, so a changed or removed item is not handed out from an
+  old copy.
+- `bws` and `bw` write state files in their home directory. Each store gets
+  its own home directory, `NAME` in the store directory, such as
+  `/var/lib/nodkey/stores/vault`. The store directory is under the
+  broker's state directory, and only the broker user can write to it; the
+  example systemd unit makes it.
 - Limits on every input: request size (2 MiB, see section 10), number of
   secrets per request, field lengths. JSON decoding rejects unknown and
   repeated keys.
 - The broker turns off core dumps and marks itself not dumpable
-  (`PR_SET_DUMPABLE`).
+  (`PR_SET_DUMPABLE`). For core dumps, it sets its own soft `RLIMIT_CORE`
+  to 1 at start, and the example systemd unit sets `LimitCORE=1`. The store
+  programs inherit this limit; Go's `os/exec` cannot set a limit for one
+  child. If a store program crashes, a core handler such as
+  systemd-coredump would write the program's environment, with the token
+  or the session key, into the journal. With a limit of exactly 1 and a
+  pipe (`|`) or file `core_pattern`, such as the default of systemd, the
+  kernel calls no core handler and writes no core file. A limit of 0 does
+  not stop a core handler, and a socket `core_pattern` (`@`) does not look
+  at the limit at all. So keep a pipe or file `core_pattern` on the broker
+  host.
 - Time limits use Go's monotonic clock, so setting the wall clock does not
   move them. The monotonic clock stops while the host sleeps (suspend), so
   a request and a grant also end when the wall clock reaches their end:
@@ -1525,7 +1592,100 @@ text of a line. It exits with:
   minutes ends at 12:10 on the wall clock, also if the host slept from
   12:00 to 20:00. A request whose end the wall clock has passed takes no
   answer.
-- A systemd unit with sandbox settings ships as an example.
+- A systemd unit with sandbox settings ships as an example. Its sandbox
+  must let `bw` run: Node.js needs memory that is both writable and
+  executable, so the unit must not set `MemoryDenyWriteExecute=yes` when
+  it has a `bw` store.
+
+### Store programs
+
+The broker runs `bws` and `bw` like this (`internal/store`):
+
+- By the absolute path from the config, with no shell. stdin is
+  `/dev/null`, and the working directory is the store's home directory.
+- With only these environment variables: `HOME` (the store's own home
+  directory), and `BWS_ACCESS_TOKEN` for `bws`, or `PATH` and
+  `BW_SESSION` for `bw`. `PATH` is `/usr/local/bin:/usr/bin:/bin`, so that
+  a bw from npm, a script that starts with `#!/usr/bin/env node`, finds
+  `node`. The broker checks these directories and the `node` in them at
+  start (section 14). bws
+  gets no `PATH`: it starts no other program. Nothing comes from the
+  broker's own environment. So a variable such as `NODE_OPTIONS`, `LD_PRELOAD` or
+  `BW_CLEANEXIT` (which makes bw exit with 0 after an error) cannot change
+  what the program does. Neither can a proxy setting (`HTTPS_PROXY`) or
+  extra CA certificates for bw (`NODE_EXTRA_CA_CERTS`): version 1 does not
+  support them.
+- The arguments are fixed words, the item's UUID and the path of the
+  password file, never a token, a password or a session key. The broker
+  checks again that the ID is a UUID, so it never starts with `-`.
+- In a process group of its own. Each run has a time limit of 30 seconds.
+  When the time is up, when the request ends (for example, the client
+  hangs up), or when the program writes more than 1 MiB to stdout or
+  64 KiB to stderr, the broker kills the whole process group, and the run
+  fails. After each run, the broker kills the group again, in case the
+  program left a process behind. If such a process keeps the output open
+  for 2 seconds after the program ended, the run fails too. If the broker
+  ends during a run, for example in a crash, the kernel kills the program
+  (`Pdeathsig`).
+- At most 4 runs of `bws` at the same time for one store, and one run of
+  `bw` (section 11).
+- The broker reads stdout, never stderr, and logs neither. An error names
+  the store and the step, and gives a fixed reason and the exit code, such
+  as `store "vault": bw sync: the program failed (exit code 1)`. Any error
+  means deny.
+- The broker clears the output, the token and the session key in its
+  memory when it no longer needs them. This is best effort: Go strings,
+  such as the environment variable for a run, and buffers of the operating
+  system are not cleared.
+- bws keeps its login state in `.config/bws/state/` and its config in
+  `.config/bws/config` in its home directory. For Bitwarden's EU cloud or
+  your own server, run `bws config server-base URL` with that home, as for
+  bw in section 11. bw keeps its copy of the vault and its login in
+  `.config/Bitwarden CLI/data.json`. But if a directory named `bw-data`
+  is next to bw's executable, bw keeps its state there and ignores
+  `HOME`; so the broker refuses to start then (section 14).
+
+What the broker runs, and what it reads. We checked this in the source of
+bws 2.1.0 and bw 2026.9.1 on 2026-10-14
+([bws](https://github.com/bitwarden/sdk-sm/tree/bws-v2.1.0/crates/bws),
+[bw](https://github.com/bitwarden/clients/tree/cli-v2026.9.1/apps/cli)):
+
+| when | command | what the broker reads |
+|---|---|---|
+| a `bws` fetch | `bws secret get ID --output json --color no` | stdout: one JSON object with `id`, `organizationId`, `projectId`, `key`, `value`, `note`, `creationDate` and `revisionDate`. The broker reads only `id` and `value`. |
+| a `bw` unlock | `bw unlock --passwordfile FILE --raw --nointeraction` | stdout: only the session key, in base64. |
+| a `bw` fetch, first | `bw sync --force --nointeraction` | only the exit code. |
+| a `bw` fetch, then | `bw get item ID --nointeraction` | stdout: one JSON object, the item. The broker reads only `id`, `login.password`, `deletedDate` and `archivedDate`. |
+| after a `bw` step failed | `bw status --nointeraction` | stdout: one JSON object. The broker reads only `status`: `unauthenticated` (logged out), `locked` (the session key does not work) or `unlocked`. |
+
+- Both programs write errors to stderr and exit with 1; `bws` exits with
+  2 on wrong usage. bw writes no newline at the end when stdout is not a
+  terminal. `--nointeraction` makes bw fail instead of asking for the
+  password when the vault is locked.
+- An answer must be exactly one JSON object in valid UTF-8, with only
+  whitespace around it. A key may be in an object only once, and keys
+  must match exactly: `Value` is not `value`. A lone surrogate escape is
+  refused. Other fields are skipped, so a newer version with more fields
+  still works. Any other answer is refused, and the request is denied.
+- `id` must be the asked ID, in upper or lower case. An answer without
+  it, or for another item, is refused.
+- A value that is missing, `null` or empty is refused. So is a value with
+  a NUL byte: the environment of a command cannot hold it. So is an item
+  that is not a login item, an item in the trash (`deletedDate` is not
+  `null`) and an archived item (`archivedDate` is not `null`). bw 2026.9.1
+  leaves both dates out of a normal item.
+- bws exits with 0 and prints nothing when the token belongs to no
+  organization. That is refused too.
+- Other fields can hold secrets too, such as `note` for bws, and `notes`,
+  `fields`, `passwordHistory` and `login.totp` for bw. The broker skips
+  them without keeping them, and clears the whole answer after reading it.
+- Without `--force`, bw downloads the vault only when the server's
+  revision date of the account is later than bw's last sync, and bw takes
+  the time of each sync from the broker's clock. With that clock ahead, bw
+  would not download again, and a changed, trashed or archived item would
+  still be handed out. `--force` downloads the whole vault each time. That
+  is more traffic, but the account holds only the items that nodkey may
+  hand out (section 11).
 
 ## 17. Testing
 
@@ -1544,7 +1704,10 @@ text of a line. It exits with:
 - **Fake approver**: a test approver that says yes, no, nothing, or answers
   late, on command. It and a fake clock are in
   `internal/approval/approvaltest`, for the tests of the broker too.
-- **Fake store**: a small test program that acts like `bws`.
+- **Fake stores**: the test binary of `internal/store` acts like `bws` or
+  `bw` when it runs under that name. It records its arguments and its
+  environment, so the tests can check that no token, password or session
+  key is ever an argument.
 - **End-to-end test**: a throwaway key, `sshd` in a container, the broker and
   the client on the test machine, and the fake approver. It checks that
   `ssh` and `git` over SSH work, that a deny blocks the login, that an

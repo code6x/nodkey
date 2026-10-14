@@ -322,6 +322,18 @@ func checkAuditLogFile(fi fs.FileInfo, self uint32) error {
 	return nil
 }
 
+// CheckProgram makes the checks of a store's program (see CheckFiles) on
+// the program at path. It follows symbolic links. Every directory on the
+// way, also each one that holds a link, must pass the checks of
+// ReadPrivateFile. The program must be a regular file owned by root or by
+// the user that runs nodkey, and group and others must not be able to
+// write to it. The store package checks with it the other programs that
+// get a secret, such as the node that a bw script starts.
+func CheckProgram(path string) error {
+	_, err := checkProgram(path)
+	return err
+}
+
 // checkProgram checks a program that the broker runs and gives a token to.
 // It follows symbolic links. Every directory on the way must pass the
 // checks of ReadPrivateFile. The program must be a regular file owned by
