@@ -57,6 +57,8 @@ what it protects against, and what it does not.
 - SSH agent forwarding.
 - SSH clients that do not send `session-bind@openssh.com` (OpenSSH older
   than 8.9, Paramiko, Go's own SSH client).
+- SSH certificates, for hosts and for users. The broker's `known_hosts`
+  holds plain host keys, and the broker signs only with plain keys.
 - Keys in hardware (TPM or YubiKey) through an upstream agent.
 - Filtering secrets out of the command's output.
 - More than one approver.
@@ -164,23 +166,49 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
    processes (from `/proc`), and `NODKEY_REASON` from the environment of
    the `ssh` process, if set. Section 10 limits their size.
 6. The broker checks, and denies on any failure:
-   - The data is an SSH authentication request (RFC 4252 section 7). The
-     method is `publickey` or `publickey-hostbound-v00@openssh.com`. The
-     public key in the data is the key asked for.
+   - The data is an SSH authentication request (RFC 4252 section 7): the
+     message `SSH_MSG_USERAUTH_REQUEST`, the service `ssh-connection`, the
+     method `publickey` or `publickey-hostbound-v00@openssh.com`, and the
+     flag that says the request has a signature. Nothing may come after
+     the last field. The public key in the data is the key asked for, and
+     it is the broker's plain key, not a certificate.
+   - The sign flags fit the key. For RSA, the flags ask for SHA-256 or
+     SHA-512, and the algorithm in the data is the same one. An RSA
+     signature with SHA-1 (no flag) is refused, and so are unknown flags.
+     Ed25519 and ECDSA keys take no flags.
    - The remote user name in the data matches
      `[A-Za-z0-9._][A-Za-z0-9._-]{0,31}`.
    - There is exactly one session-bind, and its `is_forwarding` flag is
-     false. Version 1 does not support agent forwarding.
-   - The host key's signature over the session identifier is valid.
+     0. Version 1 does not support agent forwarding.
+   - The session identifier is 32, 48 or 64 bytes long: the output of
+     SHA-256, SHA-384 or SHA-512. So a key exchange with SHA-1 is refused.
+     OpenSSH 8.9 and newer do not use one by default.
    - The session identifier in the data is the one in the session-bind. For
      `publickey-hostbound-v00@openssh.com`, the host key in the data is the
      one in the session-bind too.
+   - The host key is a plain Ed25519, ECDSA or RSA key, in the form that
+     OpenSSH writes. A host certificate is refused. If a host offers one,
+     ssh may use it; then set `HostKeyAlgorithms` in the ssh config on the
+     agent machine to plain key types only.
    - The host key is in the broker's own `known_hosts` file. That gives the
      host name in the message.
+   - If the key's section has a `hosts` list, the host is in that list.
+     Without a list, the key may log in to any host in `known_hosts`.
+   - The host key's signature over the session identifier is valid, and
+     its algorithm matches the host key's type. For RSA, it must use
+     SHA-256 or SHA-512.
+   - A session-bind and the data to sign are each at most 8 KiB. Valid
+     ones have less than 5 KiB, even with RSA keys of 16384 bits.
 7. The broker checks the rules and grants for (client, key, host key,
    remote user), and asks the approver if needed.
 8. On approval, the broker writes and syncs the decision, then signs and
-   returns the signature.
+   returns the signature. It signs exactly the data that it checked, with
+   the checked algorithm (for RSA, the hash that the flags ask for). It
+   checks the new signature before it returns it.
+
+The checks and the signing are in `internal/sshauth`. Signing takes the
+result of the checks, not raw bytes, so the broker cannot sign data that
+it did not check.
 
 Why this matters: the signature covers the session identifier. The session
 identifier only exists in that one session with that one host. So an
@@ -1175,6 +1203,11 @@ More rules:
   item without a tap.
 - In `known_hosts`, the key type must match the key, and certificates are
   not allowed.
+- An SSH key of a `[key.*]` section must be Ed25519, ECDSA on P-256, P-384
+  or P-521, or RSA with at least 2048 bits. At start, the broker signs a
+  fixed text with each key and checks the signature, so a broken key
+  stops the start and not a login after the tap. These signatures never
+  leave the broker.
 
 At start, the broker checks the files it reads, and refuses to start on
 any problem:
@@ -1335,7 +1368,9 @@ text of a line. It exits with:
   recovery, session-bind and authentication request parsing, masking, message
   text and escaping, and the Telegram client against a fake Telegram server
   (wrong user, wrong chat, wrong message, unknown ID, late tap, double tap,
-  polling conflict).
+  polling conflict). The SSH checks also use real data: from an
+  in-process SSH server and client, and from the OpenSSH client and, when
+  it is installed, `sshd`.
 - **Fake approver**: a test approver that says yes, no, nothing, or answers
   late, on command. It and a fake clock are in
   `internal/approval/approvaltest`, for the tests of the broker too.

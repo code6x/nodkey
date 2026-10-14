@@ -35,6 +35,17 @@ jobs:
         with:
           go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
           go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+      - name: Install ssh and sshd for the SSH tests
+        # The tests of internal/sshauth run the real ssh and sshd. GitHub
+        # sets CI=true, and then these tests fail instead of skip when a
+        # program is missing.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends openssh-client openssh-server
+          # The package starts the system ssh service; the tests run their
+          # own sshd, so stop it and keep port 22 closed.
+          sudo systemctl disable --now ssh.socket ssh.service || true
       - name: Check formatting
         run: |
           unformatted="$(gofmt -l .)"
