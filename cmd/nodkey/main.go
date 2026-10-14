@@ -8,11 +8,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/code6x/nodkey/internal/transport"
 )
 
 // version is the nodkey version. Release builds set it with
 // -ldflags "-X main.version=<version>".
 var version = "dev"
+
+// writeKeyFile makes the key file of nodkey keygen. It is a variable only
+// so that a test can run keygen in a child process without the real
+// directory checks, which refuse the system temporary directory.
+var writeKeyFile keyWriter = transport.GenerateKeyFile
 
 // Exit codes.
 const (
@@ -24,6 +31,7 @@ const (
 const usageText = `Usage: nodkey <command> [arguments]
 
 Commands:
+  keygen    make a TLS key for the broker or a client, and print its pin
   audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
             check the hash chain of an audit log, and its anchors
   version   print the version
@@ -50,6 +58,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	name, rest := fs.Arg(0), fs.Args()[1:]
 	switch name {
+	case "keygen":
+		ignoreBrokenPipe()
+		return runKeygen(rest, stdout, stderr, writeKeyFile)
 	case "audit":
 		return runAudit(rest, stdin, stdout, stderr)
 	case "version":
