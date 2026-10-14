@@ -240,7 +240,43 @@ const (
 	problemPrev       = "has no prev, or its prev is not 64 lowercase hex digits"
 	problemTornLength = "is a log_recovered entry without a torn_length from 1 to 65536"
 	problemTornHash   = "is a log_recovered entry without a torn_sha256 of 64 lowercase hex digits"
+	problemDepth      = "nests objects and arrays more than 16 levels deep"
 )
+
+// maxDepth is the most levels of objects and arrays in one line; the text
+// of problemDepth names it. An entry has two: the object, and an array of
+// names in it. The rest is room for the fields of a newer nodkey. Verify
+// checks this itself, before it decodes a line: the limit of
+// encoding/json is about 10000 levels, but it differs between Go versions,
+// and the result of Verify must not.
+const maxDepth = 16
+
+// tooDeep reports whether line has more than maxDepth levels of objects
+// and arrays. It counts "{" and "[" outside strings, and it knows the
+// escapes in strings, such as \" and \\. It does not check that line is
+// valid JSON; the decoder does that next.
+func tooDeep(line []byte) bool {
+	depth := 0
+	inString, escaped := false, false
+	for _, c := range line {
+		switch {
+		case escaped:
+			escaped = false
+		case inString && c == '\\':
+			escaped = true
+		case c == '"':
+			inString = !inString
+		case inString:
+		case c == '{' || c == '[':
+			if depth++; depth > maxDepth {
+				return true
+			}
+		case c == '}' || c == ']':
+			depth--
+		}
+	}
+	return false
+}
 
 // entryFields are the fields that parseEntry reads. A line may have other
 // fields: those of its event.
@@ -256,6 +292,9 @@ var entryFields = []string{"seq", "time", "event", "prev", "torn_length", "torn_
 // as jq, would not. So every reader sees the same values.
 func parseEntry(line []byte) (entry, string) {
 	var e entry
+	if tooDeep(line) {
+		return e, problemDepth
+	}
 	dec := json.NewDecoder(bytes.NewReader(line))
 	tok, err := dec.Token()
 	if err != nil {

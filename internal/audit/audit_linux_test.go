@@ -283,6 +283,8 @@ func TestOpenRefusesADamagedEnd(t *testing.T) {
 			"its last complete line is longer than 65536 bytes"},
 		{"empty last line", append(bytes.Clone(good), '\n'),
 			"the last complete line is not a valid entry: it is not valid JSON"},
+		{"last line nests too deep", append(bytes.Clone(good), `{"reason":"`+canary+`","x":`+strings.Repeat("[", 20)+"\n"...),
+			"the last complete line is not a valid entry: it nests objects and arrays more than 16 levels deep"},
 		// A second power cut during the recovery write left the newline
 		// after the torn line, and half of the log_recovered entry.
 		{"a torn line, then half of its log_recovered entry",

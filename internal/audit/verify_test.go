@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -399,6 +400,7 @@ var problemTemplates = func() map[string]bool {
 	m := map[string]bool{}
 	for _, p := range []string{
 		problemJSON, problemNotObject, problemSeq, problemTime, problemEvent, problemPrev, problemTornLength, problemTornHash,
+		problemDepth,
 		"is longer than N bytes",
 		"has no newline at the end: it is a torn line, and no log_recovered entry follows it",
 		"is a log_recovered entry, but the line before it is not the torn line that it names",
@@ -589,9 +591,18 @@ func TestVerifyHostileLines(t *testing.T) {
 		// "i", and neither does encoding/json: these are other names.
 		{"a name with a dotless i", edit(`"version"`, `"tıme":"2026-10-15T12:00:00.000Z","version"`), ""},
 		{"a name with a capital dotted I", edit(`"version"`, `"TİME":"2026-10-15T12:00:00.000Z","version"`), ""},
-		// encoding/json reads at most 10000 levels; the object is one.
-		{"9999 levels in an event field", nested(9999), ""},
-		{"10000 levels in an event field", nested(10000), problemJSON},
+		// At most maxDepth levels, counted by Verify itself, on every Go
+		// version. The object of the entry is the first level.
+		{"16 levels, the most", nested(maxDepth - 1), ""},
+		{"17 levels", nested(maxDepth), problemDepth},
+		{"10000 levels", nested(10000), problemDepth},
+		{"17 levels of objects", edit(`"dev"`, `"dev","x":`+strings.Repeat(`{"a":`, maxDepth)+`1`+strings.Repeat("}", maxDepth)),
+			problemDepth},
+		{"brackets in a string", edit(`"dev"`, `"dev","x":"`+strings.Repeat("[{", 100)+`"`), ""},
+		{"brackets after an escaped quote in a string", edit(`"dev"`, `"dev","x":"\"`+strings.Repeat("[", 100)+`"`), ""},
+		{"deep arrays after an escaped backslash ends a string",
+			edit(`"dev"`, `"dev","x":"\\","y":`+strings.Repeat("[", maxDepth)+strings.Repeat("]", maxDepth)), problemDepth},
+		{"too deep and not valid JSON", base + strings.Repeat("[", maxDepth+1), problemDepth},
 		// Verify does not read the fields of events other than
 		// log_recovered.
 		{"an event field twice", edit(`"dev"`, `"dev","answer":"deny","answer":"approve_once"`), ""},
@@ -613,6 +624,14 @@ func TestVerifyHostileLines(t *testing.T) {
 				t.Errorf("the error shows text from the line: %v", err)
 			}
 		})
+	}
+}
+
+// TestProblemDepthNamesTheLimit: the text of problemDepth is a constant,
+// so it must name maxDepth itself.
+func TestProblemDepthNamesTheLimit(t *testing.T) {
+	if want := " " + strconv.Itoa(maxDepth) + " "; !strings.Contains(problemDepth, want) {
+		t.Errorf("problemDepth = %q; want it to name the limit %d", problemDepth, maxDepth)
 	}
 }
 

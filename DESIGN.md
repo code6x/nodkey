@@ -649,6 +649,11 @@ it began.
 the file can be large.
 
 - Each line is at most 64 KiB, and the last line ends in a newline.
+- Objects and arrays nest at most 16 levels deep in a line. An entry uses
+  two: the object, and an array of names in it. Verify counts the levels
+  itself, before it reads the JSON, so the result is the same on every Go
+  version. (Go's JSON reader has its own limit, and it changed between
+  versions.)
 - Each line is one JSON object with `seq`, `time`, `event` and `prev`. A
   field name must match exactly, and none of these fields may be there
   twice, so every reader sees the same values. A name that differs only in
