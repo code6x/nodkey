@@ -247,14 +247,25 @@ in section 6.
 Rules for the claimed part, because the agent writes it:
 
 - One line per field. Newlines and other control characters become spaces.
+  So do the other space characters, and symbols that draw nothing, such as
+  U+2800 BRAILLE PATTERN BLANK. Runs of spaces become one space. So long
+  runs of blank symbols are not possible. A long line still wraps on the
+  phone, and the agent can choose its text so that a fake line starts a
+  new row. The `<code>` font and the place under the "claimed by the
+  agent" line still mark that text as claimed.
 - Unicode direction marks (for example U+202E) and other invisible
   formatting characters are removed.
-- Values that look like secrets are masked before they are shown or logged:
-  the value of `-p`, `--password`, `--token` and similar options, both as
-  the next word and attached (`-pVALUE`, `--password=VALUE`), the part
-  after `password=`, `token=`, `secret=` and similar, `Authorization:`
-  header values, and long random-looking strings. The broker does the
-  masking, because it does not trust the client.
+- At most 4 combining marks (such as accents) are kept in a row. Real text
+  needs few: Vietnamese uses 2, Thai 3. Many stacked marks can draw over
+  the lines above and below. A field never starts with a combining mark,
+  because the mark would draw on the text before the field.
+- Values that look like secrets are masked before they are shown or
+  logged. Each becomes `***`. The broker does the masking, because it does
+  not trust the client. The next section lists what is masked.
+- A field longer than 64 KiB is not shown at all: the message shows
+  `[hidden: too long]`. For a command line, all the arguments count
+  together. The broker never cuts a field before it masks it, because a
+  secret that was cut may no longer look like a secret.
 - A command line shows the program and at most 8 arguments. Each field is
   cut to a fixed length, with `…` at the end.
 - All text is HTML-escaped and put inside `<code>`. Link previews are turned
@@ -262,6 +273,142 @@ Rules for the claimed part, because the agent writes it:
 - The claimed part always comes after the verified part, under the
   "claimed by the agent" line. So the agent cannot make text that looks
   like a verified line.
+
+### What is masked
+
+Masking is best effort. It finds the common forms below, and nothing
+else. A secret in another form is shown as it is. Masking is there to
+catch accidents. A hostile agent can always get a secret past it, for
+example by encoding the secret. So the claimed part stays a claim: read
+it, and deny a request that looks strange (THREAT-MODEL.md T2 and T15).
+
+These rules apply to the command line and to the other claimed fields:
+
+- **Options with a secret name.** The value of an option whose name
+  contains `pass`, `pwd`, `token`, `secret`, `auth`, `credential`, `cookie`
+  or `key`, for example `--password`, `--api-key` or `-token`. The value
+  is hidden as the next word and attached (`--password=VALUE`). If the
+  hidden word is itself such an option, the word after it is hidden too.
+  A few of these options take no value, for example `--password-stdin` and
+  `--ask-become-pass`; the word after them stays.
+- **`-p`.** The attached value (`-pVALUE`, as `mysql` uses). The word after
+  a bare `-p`, unless that word starts with `-`. So the port in
+  `ssh -p 2222` is hidden too. The word after `-pw` is hidden too, as
+  PuTTY tools use it for the password. An option in quotes counts too, as
+  in `"-p" VALUE` in a script.
+- **User and password.** The part after `:` in the word after `-u`, `-U`,
+  `--user` and `--proxy-user`, as in `curl -u deploy:VALUE`.
+- **Options of some programs**, whose names do not say "secret":
+  - `curl`: `-u`, `-U`, `-E` and `--cert` (the part after `:`), and `-b`.
+    Grouped letters count too, as in `curl -su deploy:VALUE` or
+    `curl -sudeploy:VALUE`.
+  - `gh secret set`: `--body` and `-b`.
+  - `kubectl`: `--from-literal` (the part after `=`).
+  - `vault kv put`, `vault kv patch` and `vault write`: each `KEY=VALUE`
+    argument (the part after `=`).
+  - `openssl`: `-k` and `-K`, and the arguments of `openssl passwd`.
+  - `ssh-keygen`: `-N` and `-P`, also grouped, as in `ssh-keygen -pP VALUE`.
+  - `redis-cli`: `-a`.
+  - `ldapsearch` and the other OpenLDAP tools: `-w`. `ldappasswd` also
+    `-a` and `-s`. Grouped letters count too, as in `ldapsearch -xw VALUE`.
+  - `sqlcmd` and `bcp`: `-P`.
+  - `mysqladmin`: the word after `password` and `old-password`.
+  - `putty`, `plink`, `pscp` and `psftp`: `-pw`.
+
+  The program may come after another word, as in `sudo redis-cli -a VALUE`
+  or `ssh web-1 redis-cli -a VALUE`. The rules of all these programs count
+  together. So a word that only looks like a program, such as the host in
+  `redis-cli -h vault -a VALUE`, does not end the rules of `redis-cli`.
+  When it is not clear whether a separator ends the command, the rules
+  stay. That may hide more, but never less:
+  - In a command line, nothing ends the rules. The shell has already split
+    the words, so a `;` in an argument is text, as in
+    `curl -H "Cookie: a=1;" -E client.pem:VALUE`.
+  - In a script or other free text, a shell separator ends the rules: `;`,
+    `&&`, `||`, `|`, `&` or `|&` as a word of its own, or `;` at the end of
+    a word. It counts only outside quotes and when it is not escaped. So
+    in `sqlcmd -Q "SELECT 1; SELECT 2" -P VALUE` or after `\;` (as in
+    `find -exec`), the rules stay. If a quote in the text is never closed,
+    no separator counts, because the quotes may be apostrophes, as in
+    "don't". After a command substitution (`$(` or a backtick) or a
+    process substitution (`<(` or `>(`), no separator counts either. The
+    `;` in `curl -d $(date; hostname) -E client.pem:VALUE` ends a command
+    inside the substitution, not `curl`.
+  - A separator glued to the next word, as in `cd /tmp&&redis-cli -a VALUE`,
+    does not end the rules before it, but the program after it counts too.
+    A `&` inside a word may be part of a URL, as in
+    `curl "https://example.com/?a=1&b=2" -E client.pem:VALUE`.
+- **Keys and values.** The value after a key whose name contains
+  `password`, `passwd`, `pwd`, `pass`, `token`, `secret`, `apikey`,
+  `api_key`, `api-key`, `access_key`, `auth`, `credential`, `private_key`
+  or `cookie`, in any case and inside longer names such as `GITHUB_TOKEN`
+  or `db.password`. Key and value may be joined by `=`, `:=`, `?=`, `+=`,
+  `=>` or `: `, or by a quoted key and `:` as in JSON. The quotes may be
+  escaped, as in `{\"password\":\"VALUE\"}`.
+  - The name may hold brackets, as in `user[password]=VALUE`,
+    `params[:password] = "VALUE"` or `$config['password'] = 'VALUE'`.
+  - `name:VALUE` without a space counts only when a part of the name is a
+    secret word or ends in one, as in `X-Api-Key:VALUE`,
+    `Cookie:sid=VALUE` or `accessToken:VALUE`, and the value does not
+    start with `/`. So `auth-1:/srv/app` and
+    `https://auth.example.com:8443` stay readable.
+  - The value is a whole shell word. So `password=''VALUE` and
+    `password='it'\''s VALUE'` hide all of the value.
+  - A key inside quotes takes the value up to the closing quote, as in
+    `"PASSWORD=two words"`.
+  - An object or a list is hidden whole, as in
+    `{"auth": {"user": "dev", "pass": "VALUE"}}`.
+  - An authentication scheme takes the next word too, as in
+    `HTTP_AUTHORIZATION=Bearer VALUE`. After `Authorization:` and
+    `Proxy-Authorization:`, any scheme counts.
+  - A Cookie value goes on over `; `, as in `Cookie: a=1; b=2`.
+- **Whole values of arguments.** In a command line, an argument that is a
+  header with a secret name, as in `curl -H "Cookie: a=1; b=2"` or
+  `curl -H X-Api-Key:VALUE`, or that is `KEY=VALUE` with a secret name, as
+  in `env "DB_PASSWORD=two words"`: all of its value is hidden.
+- **Bearer and Basic.** The word after `Bearer` and `Basic`.
+- **Passwords in URLs.** The password in `USER:PASSWORD@HOST`, with or
+  without a scheme such as `https://`. It goes on to the last `@` of the
+  word, so it may hold `@`, `:`, `/`, `?` and `#`. Not hidden: a port with
+  an `@` later in the path, as in `https://example.com:8443/?to=dev@example.com`,
+  and an image digest, as in `app:1.2@sha256:...`.
+- **PEM blocks**, between the `BEGIN` and `END` lines.
+- **Known token shapes:** `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
+  `github_pat_`, `glpat-`, `xoxa-`, `xoxb-`, `xoxp-`, `xoxr-`, `sk-`, AWS
+  key IDs (`AKIA`, `ASIA`) and JWTs.
+- **Long random-looking words**: 20 or more letters, digits, `_`, `+`,
+  `-` and `/`, where letters and digits are mixed and the characters vary
+  enough. This finds most generated keys in hex, base62, base64 and
+  base64url. A path such as `/srv/k8s/manifests/app` stays readable. A
+  random part of a path or URL is hidden on its own, as the key in
+  `https://hooks.example.com/services/T0ABCDEFG/B0HIJKLMN/VALUE`. We
+  measured random keys on 2026-10-14. Of keys with 32 characters, about 1
+  in 100 in base64 stays visible, fewer in base62, and almost none in hex.
+  Of keys with 20 characters, up to 7 in 100 stay visible. For hex, base62
+  and base64url keys, this is the same alone and inside a URL path.
+  Standard base64 inside a long URL path is the exception: the `/` of the
+  key splits it into shorter parts, and up to 14 in 100 keys of 32
+  characters stay visible. Such keys are rare in URLs, because `/` ends a
+  part of the path.
+
+Masking also hides some text that is not secret, for example the port in
+`ssh -p 2222`, a full git commit ID (40 hex characters), and a value that
+only looks like a key. That is the safe side.
+
+Not masked, for example:
+
+- A secret as a plain word, without a key or an option before it:
+  `htpasswd -b users.txt dev VALUE`, a `.netrc` line `password VALUE`, or
+  a value sent in with `echo VALUE |`.
+- An option of a program that is not in the list above, when its name does
+  not say "secret", for example `az keyvault secret set --value VALUE`.
+- A key whose name holds none of the words above, for example
+  `ENCRYPTION_KEY=VALUE` or `SESSION=VALUE`, unless the value looks
+  random.
+- A key inside `${…}`, as in `${PASSWORD}=VALUE`. The shell expands
+  `${PASSWORD}`, and `=VALUE` is plain text after it.
+- A secret with fewer than 20 characters that is not in one of the forms
+  above, even if it looks random.
 
 ### How an answer is bound to one request
 
