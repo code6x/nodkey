@@ -46,6 +46,7 @@ type fakeTelegram struct {
 	markups     map[int64]json.RawMessage // the buttons of each message, by message ID
 	refusePolls int                       // the status of the error answer to every getUpdates; 0 for none
 	hold        chan struct{}             // if set, alert messages wait until it is closed
+	held        int                       // the alert messages that wait at hold now
 	offline     bool                      // the proxy refuses every new connection, as if Telegram were unreachable
 	connects    []string                  // what the proxy was asked to connect to
 	changed     chan struct{}             // closed and made new on each change
@@ -302,12 +303,8 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.serveUpdates(w, r, p.Offset, time.Duration(p.Timeout)*time.Second)
 	case "sendMessage":
-		if len(call.buttons) == 0 && hold != nil {
-			select {
-			case <-hold:
-			case <-r.Context().Done():
-				return
-			}
+		if len(call.buttons) == 0 && hold != nil && !f.waitHold(r, hold) {
+			return
 		}
 		writeTelegram(w, http.StatusOK, message(call.msgID))
 	case "editMessageText", "editMessageReplyMarkup":
@@ -317,6 +314,27 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeTelegram(w, http.StatusNotFound, `{"ok":false,"error_code":404,"description":"Not Found"}`)
 	}
+}
+
+// waitHold makes the alert message of r wait until hold is closed, and
+// reports true, or until the client goes away, and reports false. held
+// counts the messages that wait.
+func (f *fakeTelegram) waitHold(r *http.Request, hold chan struct{}) bool {
+	f.addHeld(1)
+	defer f.addHeld(-1)
+	select {
+	case <-hold:
+		return true
+	case <-r.Context().Done():
+		return false
+	}
+}
+
+func (f *fakeTelegram) addHeld(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.held += n
+	f.notifyLocked()
 }
 
 // serveUpdates answers getUpdates: the queued updates from offset on, or
@@ -465,6 +483,12 @@ func (f *fakeTelegram) waitAlert(text string) string {
 		return false
 	})
 	return body
+}
+
+// waitHeld waits until n alert messages wait at hold at the same time.
+func (f *fakeTelegram) waitHeld(n int) {
+	f.t.Helper()
+	f.waitFor(fmt.Sprintf("%d alert messages that wait at the same time", n), func() bool { return f.held >= n })
 }
 
 // alertCount returns the number of messages without buttons whose request

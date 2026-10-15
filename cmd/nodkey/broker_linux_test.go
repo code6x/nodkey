@@ -475,6 +475,13 @@ func tearAuditLog(t *testing.T, e *brokerEnv) {
 	t.Helper()
 	e.signal(syscall.SIGTERM)
 	e.mustExit(exitOK)
+	appendTornLine(t, e)
+}
+
+// appendTornLine adds a torn last line to the audit log of e, as a power
+// cut during a write would. The broker must have stopped.
+func appendTornLine(t *testing.T, e *brokerEnv) {
+	t.Helper()
 	f, err := os.OpenFile(e.auditPath, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -668,6 +675,106 @@ func TestBrokerAlertTriesEndAtTheStop(t *testing.T) {
 	}
 	if n := e.tg.alertCount("torn line"); n != 0 {
 		t.Errorf("%d alerts, want none: Telegram could not be reached", n)
+	}
+}
+
+// threeAlertsAtTheNextStart makes the next start of the broker of e, with
+// seamStoreStartFails, queue three alerts: it appends a log_recovered
+// entry, as from a start that recorded a torn line and stopped before its
+// broker_started entry, and then a torn line. It returns a part of the
+// text of each alert: about the old torn line, the new torn line and the
+// store. The broker must have stopped.
+func threeAlertsAtTheNextStart(t *testing.T, e *brokerEnv) []string {
+	t.Helper()
+	appendForgedRecovery(t, e, 10, strings.Repeat("ab", 32))
+	entries := e.auditEntries()
+	seq, ok := entries[len(entries)-1]["seq"].(float64)
+	if !ok {
+		t.Fatal("the log_recovered entry has no seq")
+	}
+	appendTornLine(t, e)
+	return []string{
+		fmt.Sprintf("Entry %d (log_recovered)", int(seq)),
+		fmt.Sprintf("Entry %d (log_recovered)", int(seq)+1),
+		"could not start",
+	}
+}
+
+// TestBrokerStopWithThreeAlertsAndNoAnswer: three alerts wait at the start,
+// and Telegram takes each alert message but never answers, as in a long
+// outage, so each try runs into its time limit. The first tries of the
+// three alerts run at the same time. A SIGTERM right after the start: the
+// stop waits for these tries, as long as one of them takes, then stops
+// cleanly within its limit and writes broker_stopped. Each alert got at
+// least one try, and the log says that all three are lost. Tried one after
+// the other, the three tries took longer than the stop limit (issue #59);
+// TestStartAlertsAtTheSameTime checks the times of the real limits.
+func TestBrokerStopWithThreeAlertsAndNoAnswer(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{holdAlerts: true})
+	e.stderr.wait(t, lineListening)
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK)
+	alerts := threeAlertsAtTheNextStart(t, e)
+	e.start(seamStoreStartFails, seamFastAlertTries)
+	e.stderr.wait(t, lineListening)
+	e.tg.waitHeld(len(alerts)) // the first tries, at the same time
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK) // a clean stop, in time
+	for _, alert := range alerts {
+		if e.tg.alertCount(alert) == 0 {
+			t.Errorf("the alert with %q got no try", alert)
+		}
+	}
+	if !e.stderr.has(`they are lost" lost=3`) {
+		t.Errorf("the log does not say that the three alerts are lost; its log:\n%s", e.stderr.text())
+	}
+	got := eventNames(e.auditEntries())
+	want := []string{
+		"broker_started", "broker_stopped", "log_recovered", "(torn line)", "log_recovered", "broker_started",
+		"broker_stopped",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("audit entries %q, want %q", got, want)
+	}
+}
+
+// TestBrokerThreeAlertsGoOutOnce: three alerts wait at the start, and
+// Telegram cannot be reached. Each alert tries again on its own. Once
+// Telegram can be reached, the approver gets each alert exactly once, and
+// none is lost.
+func TestBrokerThreeAlertsGoOutOnce(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{})
+	e.stderr.wait(t, lineListening)
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK)
+	alerts := threeAlertsAtTheNextStart(t, e)
+	e.tg.setOffline(true)
+	e.start(seamStoreStartFails, seamFastAlertTries)
+	e.stderr.wait(t, lineListening)
+	for n := range len(alerts) {
+		e.stderr.waitCount(t, fmt.Sprintf(`%s" alert=%d `, lineAlertAgain, n+1), 2)
+	}
+	if n := e.tg.alertCount(""); n != 0 {
+		t.Fatalf("%d alerts while Telegram cannot be reached", n)
+	}
+	e.tg.setOffline(false)
+	for _, alert := range alerts {
+		e.tg.waitAlert(alert)
+	}
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK)
+	for _, alert := range alerts {
+		if n := e.tg.alertCount(alert); n != 1 {
+			t.Errorf("%d alerts with %q, want 1", n, alert)
+		}
+	}
+	if n := e.tg.alertCount(""); n != len(alerts) {
+		t.Errorf("%d alerts, want %d", n, len(alerts))
+	}
+	if e.stderr.has("they are lost") {
+		t.Errorf("the log says that alerts are lost; its log:\n%s", e.stderr.text())
 	}
 }
 

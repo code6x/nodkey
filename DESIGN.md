@@ -2066,11 +2066,15 @@ it started before.
    broker again later, and no alert goes out each time.
 8. It writes the `broker_started` entry. No later step of the start can
    fail.
-9. It starts to poll Telegram, and sends the alerts that waited. After a
-   power cut, the host can be up before Telegram can be reached. So when
-   an alert does not go out, the broker tries again: after 5 seconds,
-   then twice as long each time, at most 5 minutes, until the alert is
-   out or the broker stops. Each failed try gets one log line.
+9. It starts to poll Telegram, and sends the alerts that waited. It sends
+   them at the same time, each on its own, so a slow try of one alert
+   does not delay the others. They can reach the phone in any order.
+   After a power cut, the host can be up before Telegram can be reached.
+   So when an alert does not go out, the broker tries again: after 5
+   seconds, then twice as long each time, at most 5 minutes, until the
+   alert is out or the broker stops. Each alert has its own tries. Each
+   failed try gets one log line, with the number of the alert, such as
+   `alert=2` for the second one that waited.
 10. Only then does it read the connections on the `listen` address and
     take requests.
 
@@ -2086,15 +2090,20 @@ order:
    the `foreign_tap` entries that still wait.
 3. The server: it closes the `listen` address and every connection.
 4. The alerts of the start: each one gets its first try, also when the
-   stop began right after the start, but no try again. An alert that did
-   not go out is lost; the journal says so.
+   stop began right after the start, but no try again. The tries run at
+   the same time, and a try takes at most 30 seconds. So they end at
+   most 30 seconds after the stop began, however many alerts wait. An
+   alert that did not go out is lost; the journal says so.
 5. The stores: they clear their tokens and session keys.
 6. The `broker_stopped` entry. Then the audit log is closed.
 
 The stop takes at most 80 seconds. A request may need up to 30 seconds
-to take its answer, and a try of an alert up to 30 seconds. After 80 seconds the
-broker ends without the rest of the stop, and exits with 1. The example
-unit gives it 90 seconds (`TimeoutStopSec=`); then systemd kills it.
+to take its answer, and the alert about an audit log that cannot be
+written up to 30 seconds more. The tries of the alerts of the start run
+at the same time as these steps, and end within 30 seconds. After 80
+seconds the broker ends without the rest of the stop, and exits with 1.
+The example unit gives it 90 seconds (`TimeoutStopSec=`); then systemd
+kills it.
 
 `nodkey broker` exits with:
 
