@@ -136,7 +136,8 @@ func (r *SecretsRequest) UnmarshalJSON(data []byte) error {
 // SecretRef is one variable of a SecretsRequest.
 type SecretRef struct {
 	// Var is the environment variable, such as "GH_TOKEN". The broker
-	// checks it with ValidVar. A message shows it as claimed text.
+	// checks it with ValidVar and DeniedVar. A message shows it as
+	// claimed text.
 	Var string `json:"var"`
 	// Name is the name of a [secret.*] section, such as "github-token".
 	Name string `json:"name"`

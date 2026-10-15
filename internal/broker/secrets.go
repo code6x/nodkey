@@ -33,9 +33,11 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 	rq.pre.Command, rq.pre.Reason = cl.Command, cl.Reason
 	rq.releaseBody()
 	if !ok {
-		// No message for a name the client may not use (DESIGN.md
-		// section 5). The audit log gets only the names that passed.
+		// No message for a name the client may not use, or for a
+		// variable on the deny list (DESIGN.md section 5). The audit log
+		// gets only the names that passed.
 		rq.deny(rq.pre, audit.CauseNotAllowed, "", http.StatusForbidden)
+		rq.logDeniedVar(req.Secrets)
 		return
 	}
 	res, rc, ok := rq.decide(ctx, &approval.Request{
@@ -82,16 +84,18 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 }
 
 // checkSecrets checks the variables and the secret names of req: 1 to
-// api.MaxSecrets variables, each with a valid name, none twice, and each
-// secret in the config and allowed for client. It returns the secret names
-// in the order of the request, for the core, and the names that passed,
-// once each, for the audit log.
+// api.MaxSecrets variables, each with a valid name that is not on the
+// deny list (api.DeniedVar), none twice, and each secret in the config and
+// allowed for client. It returns the secret names in the order of the
+// request, for the core, and the names that passed, once each, for the
+// audit log.
 func (s *Service) checkSecrets(client string, req *api.SecretsRequest) (names, passed []string, ok bool) {
 	ok = len(req.Secrets) > 0 && len(req.Secrets) <= api.MaxSecrets
 	vars := make(map[string]bool, len(req.Secrets))
 	seen := make(map[string]bool, len(req.Secrets))
 	for _, ref := range req.Secrets {
-		if !api.ValidVar(ref.Var) || vars[ref.Var] {
+		_, denied := api.DeniedVar(ref.Var)
+		if !api.ValidVar(ref.Var) || denied || vars[ref.Var] {
 			ok = false
 		}
 		vars[ref.Var] = true
@@ -107,6 +111,32 @@ func (s *Service) checkSecrets(client string, req *api.SecretsRequest) (names, p
 		}
 	}
 	return names, passed, ok
+}
+
+// logDeniedVar logs why the broker refused a request with a variable on
+// the deny list (DESIGN.md section 5): a fixed text, and the entry of the
+// list, such as PATH or LD_*. It never logs a name that the client chose:
+// for a prefix, it logs only the prefix. An agent can send many such
+// requests, so these lines are limited per minute, together with those
+// about refused SSH logins.
+func (rq *request) logDeniedVar(refs []api.SecretRef) {
+	for _, ref := range refs {
+		prefix, denied := api.DeniedVar(ref.Var)
+		if !denied {
+			continue
+		}
+		entry := prefix + "*"
+		if prefix == "" {
+			entry = ref.Var // equal to a name on the list
+		}
+		if rq.s.refusedLines.allow() {
+			rq.s.log.Info("broker: refused a request for secrets: a variable is on the deny list, because "+
+				"programs show or run the value of such a variable (DESIGN.md section 5)",
+				slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client),
+				slog.String("deny_list", entry))
+		}
+		return
+	}
 }
 
 // fetch gets the value of each secret of names from its store, once each,

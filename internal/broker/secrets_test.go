@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +356,118 @@ func TestSecretsBrokerChecks(t *testing.T) {
 	}
 	if all := encodeEvents(t, e.audit.all()) + e.logs.String(); strings.Contains(strings.ToLower(all), strings.ToLower(canary())) {
 		t.Error("the name of an unknown secret is in the audit log or the log")
+	}
+}
+
+// TestSecretsDeniedVars: the broker refuses every variable on the deny
+// list, and every variable that starts with a prefix on it (DESIGN.md
+// section 5), before any message, grant or rule: 403 at once, without a
+// short code, a message, a notice or a fetch. The audit log records each
+// request as not_allowed, with only the secret names that passed, and
+// never the variable.
+func TestSecretsDeniedVars(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	laptop, ci := e.httpClient("laptop"), e.httpClient("ci")
+	// "Approve 15 min" makes a grant for github-token; backup-token has a
+	// "never ask" rule for ci. Neither may cover a variable on the list.
+	p := e.start(laptop, api.PathSecrets, secretsRequest("GH_TOKEN", "github-token"))
+	e.tap(e.waitAsked(1)[0].Prompt.RequestID, audit.AnswerApproveWindow)
+	secretsOf(t, p.wait(t))
+	fetched, entries := e.main.fetched(), len(e.audit.all())
+	// A made-up end for names that start with a prefix. It must never
+	// reach the audit log or the log.
+	tail := canary()
+	names, prefixes := api.DenyList()
+	for _, prefix := range prefixes {
+		names = append(names, prefix, prefix+tail)
+	}
+	for _, name := range names {
+		for _, c := range []struct {
+			client *http.Client
+			secret string
+		}{{laptop, "github-token"}, {ci, "backup-token"}} {
+			before := len(e.audit.all())
+			res := e.post(t.Context(), c.client, api.PathSecrets, secretsRequest(name, c.secret))
+			if res.err != nil || res.status != http.StatusForbidden || res.code != "" {
+				t.Errorf("%s=%s: status %d, %v, short code %q; want 403 at once", name, c.secret, res.status,
+					res.err, res.code)
+				continue
+			}
+			got := e.audit.waitFor(t, before+2)[before:]
+			mustEvents(t, got, "request denied:not_allowed")
+			if s := subjectOf(got[0]); !slices.Equal(s.Secrets, []string{c.secret}) || s.Kind != audit.KindSecrets {
+				t.Errorf("%s=%s: the audit log has %+v", name, c.secret, s)
+			}
+		}
+	}
+	// One variable on the list denies the whole request.
+	req := secretsRequest("GH_TOKEN", "github-token")
+	req.Secrets = append(req.Secrets, api.SecretRef{Var: "LD_PRELOAD", Name: "npm-token"})
+	mustStatus(t, e.post(t.Context(), laptop, api.PathSecrets, req), http.StatusForbidden)
+	events := e.audit.all()
+	mustEvents(t, requestEvents(events, lastRequestID(t, events)), "request denied:not_allowed")
+	// Two entries for each request: two clients for each name, and the
+	// last request.
+	if n, want := len(events)-entries, 2*(2*len(names)+1); n != want {
+		t.Errorf("%d new audit entries, want %d", n, want)
+	}
+	if len(e.approver.Asked()) != 1 || len(e.approver.Notices()) != 0 || e.main.fetched() != fetched {
+		t.Errorf("messages %d, notices %d, fetches %d; want only the message and the fetch before",
+			len(e.approver.Asked()), len(e.approver.Notices()), e.main.fetched()-fetched)
+	}
+	if all := encodeEvents(t, events) + e.logs.String(); strings.Contains(all, tail) {
+		t.Error("a variable that the client chose is in the audit log or the log")
+	}
+}
+
+// TestSecretsDeniedVarLog: the log says why the broker refused a request
+// with a variable on the deny list, with a fixed text and the entry of the
+// list: the name, or the prefix with "*", never the client's name.
+func TestSecretsDeniedVarLog(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	c := e.httpClient("laptop")
+	tail := canary()
+	for _, name := range []string{"PATH", "GIT_" + tail} {
+		mustStatus(t, e.post(t.Context(), c, api.PathSecrets, secretsRequest(name, "github-token")),
+			http.StatusForbidden)
+	}
+	logs := e.logs.String()
+	for _, entry := range []string{"PATH", "GIT_*"} {
+		if !strings.Contains(logs, "a variable is on the deny list") || !strings.Contains(logs, "deny_list="+entry) {
+			t.Errorf("the log does not say that %s is on the deny list:\n%s", entry, logs)
+		}
+	}
+	if strings.Contains(logs, tail) {
+		t.Error("the log holds a variable that the client chose")
+	}
+	// Other refusals do not name the deny list.
+	before := strings.Count(e.logs.String(), "deny list")
+	mustStatus(t, e.post(t.Context(), c, api.PathSecrets, secretsRequest("gh_token", "github-token")),
+		http.StatusForbidden)
+	if strings.Count(e.logs.String(), "deny list") != before {
+		t.Error("the log blames the deny list for a variable name that is not valid")
+	}
+}
+
+// TestSecretsVarsNotOnDenyList: names that hold secrets on purpose, and
+// names that only look like an entry of the deny list, still get their
+// values.
+func TestSecretsVarsNotOnDenyList(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	e.approver.Auto(audit.AnswerApproveOnce)
+	vars := []string{"GH_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "LDAP_PASSWORD", "NODE_AUTH_TOKEN",
+		"NPM_TOKEN", "HOMEBREW_GITHUB_API_TOKEN", "SSH_PRIVATE_KEY", "DOCKER_PASSWORD", "CARGO_REGISTRY_TOKEN",
+		"TF_TOKEN_EXAMPLE_COM", "TF_VAR_DB_PASSWORD", "GOPROXY", "HTTPS_PROXY", "LC", "GIT", "PATHS", "PS5"}
+	req := secretsRequest("GH_TOKEN", "github-token")
+	req.Secrets = nil
+	for _, v := range vars {
+		req.Secrets = append(req.Secrets, api.SecretRef{Var: v, Name: "github-token"})
+	}
+	got := secretsOf(t, e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, req))
+	for _, v := range vars {
+		if got[v] != e.values["github-token"] {
+			t.Errorf("%s did not get its value", v)
+		}
 	}
 }
 

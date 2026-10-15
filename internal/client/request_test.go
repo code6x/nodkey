@@ -76,6 +76,50 @@ func TestRunUsage(t *testing.T) {
 	}
 }
 
+// TestRunDeniedVars: nodkey run refuses every variable on the deny list,
+// and every variable that starts with a prefix on it (DESIGN.md section
+// 5), before it asks anyone: it prints the usage and a clear last line,
+// exits with 64, sends no request and starts nothing. Names that hold
+// secrets on purpose, or only look like an entry, pass.
+func TestRunDeniedVars(t *testing.T) {
+	t.Parallel()
+	fb := newFakeBroker(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("a request reached the broker")
+	})
+	type test struct{ name, want string }
+	var tests []test
+	names, prefixes := api.DenyList()
+	for _, name := range names {
+		tests = append(tests, test{name, "nodkey refuses the variable " + name +
+			", because programs show or run its value"})
+	}
+	for _, p := range prefixes {
+		want := "nodkey refuses variables that start with " + p + ", because programs show or run their values"
+		tests = append(tests, test{p, want}, test{p + "X", want})
+	}
+	for _, tt := range tests {
+		fx := &fakeExec{}
+		code, stderr := runIn(t.Context(), testRunner(fb.b, nil, fx), "--secret", "GH_TOKEN=github-token",
+			"--secret", tt.name+"=npm-token", "--", self(t))
+		want := "nodkey: --secret " + tt.name + "=...: " + tt.want + " (exit 64)"
+		if last := lastLine(stderr); code != exitUsage || last != want || !strings.HasPrefix(stderr, runUsage) {
+			t.Errorf("%s: exit code %d, last line %q; want 64, the usage and %q", tt.name, code, safe(last), want)
+		}
+		if len(fx.ran()) != 0 {
+			t.Errorf("%s: the command started", tt.name)
+		}
+	}
+	if n := fb.requests.Load(); n != 0 {
+		t.Errorf("%d requests reached the broker, want none", n)
+	}
+	for _, ok := range []string{"GH_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "LDAP_PASSWORD", "NODE_AUTH_TOKEN",
+		"NPM_TOKEN", "DOCKER_PASSWORD", "CARGO_REGISTRY_TOKEN", "TF_TOKEN_EXAMPLE_COM", "GOPROXY", "HTTPS_PROXY"} {
+		if _, err := parseArgs([]string{"--secret", ok + "=github-token", "--", "gh"}); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+}
+
 // TestParseArgs: the forms of the options, as the flag package reads
 // them. Everything after "--" is the command, also its own options.
 func TestParseArgs(t *testing.T) {

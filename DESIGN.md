@@ -111,7 +111,8 @@ nodkey run --secret GH_TOKEN=github-token \
 ```
 
 1. The client checks its arguments: 1 to 32 `--secret` options, each
-   variable name valid and there only once, and the command after `--`.
+   variable name valid, not on the deny list (see "Variable names that the
+   broker refuses" below) and there only once, and the command after `--`.
    It looks for the command in `PATH`, as a shell does, and takes the
    absolute path of the file that it found: a relative path starts from
    the real working directory, not from `$PWD`, and the path is not
@@ -151,13 +152,14 @@ nodkey run --secret GH_TOKEN=github-token \
 3. The broker takes the client name only from the pinned TLS key (section
    10). It refuses a body that is not a valid request (400). Then it checks
    that there are 1 to 32 variables, that each variable name matches
-   `[A-Z_][A-Z0-9_]{0,63}` and is there only once, that each secret name
-   exists in the broker config, and that this client may use it. If any
-   check fails, the answer is **deny** (403), and the audit log gets the
-   request with only the names that passed. No message is sent for a name
-   the client may not use. (The client checks the variable names too, but
-   only to give a quick error. The broker does not trust the client's
-   checks.)
+   `[A-Z_][A-Z0-9_]{0,63}`, is not on the deny list below and is there
+   only once, that each secret name exists in the broker config, and that
+   this client may use it. If any check fails, the answer is **deny**
+   (403), and the audit log gets the request with only the names that
+   passed. No message is sent for a name the client may not use, or for a
+   variable on the deny list, and no grant or rule covers it. (The client
+   checks the variable names too, but only to give a quick error. The
+   broker does not trust the client's checks.)
 4. The broker makes the claimed text safe (section 7), and checks the rules
    and grants. If a grant or a "never ask" rule covers every name, it skips
    to step 6.
@@ -211,6 +213,139 @@ every request. Version 1 keeps no cache of values. For `bw`, it first
 runs `bw sync --force`, which downloads the whole vault, so it never hands
 out a value from an old copy of the vault. A sync without `--force` would
 depend on the broker's clock (section 16).
+
+### Variable names that the broker refuses
+
+The variable name decides what the command does with the value. With some
+names, common programs print the value, write it into a file or a file
+name, send it to a server, or run it: as a command, as code or as options.
+The person sees the name in the message (`as:`), but may not know what it
+means. So the broker refuses these names in step 3: before any message,
+grant or rule, as for any other check. The audit log gets the `request`
+entry and a `denied` entry with cause `not_allowed`. The broker's log says
+why, with a fixed text and the entry of the list, such as `PATH` or
+`LD_*`, never with the name that the client sent. The client refuses
+these names too, before it asks anyone: it prints the usage and a clear
+last line, and exits with 64 (section 15).
+
+The broker refuses each name in the first column below. `LD_*` means
+every name that starts with `LD_`. The match is exact, on the name in
+upper case: `LD_*` refuses `LD_PRELOAD`, but not `LDAP_PASSWORD`. Each
+entry was checked on 2026-10-15 on Ubuntu 24.04, with a made-up value,
+unless the table says otherwise. A test checks that this table and the
+list in the code (`api.DeniedVar`) are the same.
+
+| name | what programs do with the value |
+|---|---|
+| `LD_*` | The dynamic loader prints a library in `LD_PRELOAD` or `LD_AUDIT` that it cannot load, and an `LD_DEBUG` option that it does not know. It writes a file named after `LD_DEBUG_OUTPUT`, and loads code from `LD_PRELOAD` and `LD_LIBRARY_PATH`. |
+| `DYLD_*` | The same for the dynamic loader of macOS. Not checked; no use on Linux. |
+| `GCONV_*` | glibc loads character set modules, which are code, from the directories in `GCONV_PATH`. Not checked. |
+| `GLIBC_TUNABLES` | The dynamic loader prints a value that it does not know. |
+| `RESOLV_*` | glibc prints a `RESOLV_MULTI` or `RESOLV_REORDER` that is not `on` or `off`, when a program looks up a host name. |
+| `LANG`, `LANGUAGE`, `LC_*` | bash prints an `LC_ALL` that is not a locale. perl prints all of them when the locale is not valid. ssh sends `LANG` and the `LC_` names to the server: Debian and Ubuntu set `SendEnv LANG LC_*`. |
+| `TZ` | `date` prints the leading letters of the value as the name of the time zone, when the rest reads as an offset from UTC. |
+| `TERM` | `tput` and `clear` print a terminal that they do not know. |
+| `PATH` | It decides which programs run. GNU `which` prints it when it does not find a program. (Not checked: Ubuntu has another `which`.) |
+| `HOME` | Programs make their files under it: npm makes `<value>/.npm` in the working directory. git and bash print paths under it in errors. |
+| `TMPDIR`, `TMP`, `TEMP` | Node.js programs print them when they cannot make a temporary file there. Node.js reads `TMP` and `TEMP` when `TMPDIR` is not set. `mktemp` prints `TMPDIR` too. |
+| `SHELL` | ssh runs a `ProxyCommand` with it, and `script` runs it. Both print a shell that they cannot run. |
+| `EDITOR`, `VISUAL` | `git commit` and `crontab -e` run the editor, and print an editor that they cannot run. |
+| `PAGER` | git and man run it when they write to a terminal. |
+| `MANPAGER` | man runs it, before `PAGER`, when it writes to a terminal. |
+| `BROWSER` | `gh browse` and `sensible-browser` run it. |
+| `EMAIL` | `git commit` writes it into the commit as the email address when `user.email` is not set. |
+| `SSLKEYLOGFILE` | curl and Python write the keys of each TLS connection to a file named after the value. |
+| `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` | curl and Python requests print the path of a CA file that they cannot load. |
+| `WGETRC` | wget prints a config file that it cannot read. |
+| `BASH_ENV`, `ENV` | bash for a script, and an interactive sh, expand the value, which can run commands, and run the file it names. |
+| `SHELLOPTS`, `BASH_XTRACEFD`, `BASH_COMPAT` | bash prints a value that is not valid, every time it starts. |
+| `PS0`, `PS1`, `PS2`, `PS3`, `PS4` | The shell prints them as prompts, most of them after an expansion that can run commands: `PS4` before each command that `set -x` traces, `PS3` for `select`, the others in an interactive shell. |
+| `PROMPT_COMMAND` | An interactive bash runs it before each prompt. |
+| `TIMEFORMAT` | bash prints it after `time`. |
+| `HISTFILE` | An interactive bash writes its history to a file named after the value. |
+| `GIT_*` | git runs `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, `GIT_ASKPASS`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND` and `GIT_EXTERNAL_DIFF`. It prints a `GIT_TRACE` or `GIT_TRACE2` name whose value is not a number, `true`, `false` or an absolute path. It stops and prints the value of `GIT_DIR`, `GIT_CONFIG_NOSYSTEM`, `GIT_AUTHOR_DATE` and many more names when the value is not valid. It writes `GIT_AUTHOR_NAME` and the other author and committer names into each commit, and makes files named after `GIT_INDEX_FILE`, `GIT_WORK_TREE` and others. In a test of everyday commands (`status`, `add`, `commit`, `log`, `fetch`, `push` and more), about 60 names of git 2.43 showed the value. New versions of git add names. |
+| `SSH_ASKPASS` | ssh-add and git run it to ask for a passphrase or a password. |
+| `SUDO_ASKPASS` | sudo runs it to ask for the password: with `-A`, and also without `-A` when there is no terminal and `DISPLAY` is set. It prints `unable to run` and the value when it cannot run it. The name also invites a mistake: the sudo password as the value. |
+| `SSH_SK_HELPER`, `SSH_SK_PROVIDER` | ssh-keygen and ssh run the helper, or load the library, for a security key, and print a name that they cannot use. |
+| `GNUPGHOME` | gpg prints paths under it. |
+| `RSYNC_RSH`, `RSYNC_CONNECT_PROG` | rsync runs them, and prints a command that it cannot run. |
+| `TIME_STYLE`, `QUOTING_STYLE` | ls prints a value that is not valid. |
+| `GZIP`, `BZIP2`, `BZIP`, `ZSTD_CLEVEL` | gzip, bzip2 and zstd read them as options, also when tar runs them, and print a value that they cannot use. |
+| `MAKEFLAGS`, `GNUMAKEFLAGS` | make reads each letter of the value as an option. With a `p` in it, make prints its database, with every variable of the environment and its value, so also the other secrets of the command. |
+| `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `LDLIBS`, `TARGET_ARCH` | The built-in rules of make print them in each command that they run, and run `CC` and `CXX` as the compiler. |
+| `GH_BROWSER`, `GH_EDITOR`, `GH_PAGER` | gh runs them. (`GH_EDITOR` and `GH_PAGER` not checked.) |
+| `GH_REPO` | gh prints a value that is not `OWNER/REPO`. |
+| `GH_HOST` | gh connects to the host that it names, and prints the name when it cannot. |
+| `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_API_VERSION` | docker prints a value that it cannot use. It connects to the host in `DOCKER_HOST`. |
+| `COMPOSE_FILE`, `COMPOSE_ENV_FILES` | docker compose prints a file that it cannot open. |
+| `TF_CLI_ARGS` | terraform reads it as options, and prints a value that it cannot use. Its forms for one command, such as `TF_CLI_ARGS_plan`, are lower case, so nodkey refuses them anyway. |
+| `TF_CLI_CONFIG_FILE`, `TF_PLUGIN_CACHE_DIR` | terraform prints them. |
+| `TF_WORKSPACE` | `terraform init` and `terraform plan` make a directory `terraform.tfstate.d/<value>`. |
+| `TF_LOG_PATH` | terraform writes its log to a file named after the value. |
+| `NPM_CONFIG_*` | npm reads its settings from them, also in upper case. `npm run` runs `NPM_CONFIG_SCRIPT_SHELL`. `NPM_CONFIG_CACHE` and `NPM_CONFIG_LOGS_DIR` make a directory named after the value. npm prints others, such as `NPM_CONFIG_PROXY`: `npm warn invalid config proxy="<value>"`. |
+| `GOMEMLIMIT` | Every Go program, such as gh or docker, prints a value that is not valid, and stops. |
+| `GOFLAGS`, `GOTOOLCHAIN`, `GOPATH`, `GOROOT`, `GOEXPERIMENT`, `GO111MODULE`, `GOOS`, `GOARCH`, `GOTMPDIR` | The go command prints a value that it cannot use, and stops. |
+| `GOCACHEPROG` | The go command runs it. |
+| `CGO_CFLAGS`, `CGO_CPPFLAGS`, `CGO_LDFLAGS` | `go build` with cgo passes them to the C compiler, which prints them. |
+| `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS` | java prints "Picked up" and the value every time it starts, and reads the value as options. |
+| `JDK_ALTERNATE_VM` | java does not start, and prints the value. |
+| `JAVA_HOME` | gradlew prints a value that is not a Java directory. |
+| `JAVA_OPTS`, `GRADLE_OPTS`, `MAVEN_OPTS` | gradlew and mvn pass them to java as options, and java prints a value that is not an option. (`MAVEN_OPTS` not checked: mvn was not installed.) |
+| `NODE_OPTIONS` | Node.js reads it as options, such as `--require`, which runs code. It prints a value that starts with `-` and is not an option that it allows. |
+| `NODE_EXTRA_CA_CERTS` | Node.js prints the value when it cannot load the file, at its first TLS connection. |
+| `NODE_V8_COVERAGE`, `NODE_COMPILE_CACHE`, `NODE_REDIRECT_WARNINGS` | Node.js makes a directory or a file named after the value. |
+| `NODE_REPL_EXTERNAL_MODULE` | An interactive Node.js runs the module it names, and prints a module that is not there. |
+| `PYTHONHOME`, `PYTHONPLATLIBDIR` | Python cannot start, and prints its path settings with the value. |
+| `PYTHONEXECUTABLE`, `PYTHONIOENCODING`, `PYTHONWARNINGS` | Python prints the value: as the name of the program, or as a value that is not valid. |
+| `PYTHONSTARTUP` | An interactive Python runs the file it names, and prints a name that it cannot open. |
+| `PYTHONPYCACHEPREFIX` | Python makes a directory named after the value. |
+| `PERL5OPT` | perl reads it as options, such as `-M`, which loads a module, and prints a module that it cannot find. |
+| `PERL5LIB`, `PERLLIB` | perl prints them as part of its search path when a module is missing. |
+| `PERLIO`, `PERL_SIGNALS`, `PERL_PERTURB_KEYS` | perl prints a value that it does not know (`PERLIO` only with `-w`). |
+| `RUBYOPT` | ruby reads it as options, such as `-r`, which loads a library, and prints a library that it cannot find. Not checked: ruby was not installed. |
+| `RUSTC_WRAPPER` | cargo runs it. Not checked: Rust was not installed. |
+| `RUSTFLAGS` | cargo passes them to rustc, which prints a flag that it does not know. Not checked. |
+| `RUSTUP_TOOLCHAIN` | rustup prints a toolchain that is not installed. Not checked. |
+| `CARGO_TARGET_DIR` | cargo makes a directory named after the value. Not checked. |
+
+Not on the list, on purpose:
+
+- `NODE_PATH`, `PYTHONPATH` and `RUBYLIB`: the runtime skips a directory
+  that is not there, quietly, and does not print it. (`RUBYLIB` was not
+  checked: ruby was not installed.)
+- `IFS`: bash, dash, zsh and busybox `sh` ignore it in the environment.
+- `LESSOPEN`: less runs it only when it holds `%s` exactly once.
+  Otherwise less says so, without the value.
+- `GOPROXY`, `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`: their URL can
+  hold a password on purpose, and curl does not print the password.
+- Names that hold a secret on purpose, such as `GH_TOKEN`,
+  `NODE_AUTH_TOKEN`, `NPM_TOKEN`, `AWS_SECRET_ACCESS_KEY`,
+  `LDAP_PASSWORD`, `DOCKER_PASSWORD`, `CARGO_REGISTRY_TOKEN`, and
+  Terraform's `TF_TOKEN_` and `TF_VAR_` names. So there is no `DOCKER_*`
+  or `TF_*` prefix.
+
+The prefixes also refuse some names that hold a secret on purpose:
+`GIT_CONFIG_VALUE_0` (for example an `http.extraHeader` for git),
+`GIT_CREDENTIALS` of semantic-release, `LD_ACCESS_TOKEN` and `LD_SDK_KEY`
+of LaunchDarkly, and `NPM_CONFIG__AUTH` of npm. Give such a secret to the
+program in another way, such as a git credential helper that reads
+`GH_TOKEN`, or `NPM_TOKEN` in `.npmrc` for npm.
+
+The list has limits:
+
+- It covers the dynamic loader and the C library, the shells, git, ssh,
+  sudo, make, gh, docker, terraform, npm, the runtimes and build tools of
+  Go, Java, Node.js, Python, Perl, Ruby and Rust, and names that many
+  programs use. It cannot hold every name of every program. Many other
+  programs print a setting that is not valid, such as `UNZIP` for unzip
+  or `COLUMNS` for `ls -C`, and some run a command from a name of their
+  own. The person should deny a secret in a name that is not made for a
+  secret.
+- The agent sets the rest of the environment of the command, and the
+  message does not show it. It can set `LD_PRELOAD` there itself. So the
+  list stops mistakes, and simple tricks with the name that the person
+  sees. It does not stop a hostile agent (THREAT-MODEL.md section 5,
+  item 1).
 
 ## 6. Flow: an SSH login
 
@@ -1428,8 +1563,9 @@ a field of its certificate, or a line break:
   with `time=`, and a value with a line break is quoted and escaped. The
   broker never logs claimed text, and cuts each value to 1 KiB. So no line
   can start with `audit anchor ` (section 9), and none comes near the
-  48 KiB at which journald splits a line. It logs at most 20 SSH logins
-  that a check refused in a minute, and counts the others.
+  48 KiB at which journald splits a line. It logs at most 20 requests in
+  a minute that a check refused, SSH logins (section 6) and variables on
+  the deny list (section 5), and counts the others.
 
 ## 11. Decision 2: loading keys after a restart
 
