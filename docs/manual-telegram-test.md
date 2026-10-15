@@ -301,11 +301,11 @@ Expected:
   message still shows `👍 approved once by you at HH:MM:SS`, and the log
   has no line `cannot update the message of a request that ended`.
 
-In the run of 2026-10-15, the buttons went away in the tester's Telegram
-client after the first tap, so no second tap reached the broker. Another
-Telegram client, another version of it, or a slow network may still send
-a second tap. The tests with the fake Telegram server check that the
-broker refuses it.
+In the run of 2026-10-15, the buttons went away in Telegram Web after
+the first tap, so no second tap reached the broker. The Telegram apps
+for phones and computers were not tried. Another client, another
+version, or a slow network may still send a second tap. The tests with
+the fake Telegram server check that the broker refuses it.
 
 ### Check 6: Late tap after a restart
 
