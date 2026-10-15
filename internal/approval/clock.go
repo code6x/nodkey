@@ -70,6 +70,14 @@ func (m moment) add(d time.Duration) moment {
 	return moment{mono: m.mono.Add(d), wall: m.wall.Add(d)}
 }
 
+// wholeSecond returns m moved back to the start of its second on the wall
+// clock, on both clocks. A message shows a time to the second, and cuts
+// the part of a second. So an end made with wholeSecond never comes after
+// the second that the person reads.
+func (m moment) wholeSecond() moment {
+	return m.add(-m.wall.Sub(m.wall.Truncate(time.Second)))
+}
+
 // before reports whether m comes before end on both clocks. So an end has
 // come as soon as either clock reaches it.
 func (m moment) before(end moment) bool {

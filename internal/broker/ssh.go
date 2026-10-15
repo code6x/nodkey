@@ -147,6 +147,13 @@ func (rq *request) grant(ctx context.Context, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The grants are all that an approval gives. When the client has hung
+	// up, such as after SIGINT, it tells the agent that the request was
+	// cancelled: then no grant starts.
+	if ctx.Err() != nil {
+		rq.cancelled()
+		return
+	}
 	res.StartGrants()
 	rq.ended = true
 	rq.answerJSON(api.GrantAnswer{Minutes: res.WindowMinutes})

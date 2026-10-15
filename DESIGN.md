@@ -902,9 +902,12 @@ name exactly one client. The config check refuses all of these (section
   `window` rule. N is then the shortest window among them, in whole
   minutes, rounded down, so a grant is never longer than a window. The tap
   makes one grant for each secret.
-- A grant ends N minutes after the tap. It starts only once the `decision`
-  entry of the tap is on disk (section 9). If that entry cannot be written,
-  the grant never starts.
+- A grant ends N minutes after the tap. A message shows the time of the
+  tap to the second, and cuts the part of a second, so the end is cut to
+  the start of its second too, on both clocks: a tap at 14:02:41.7 gives
+  a grant until 14:17:41.0. It starts only once the `decision` entry of the
+  tap is on disk (section 9). If that entry cannot be written, the grant
+  never starts.
 - A Deny ends the grants of that client for each secret or key of the
   denied request, at once. For a key, that is every grant of the client
   for the key: at every host key and for every remote user, as wide as the
@@ -1045,7 +1048,9 @@ later step fails after the approval, such as a store or the signature, an
 `error` entry and a `denied` entry with cause `error` follow instead. If
 the client hangs up after the approval, before anything was handed out, a
 `denied` entry with cause `cancelled` follows. An approved SSH grant hands
-out nothing, so it ends with its `decision`. When grants and a "never ask"
+out nothing, so it ends with its `decision`, unless its client hung up
+before the grants started: then a `denied` entry with cause `cancelled`
+follows, and no grant starts (section 13). When grants and a "never ask"
 rule allow one request together, it gets two `grant_used` entries, one for
 each, and each lists the secrets it covered.
 
@@ -1579,24 +1584,81 @@ ansible-playbook site.yml
 `ssh-grant` sends one request. The message lists the key, the remote user,
 every host by its name in the broker's `known_hosts`, and the time the
 grant ends. That time is fixed when the request comes: its time plus
-`--for`, in whole minutes, rounded down. A late tap does not move it. The
-message has only "Approve" (until that time) and "Deny". It waits for an
-answer as long as a request for secrets (`timeout`), because it is not an
-SSH login, but never past the time the grants end: after that, an
-approval would grant nothing. One tap makes a grant for each host key of
-each listed host (a host can have one host key of each key type), exactly
-as in B.
+`--for`, in whole minutes, rounded down. The message shows it to the
+second, so it is cut to the start of that second, on both clocks
+(section 8): a request at 14:05:12.7 for 15 minutes gives grants until
+14:20:12.0. A late tap does not move it. The message has only "Approve"
+(until that time) and "Deny". It waits for an answer as long as a request
+for secrets (`timeout`), because it is not an SSH login, but never past
+the time the grants end: after that, an approval would grant nothing. One
+tap makes a grant for each host key of each listed host (a host can have
+one host key of each key type), exactly as in B.
 Then the playbook runs without more taps. A host that is not in the list
 still asks. A host that is listed twice counts once (but the list may have
 at most 20 names, section 10). The client sends `--for` in seconds; the
 broker rounds down to whole minutes. The broker refuses an `ssh-grant`
 before any message when:
+- the key is not in the broker config, or this client may not use it;
 - the remote user name does not match the pattern in section 6;
 - the key's rule is not `window`;
 - `--for` is longer than the key's window, or shorter than one minute;
 - a host is not in the broker's `known_hosts`, or not in the key's `hosts`
   list when it has one;
 - it lists no host, or more than 20 hosts.
+
+Each login under these grants still passes every check of section 6, and
+gets its own audit entries (`request`, `grant_used`, `signed`). A Deny for
+the key ends the grants at once (section 8).
+
+The grants are all that an approval of `ssh-grant` gives. So when the
+client hangs up after the tap, such as after `SIGINT`, the broker starts
+no grant. It looks once more, after the `decision` entry is on disk and
+just before it starts the grants. Then a `denied` entry with cause
+`cancelled` follows, and the client says `cancelled`. One tiny window
+remains: when the client stops so late that the broker does not see the
+hang-up at that look, the grants start, but the client still says
+`cancelled`. The audit log shows which case it was: a `decision` entry
+without a `denied` entry after it means that the grants may have
+started (a Deny for the key in between also leaves no `denied` entry,
+and then no grant starts). The
+message on the phone shows the approval in both cases. A Deny for the key
+ends such grants.
+
+The client checks its arguments first, to give a clear error, and exits
+with 64 without a request: the key name and each host name follow the
+name rule of section 14, the remote user name matches the pattern of
+section 6, there are 1 to 20 hosts, each given once with its own
+`--host`, and `--for` is a time in whole minutes, such as `15m` or `1h`,
+from 1 minute to 8 hours, the longest window. The client cannot see the
+key's rule, its window or the broker's `known_hosts`. The broker does not
+rely on the client's checks: it makes its own checks, listed above. Two
+checks of the client are no refusals on the broker: there, a host that is
+listed twice counts once, and a time that is not whole minutes is rounded
+down. The reason comes from `--reason`, or else from `NODKEY_REASON`, as
+for `nodkey run`. The message shows it as claimed text. The client sends
+no command line.
+
+The client takes the answer as `nodkey run` does (sections 5 and 10). It
+sends the request once, with a deadline of 15 minutes, and prints the
+short code of the `102 Processing` answer. Only a final `200` that passes
+the strict decoding counts. Its `minutes` is how long the grants last,
+from the time of the request. The client takes it only from 1 to the
+minutes of `--for`. Any other number is an error (69), and the client
+does not print it. After an approval, the last line names the remote
+user, the number of hosts, and the end of the grants on the clock of the
+agent machine. It shows the end, not the minutes: after a late tap, less
+time is left. For example:
+
+```
+nodkey: waiting for approval (request m4k2)
+nodkey: SSH logins as deploy to 2 hosts allowed until 14:20 (exit 0)
+```
+
+That end is the time when the client sent the request, plus the minutes,
+without the seconds. So, when the two clocks agree, it is not later than
+the end that the message shows. Only the broker's clocks decide when the
+grants end (section 16). The line also does not see a later Deny that
+ends the grants.
 
 **Why B and D:** the host is the most useful thing a person checks, and both
 keep it in every grant. C is too wide: approving `web-1` would silently allow
@@ -1967,6 +2029,33 @@ apart, look at the last line on stderr. Only when nodkey itself exits, its
 last line is `nodkey: <reason> (exit <code>)`, for example
 `nodkey: denied (exit 77)`. When the command runs, nodkey prints nothing
 after it.
+
+`nodkey ssh-grant` exits with:
+
+| code | meaning |
+|---|---|
+| 0 | the person approved: the grants are made |
+| 64 | wrong usage |
+| 69 | the broker cannot be reached |
+| 77 | denied, expired or not allowed |
+
+It reads the broker's answers as `nodkey run` does: 77 for `403` and
+`429`, and 69 for every other answer that is not `200`, and when the
+config, the TLS key or the deadline fails. It also exits with 69 for a
+`200` that is not a valid answer, or whose `minutes` is not 1 to the
+minutes of `--for` (section 13): the person approved, and the broker is
+at fault. It never tries again. `SIGINT` and `SIGTERM` while it waits
+cancel the request, as for `nodkey run`: the last line is `nodkey:
+cancelled by SIGINT (exit 130)`, or `SIGTERM` and 143, and then nodkey
+ends itself with the same signal. Also after the tap, the broker then
+starts no grant, except in a tiny window: when the signal comes just as
+the broker starts the grants, they start anyway (section 13). The audit
+log shows it. A signal that comes after the answer was read changes
+nothing: the grants are made, and the last line says so. `-h` and
+`--help` work as for `nodkey run`. It prints nothing
+on stdout. Its last line on stderr is always
+`nodkey: <result> (exit <code>)`, also after an approval, for example
+`nodkey: SSH logins as deploy to 2 hosts allowed until 14:20 (exit 0)`.
 
 `nodkey keygen` prints the pin on stdout, and nothing else. It exits with
 0, with 64 on wrong usage, and with 1 on any other error. Then its last
