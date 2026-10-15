@@ -6,11 +6,40 @@ import (
 	"io/fs"
 	"math"
 	"os"
+
+	"github.com/code6x/nodkey/internal/config"
 )
 
-// homePerm is the mode of a store's home directory: only its owner may
-// read, write or enter it.
+// homePerm is the mode of a store's home directory, and of the store
+// directory that holds the homes: only its owner may read, write or enter
+// it.
 const homePerm fs.FileMode = 0o700
+
+// PrepareDir makes sure that dir, the store directory, is private: New
+// makes the home directory of each store in it. nodkey broker calls it
+// before New. The rules are those of a store's home directory:
+//
+//   - dir must be a clean absolute path.
+//   - Every directory on the way to dir must pass config.CheckParentDirs.
+//   - If dir is missing, it is made with mode 0700. Its parent must exist.
+//   - dir must be a directory, not a symbolic link, owned by the user that
+//     runs nodkey, with mode 0700.
+//
+// An error can name the path.
+func PrepareDir(dir string) error {
+	return prepareDir(dir, config.CheckParentDirs)
+}
+
+// prepareDir is PrepareDir with the check of the directories on the way.
+func prepareDir(dir string, checkParentDirs func(string) error) error {
+	if !cleanAbs(dir) {
+		return fmt.Errorf("the store directory: %s", cleanAbsRule)
+	}
+	if err := prepareHome(dir, checkParentDirs); err != nil {
+		return fmt.Errorf("the store directory: %w", err)
+	}
+	return nil
+}
 
 // prepareHome makes sure that home is a private directory for the
 // program's state files. bws keeps its login state there, and bw keeps a

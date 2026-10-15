@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -87,6 +88,12 @@ var (
 	// nothing was sent: the core denies the use with cause limit, and the
 	// use does not count for max_per_day.
 	ErrNoticeLimit = fmt.Errorf("telegram: too many notices in the last minute: %w", approval.ErrLimit)
+	// ErrTokenRefused: Telegram answered a call with 401 or 404: it does
+	// not accept the bot token, or does not know the bot, such as after
+	// the token was revoked or the bot deleted. Only a new token helps.
+	// When Run returns it, nodkey broker exits with its own code, so that
+	// systemd does not start it again and again with the same token.
+	ErrTokenRefused = errors.New("telegram: Telegram does not accept the bot token")
 )
 
 // Options are the optional parts of an Approver.
@@ -186,6 +193,10 @@ func (w *reportWindow) end(now time.Time) int {
 	return dropped
 }
 
+// caVariables are the variables with which Go's TLS code on Linux takes
+// its CA certificates from other places than the system's.
+var caVariables = []string{"SSL_CERT_FILE", "SSL_CERT_DIR"}
+
 var _ approval.Approver = (*Approver)(nil)
 
 // New returns the Telegram approver for the [telegram] section cfg. It
@@ -227,6 +238,19 @@ func newApprover(cfg config.Telegram, opts Options, read func(string) ([]byte, e
 		logger.LogAttrs(context.Background(), slog.LevelInfo,
 			"telegram: calls to Telegram go through a proxy from the environment; a proxy that inspects TLS sees the bot token",
 			slog.String("proxy_host", proxy.Host))
+	}
+	// Go takes the CA certificates that check Telegram's certificate from
+	// these variables, when they are set, instead of the system's places.
+	// A CA there could make a server that the broker takes for Telegram,
+	// as a proxy that inspects TLS does. Only the name and the path are
+	// logged.
+	for _, name := range caVariables {
+		if path, ok := os.LookupEnv(name); ok {
+			logger.LogAttrs(context.Background(), slog.LevelInfo,
+				"telegram: the CA certificates that check Telegram's certificate come from a place that the "+
+					"environment sets; a CA there sees the bot token",
+				slog.String("variable", name), slog.String("path", path))
+		}
 	}
 	return &Approver{
 		api:        newClient(token, base),

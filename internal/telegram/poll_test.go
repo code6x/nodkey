@@ -375,6 +375,10 @@ func TestPollStopsWhenRefused(t *testing.T) {
 			if !errors.As(err, &ae) || ae.code != status || errors.Is(err, ErrPollConflict) || errors.Is(err, context.Canceled) {
 				t.Errorf("Run: %v, want the %s error", err, code)
 			}
+			// Only 401 and 404 say that the token does not work.
+			if refused := status == 401 || status == 404; errors.Is(err, ErrTokenRefused) != refused {
+				t.Errorf("Run: %v; ErrTokenRefused: %v, want %v", err, !refused, refused)
+			}
 			if n := len(e.f.callsOf("sendMessage")); n != 0 {
 				t.Errorf("%d messages, want 0", n)
 			}

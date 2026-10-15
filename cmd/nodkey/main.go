@@ -31,6 +31,8 @@ const (
 const usageText = `Usage: nodkey <command> [arguments]
 
 Commands:
+  broker [--config FILE]
+            run the broker: the daemon that asks the approver on Telegram
   keygen    make a TLS key for the broker or a client, and print its pin
   run       run a command with secrets, once a person approves on the phone
   audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
@@ -59,6 +61,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	name, rest := fs.Arg(0), fs.Args()[1:]
 	switch name {
+	case "broker":
+		return runBroker(rest, stderr)
 	case "keygen":
 		ignoreBrokenPipe()
 		return runKeygen(rest, stdout, stderr, writeKeyFile)

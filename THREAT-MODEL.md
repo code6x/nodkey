@@ -185,20 +185,31 @@ the end of grants after it still work (T8). The alert goes out then too,
 and the tap is written with cause `edited_message`, next to the Deny.
 When another program polls with the same token, Telegram reports a
 conflict. The broker logs an alert, sends an alert message, and stops
-taking answers: every request that waits for the person is denied. With
-the token, an attacker can stop the broker this way, but they can deny
-service anyway, by reading the updates.
+taking answers: every request that waits for the person is denied. Then
+`nodkey broker` stops with exit code 76, and the example systemd unit
+does not start it again, so the alert does not come again at each
+restart. With the token, an attacker can stop the broker this way, but
+they can deny service anyway, by reading the updates. When the broker
+stops, it closes the connection of its waiting `getUpdates` call at once
+and polls no more. Still, in rare cases a `getUpdates` request of a
+broker that just stopped is on its way, reaches Telegram after the new
+broker started to poll, and causes a conflict and an alert although
+nobody else has the token (DESIGN.md section 7).
 A proxy that inspects TLS, with its own certificate authority in the
 system's store of the broker host, sees the token, and it can fake
 Telegram's answers, so also taps. The broker logs at start which proxy
 it uses (DESIGN.md section 7). Do not use such a proxy for the broker.
-Risk that remains: denial of service, and misleading text in the chat.
+Risk that remains: denial of service, misleading text in the chat, and,
+rarely, a false conflict alert right after a restart.
 Only the button data says what a tap is, never the label. So a tap on a
 "Deny" label that the attacker gave the data of an Approve does not
 count: that request only expires, without the pause after a Deny. A tap
 on an "Approve" label with the data of a Deny denies, with the pause and
 the end of grants: that is denial of service too.
 Keep the token in an encrypted credential; make a new one if it leaks.
+When Telegram no longer accepts the old token, the broker stops with
+exit code 77, and the example unit does not start it again until a
+person puts the new token in place.
 
 **T7. Someone else can use the approver's Telegram account.**
 Telegram runs on several devices at once. If the approver's account is
@@ -321,9 +332,15 @@ claimed text stays a claim. The command itself may print a secret; version
 1 does not filter the command's output.
 
 **T16. The broker host is broken into.** Everything is lost. Advice: a
-dedicated user, the systemd sandbox settings in the example unit, secrets
-as encrypted credentials sealed with the TPM, no agent running on that
-host, updates.
+dedicated user, the systemd sandbox settings in the example unit
+(`contrib/systemd/nodkey.service`), secrets as encrypted credentials
+sealed with the TPM, no agent running on that host, updates. The broker
+marks itself not dumpable, so other processes of its user cannot attach
+to it or read its memory. Swap and hibernation write memory to disk, with
+the keys, the tokens and, for a moment, secret values in it: use
+encrypted swap or none, and no hibernation, on the broker host. The
+example unit lets the broker use no swap (`MemorySwapMax=0`,
+`MemoryZSwapMax=0`).
 Risk that remains: real; out of scope.
 
 **T17. The audit log is changed.**
@@ -369,8 +386,10 @@ Risk that remains:
   the later anchors cover it. The anchors do not find it; only the missing
   `audit anchor` line for that entry shows it. An appended
   `log_recovered` entry can also make the last real entry look like a
-  torn line. The anchor of that entry finds this, but nothing alerts at
-  the start.
+  torn line. The anchor of that entry finds this. When the forged entry
+  is the last entry, the next start also sends one alert about a torn
+  line; when more entries were appended after it, nothing alerts at the
+  start.
 - A log that was removed or moved away looks like a new log. Its anchors
   and those of the old log differ, so check with the anchors since the
   current log began, and keep the old file.
@@ -387,12 +406,13 @@ output, and its errors hold only a fixed text and the exit code. Tests
 check all of this with made-up secrets and fake programs that record what
 they get. If a store program crashes, a core handler such as
 systemd-coredump would write its environment, with the token or the
-session key, into the journal. So the broker sets its soft `RLIMIT_CORE`
-to 1, which the programs inherit, and the example unit sets
-`LimitCORE=1`: with exactly 1 and a pipe (`|`) or file `core_pattern`
-(the systemd default), the kernel calls no core handler. A limit of 0
-does not stop one, and a socket `core_pattern` (`@`) does not look at the
-limit (DESIGN.md section 16).
+session key, into the journal. So the broker sets its soft and hard
+`RLIMIT_CORE` to 1, which the programs inherit and cannot raise, and the
+example unit sets `LimitCORE=1`: with exactly 1 and a pipe (`|`) or file
+`core_pattern` (the systemd default), the kernel calls no core handler. A
+limit of 0 does not stop one, and a socket `core_pattern` (`@`) does not
+look at the limit (DESIGN.md section 16). The broker reads the limits
+back, and does not start if it cannot set them.
 Risk that remains: low. The broker clears the token and the session key
 in its memory, but only as best effort: Go strings and the copies that the
 system call makes are not cleared.

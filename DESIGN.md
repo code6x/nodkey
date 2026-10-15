@@ -733,10 +733,34 @@ Not masked, for example:
   taking answers, so the polling stops for good (below), and the broker
   writes an `error` entry with code `poll_conflict` to the audit log. A
   conflict says that someone else may read the answers, so the broker
-  does not go on.
+  does not go on: `nodkey broker` stops, and exits with code 76 (section
+  15). The example systemd unit does not start it again after that code,
+  so a stolen token does not bring a new alert at each restart.
+- When the broker stops, it stops the polling first. It cancels the
+  `getUpdates` call that waits, and closes its connection at once, with a
+  TCP reset (`SO_LINGER` 0): the kernel drops a request that it has not
+  sent yet. After that the broker sends no `getUpdates`. So after a
+  restart, the new broker is the only one that polls. One case remains:
+  a `getUpdates` request that was already on its way when the broker
+  stopped. If it reaches Telegram after the new broker started to poll,
+  Telegram ends the new poll with a conflict. Then the new broker sends
+  the alert and stops, although no one else uses the token. This needs a
+  stop at the moment when the old broker sends `getUpdates`, and a delay
+  on the network that is longer than the time until the new broker
+  polls. After a crash or an error, the example unit waits 5 seconds
+  before it starts the broker again (`RestartSec=`). But `systemctl
+  restart`, and a package upgrade that restarts the broker, start the
+  new broker as soon as the old one has ended: then only the end of the
+  stop and the start lie between them. A proxy (below) can also pass on
+  a request after the broker closed its connection to the proxy. If this
+  alert comes right after a restart, and no other program uses the
+  token, start the broker again.
 - If Telegram refuses `getUpdates` in another way, with a code from 400
   to 499 other than 409 and 429, such as 401 for a token that was
-  revoked, the polling stops for good too.
+  revoked, the polling stops for good too. After 401 or 404, Telegram
+  does not accept the bot token, and only a new token helps: `nodkey
+  broker` exits with code 77, and the example unit does not start it
+  again. After another code, it exits with 1 (section 15).
 - The bot token is in the request URL, and Go's HTTP errors include the
   URL. So no error and no log line of the Telegram code holds Go's error
   text: an error names the Bot API method and a fixed reason, and at most
@@ -753,7 +777,14 @@ Not masked, for example:
   authority in the system's store, sees the token, and it can fake the
   answers of Telegram, so also taps. Do not use such a proxy for the
   broker. At start, the broker logs one line when it uses a proxy: the
-  proxy's host, never a user name or a password from the setting.
+  proxy's host, never a user name or a password from the setting. Go
+  also takes the certificate authorities from other places when
+  `SSL_CERT_FILE` or `SSL_CERT_DIR` is set; a certificate authority there
+  sees the token too, as such a proxy does. So the broker logs the name
+  and the path of each one that is set. Only root can set these
+  variables for the broker. Every user can read the `Environment=` lines
+  of a unit (`systemctl show`), so a proxy setting with a password goes
+  into an `EnvironmentFile=` that only root can read.
 - The token file must hold one bot token: the bot's ID in digits, `:`,
   and 30 to 64 letters, digits, `_` or `-`. Space around it, such as a
   newline at the end, is fine.
@@ -781,8 +812,8 @@ Not masked, for example:
   needs a notice is denied as well. The approval core would still let
   grants and "never ask" rules with `notify = false` allow requests, but
   the broker denies every request from then on (503), and `nodkey broker`
-  stops. On a polling conflict, the broker first writes the `error` entry
-  with code `poll_conflict`.
+  stops (section 15). On a polling conflict, the broker first writes the
+  `error` entry with code `poll_conflict`.
 - Messages about "never ask" uses can go to a second chat
   (`notice_chat_id`), so the approval chat stays for approvals only.
   They are silent (`disable_notification`). At most 20 notices go out in
@@ -950,6 +981,13 @@ The request fields are `request_id`, `client`, `kind` (`secrets`,
 SHA256 fingerprint), `remote_user`, and the claimed `command` and
 `reason`.
 
+The broker writes `broker_started` when it has passed every check of its
+start, just before it starts to poll Telegram and to take requests
+(section 15). So it comes before every entry of that run, except a
+`log_recovered` entry. It writes `broker_stopped` as the last entry of a
+stop in order. A crash, a kill or a power cut leaves no
+`broker_stopped`. A start that fails writes neither.
+
 For each request, the broker writes its entries in this order. First
 `request`. Then one of these: `decision` (and `denied` with cause
 `approver` after a Deny); `grant_used`; or `denied` (with an `error` entry
@@ -1041,8 +1079,11 @@ What the anchors do not find:
 - On Linux, `chattr +a` on the file stops anyone except root from changing
   old lines. It does not stop the broker user from appending. For example,
   it can append a `log_recovered` entry that names the last real entry as
-  a torn line. The broker does not see this at the next start. The anchor
-  of that last entry then does not match, so check with every anchor.
+  a torn line. When that entry is the last one, the next start takes it
+  as a torn line that a start before recorded, and sends one alert (see
+  "A torn last line" below). But when more entries are appended after it,
+  nothing alerts at the start. The anchor of that last real entry then
+  does not match, so check with every anchor.
 - If a person moves the log away, the broker starts a new log at entry 1.
   The journal then has anchors of both logs, and they differ. Use only the
   anchors since the new log began, and keep the old file.
@@ -1058,6 +1099,12 @@ of the last complete line. So the torn line is not part of the chain. But
 the entry records the length and SHA-256 of the torn bytes, so a change to
 the torn line, or its removal, is still found. The broker also sends an
 alert message. So the broker still starts on its own after a power cut.
+The alert goes out only once the start has written `broker_started`
+(section 15). If that start stops before, such as when its listen address
+is not there yet, the log ends in the `log_recovered` entry. The next
+start finds it as the last entry, and sends the alert then. When Telegram
+cannot be reached yet, the broker tries the alert again until it is out,
+or until the broker stops.
 
 The broker does not start, and a person must look, when the end of the
 file has more than 64 KiB without a newline, or when the last complete line
@@ -1346,8 +1393,11 @@ private keys, the broker's TLS key, the bot token, the `bws` token and the
 (`LoadCredentialEncrypted=`). They are encrypted with
 `systemd-creds encrypt --with-key=host+tpm2`, so they can be opened only on
 that machine, with its TPM2 chip. A copy of the disk or a backup alone does
-not give them. The broker reads them from `$CREDENTIALS_DIRECTORY` at start.
-An SSH key stored this way needs no passphrase.
+not give them. The broker reads them from `$CREDENTIALS_DIRECTORY` at start:
+the config names each one as `${CREDENTIALS_DIRECTORY}/NAME` (section 14),
+and the example unit (section 16) has a line for each.
+An SSH key stored this way needs no passphrase; the broker refuses a key
+with a passphrase.
 - Without a TPM2 chip, encrypt with `--with-key=host` instead. Then anyone
   with a full copy of the disk can open them. The docs say this plainly.
 - Plain files (mode `0600`, owned by the broker user) also work, for tests
@@ -1355,6 +1405,11 @@ An SSH key stored this way needs no passphrase.
   secret file can be read by group or others.
 - Root on the running broker host can still get everything. That is the
   trust we place in the broker host.
+- The keys and tokens are in the broker's memory, and secret values are
+  there for a moment. Swap and hibernation write memory to disk, where a
+  copy of the disk can give them. So use encrypted swap or none, and no
+  hibernation, on the broker host. The example unit lets the broker use
+  no swap (`MemorySwapMax=0`, `MemoryZSwapMax=0`).
 
 **The `bw` master password.** The Bitwarden Password Manager CLI must be
 unlocked with the account's master password. An API key alone is not
@@ -1680,10 +1735,12 @@ any problem:
   links to, or next to `node` in one of those directories, also not after
   its links: bw would keep its state there, not in its home directory.
 - Each store's program gets its own home directory, `NAME` in the store
-  directory (section 16). The broker makes it with mode `0700` if it is
-  missing. If it is there, it must be a directory, not a symbolic link,
-  owned by the broker user, with mode `0700`. The directories on the way
-  must pass the same checks as those on the way to a key file.
+  directory (section 16). The store directory is `stores` in the
+  directory of `audit_log`, such as `/var/lib/nodkey/stores`. The broker
+  makes the store directory and each home directory with mode `0700` if
+  it is missing. If it is there, it must be a directory, not a symbolic
+  link, owned by the broker user, with mode `0700`. The directories on
+  the way must pass the same checks as those on the way to a key file.
 - The audit log may be missing; then the broker makes it. If it is there,
   it must be a regular file, not a symbolic link, owned by the broker user.
   Its mode may give only read and write to the owner, such as `0600`: an
@@ -1724,6 +1781,92 @@ nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 nodkey version
 ```
+
+`nodkey broker` runs the broker. The default config is
+`/etc/nodkey/broker.toml`. Run it as its own user, from a systemd unit;
+[contrib/systemd/nodkey.service](contrib/systemd/nodkey.service) is an
+example (section 16). It writes its log to stderr, which systemd keeps in
+the journal, with the anchors of the audit log (section 9). All its
+lines, also an error at start and a wrong argument, come from the logger
+of section 10, so no line can look like an anchor.
+
+It starts in this order. If a step fails, it stops there, and ends what
+it started before.
+
+1. It reads the config and checks the files that the config names
+   (section 14).
+2. It sets its soft and hard `RLIMIT_CORE` to 1 and marks itself not
+   dumpable (section 16). If it cannot, it does not start.
+3. It loads its TLS key, and each SSH key with the `hosts` of its
+   section. It signs a fixed text with each SSH key and checks the
+   signature. It refuses two `[key.*]` sections with the same public key.
+4. It opens the audit log. Before this step it writes no entry. An alert
+   about a torn last line (section 9) waits until step 9. So does the
+   alert of an earlier start that recorded a torn line and stopped before
+   step 8: the log then ends in its `log_recovered` entry.
+5. It makes the store directory (section 14) and each store, then starts
+   all stores at once, for at most 70 seconds. A store that does not
+   start, such as a `bw` that cannot unlock, does not stop the broker:
+   the broker denies the requests for its secrets until the store works
+   (each request tries again), and the approver gets one alert for all
+   such stores, at step 9.
+6. It makes the broker's service, the Telegram approver (it reads the bot
+   token) and the approval core. It checks the client pins.
+7. It opens the `listen` address. Nothing reads from it yet: a client
+   that connects waits. So an address that is not there yet, such as at
+   boot before the private network is up, stops the start here: before
+   any entry, any call to Telegram and any alert. systemd starts the
+   broker again later, and no alert goes out each time.
+8. It writes the `broker_started` entry. No later step of the start can
+   fail.
+9. It starts to poll Telegram, and sends the alerts that waited. After a
+   power cut, the host can be up before Telegram can be reached. So when
+   an alert does not go out, the broker tries again: after 5 seconds,
+   then twice as long each time, at most 5 minutes, until the alert is
+   out or the broker stops. Each failed try gets one log line.
+10. Only then does it read the connections on the `listen` address and
+    take requests.
+
+It stops on SIGTERM or SIGINT, also during the start, when the polling
+stops for good (section 7), and when its server fails. It stops in this
+order:
+
+1. The polling: the `getUpdates` call that waits is cancelled and its
+   connection closed (section 7). From now on no answer counts: every
+   request that waits for the person is denied.
+2. The service: new requests get `503`, and the requests in progress end
+   and get `503` too (section 10). The broker waits for them, and writes
+   the `foreign_tap` entries that still wait.
+3. The server: it closes the `listen` address and every connection.
+4. The alerts of the start: each one gets its first try, also when the
+   stop began right after the start, but no try again. An alert that did
+   not go out is lost; the journal says so.
+5. The stores: they clear their tokens and session keys.
+6. The `broker_stopped` entry. Then the audit log is closed.
+
+The stop takes at most 80 seconds. A request may need up to 30 seconds
+to take its answer, and a try of an alert up to 30 seconds. After 80 seconds the
+broker ends without the rest of the stop, and exits with 1. The example
+unit gives it 90 seconds (`TimeoutStopSec=`); then systemd kills it.
+
+`nodkey broker` exits with:
+
+| code | meaning |
+|---|---|
+| 0 | stopped by SIGTERM or SIGINT, and the stop was clean |
+| 1 | any other end: the start failed, the polling stopped for another reason (such as another refusal of `getUpdates` than 401, 404 or 409), the server failed, or the stop was not clean, such as when the `broker_stopped` entry could not be written |
+| 64 | wrong usage |
+| 76 | Telegram reported a polling conflict (section 7): the bot token may be stolen. Make a new bot token, then start the broker. |
+| 77 | Telegram does not accept the bot token: `getUpdates` got 401 or 404, such as for a revoked token or a bot that is gone. Put a new token into the token file, then start the broker. |
+
+The example unit lists 64, 76 and 77 in `RestartPreventExitStatus=`:
+only a person can fix these, and a new start with the same setup would
+only fail again, or call Telegram with the same token, and write
+`broker_started` and `broker_stopped`, every few seconds. After code 1,
+or a crash, it starts the broker again after 5 seconds. If the cause
+stays, such as a wrong config, this repeats until a person fixes it; the
+journal says why. A start that fails before step 8 writes no entry and
+calls no Telegram.
 
 `nodkey run` exits with the command's own code, or:
 
@@ -1832,16 +1975,19 @@ text of a line. It exits with:
   old copy.
 - `bws` and `bw` write state files in their home directory. Each store gets
   its own home directory, `NAME` in the store directory, such as
-  `/var/lib/nodkey/stores/vault`. The store directory is under the
-  broker's state directory, and only the broker user can write to it; the
-  example systemd unit makes it.
+  `/var/lib/nodkey/stores/vault`. The store directory is `stores` in the
+  directory of the audit log, which is the broker's state directory. It
+  has mode `0700` and is owned by the broker user, so only that user can
+  write to it (section 14). The broker makes it if it is missing; the
+  example systemd unit makes it too (`StateDirectory=`).
 - Limits on every input: request size (2 MiB, see section 10), number of
   secrets per request (32), field lengths. JSON decoding rejects unknown
   and repeated keys, and missing and `null` fields.
 - The broker turns off core dumps and marks itself not dumpable
-  (`PR_SET_DUMPABLE`). For core dumps, it sets its own soft `RLIMIT_CORE`
-  to 1 at start, and the example systemd unit sets `LimitCORE=1`. The store
-  programs inherit this limit; Go's `os/exec` cannot set a limit for one
+  (`PR_SET_DUMPABLE`). For core dumps, it sets its own soft and hard
+  `RLIMIT_CORE` to 1 at start, and the example systemd unit sets
+  `LimitCORE=1`. The store programs inherit this limit, and cannot raise
+  it above the hard limit; Go's `os/exec` cannot set a limit for one
   child. If a store program crashes, a core handler such as
   systemd-coredump would write the program's environment, with the token
   or the session key, into the journal. With a limit of exactly 1 and a
@@ -1849,7 +1995,9 @@ text of a line. It exits with:
   kernel calls no core handler and writes no core file. A limit of 0 does
   not stop a core handler, and a socket `core_pattern` (`@`) does not look
   at the limit at all. So keep a pipe or file `core_pattern` on the broker
-  host.
+  host. The broker reads both settings back, and does not start if it
+  cannot make them. A hard limit of 0 is such a case, because the soft
+  limit cannot be higher than the hard limit.
 - `nodkey run` marks itself not dumpable (`PR_SET_DUMPABLE` 0) before it
   sends its request, so it writes no core dump while it holds the values,
   also when the agent sets `GOTRACEBACK`, and other processes of the user
@@ -1862,10 +2010,25 @@ text of a line. It exits with:
   minutes ends at 12:10 on the wall clock, also if the host slept from
   12:00 to 20:00. A request whose end the wall clock has passed takes no
   answer.
-- A systemd unit with sandbox settings ships as an example. Its sandbox
-  must let `bw` run: Node.js needs memory that is both writable and
-  executable, so the unit must not set `MemoryDenyWriteExecute=yes` when
-  it has a `bw` store.
+- A systemd unit with sandbox settings ships as an example:
+  [contrib/systemd/nodkey.service](contrib/systemd/nodkey.service). Its
+  sandbox must let `bw` run: Node.js needs memory that is both writable
+  and executable, so the unit must not set `MemoryDenyWriteExecute=yes`
+  when it has a `bw` store. It must not set `PrivateUsers=yes` either:
+  then the credentials and the config, owned by root, would look owned
+  by `nobody`, and the broker would refuse them. The unit has one
+  `LoadCredentialEncrypted=` line for each key, token and password file
+  (section 11), and sets `StateDirectory=` (the audit log and the store
+  directory, mode `0700`), `UMask=0077`, `LimitCORE=1`, `MemoryMax=`,
+  `MemorySwapMax=0` and `MemoryZSwapMax=0` (no swap, section 11;
+  `MemoryZSwapMax=` needs systemd 253 or newer, an older one ignores it
+  with a warning, and `MemorySwapMax=0` alone is enough),
+  `TimeoutStopSec=90s`, `RestartPreventExitStatus=64 76 77` (section 15)
+  and `LogRateLimitIntervalSec=0`, so that journald never drops an anchor
+  of the audit log.
+- Swap and hibernation write memory to disk, and the broker's memory
+  holds keys, tokens and, for a moment, secret values. So the broker host
+  uses encrypted swap or none, and no hibernation (section 11).
 
 ### Store programs
 
@@ -1980,6 +2143,14 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   core, the fake approver and clock, fake stores in memory, and an audit
   log in memory that refuses what the real one refuses. SSH logins are
   real: an in-process SSH server checks the signatures.
+- **Tests of `nodkey broker`**: the command runs in a child process, with
+  a config whose files pass every check of section 14, fake store
+  programs, and the real Telegram approver. The approver reaches a fake
+  Telegram server through a fake HTTPS proxy that answers TLS with a
+  certificate of a test CA, so nothing goes to the real Bot API. The
+  tests check the order of the start and the stop, the exit codes, that
+  core dumps are off, a store that does not start, and a canary from the
+  request to the fake Telegram server, end to end.
 - **Fake stores**: the test binary of `internal/store` acts like `bws` or
   `bw` when it runs under that name. It records its arguments and its
   environment, so the tests can check that no token, password or session

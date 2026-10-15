@@ -153,12 +153,14 @@ func newClient(token botToken, base string) *client {
 //     proxy sees only the host name: the URL with the token is inside
 //     TLS. A proxy that inspects TLS, with its own CA in the system's
 //     store, sees the token (DESIGN.md section 7).
+//   - Closing a connection resets it at once (resetOnClose).
 func newHTTPClient() *http.Client {
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	tr := &http.Transport{
 		Proxy:                  http.ProxyFromEnvironment,
-		DialContext:            (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:            resetOnClose(dialer.DialContext),
 		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout:    10 * time.Second,
 		ResponseHeaderTimeout:  pollTimeout + pollMargin,
@@ -172,6 +174,30 @@ func newHTTPClient() *http.Client {
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+	}
+}
+
+// resetOnClose wraps dial so that closing one of its TCP connections
+// resets the connection at once (SO_LINGER 0): the kernel drops the bytes
+// that it has not sent yet, and sends no more. When the broker stops, Run
+// cancels the getUpdates call that waits, and net/http closes its
+// connection. Without the reset, the kernel would still try to send a
+// getUpdates request that it had not sent yet, also after the broker
+// ended. That late request could reach Telegram after a new broker started
+// to poll, and Telegram would end the new poll with a conflict: a false
+// alert that the token may be stolen (DESIGN.md section 7). Setting the
+// option is best effort: if it fails, the connection still works.
+func resetOnClose(dial func(ctx context.Context, network, addr string) (net.Conn, error),
+) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0) // best effort, see above
+		}
+		return c, nil
 	}
 }
 
@@ -365,10 +391,12 @@ func refused(method string, code int, r apiResponse) *apiError {
 		e.err = ErrPollConflict
 	case code == http.StatusUnauthorized:
 		e.reason = "Telegram does not accept the bot token"
+		e.err = ErrTokenRefused
 	case code == http.StatusForbidden:
 		e.reason = "the bot may not send to this chat: the person did not start the bot, blocked it, or removed it"
 	case code == http.StatusNotFound:
 		e.reason = "Telegram does not know the method or the bot token"
+		e.err = ErrTokenRefused
 	case strings.Contains(desc, "message is not modified"):
 		e.reason = "the message is not modified"
 		e.err = errNotModified
