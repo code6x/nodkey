@@ -14,6 +14,19 @@ updates:
       prefix: chore
       include: scope
 
+  # The base image of the SSH targets of the end-to-end test, pinned by
+  # its digest. Dependabot updates the digest. Pull request titles look
+  # like "test(deps): bump debian ...".
+  - package-ecosystem: docker
+    directory: /test/e2e/testdata/sshd
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: test
+      include: scope
+
   # Pull request titles look like "ci(deps): bump actions/checkout ...".
   # Dependabot also updates the pinned commit SHA and its version comment.
   - package-ecosystem: github-actions

@@ -70,6 +70,36 @@ jobs:
         with:
           # Dependabot does not update this version. Update it by hand.
           version: v2.14.0
+          # With the tag e2e, the files of the end-to-end test are checked
+          # too. No file needs the tag to be missing, so nothing is left out.
+          args: --build-tags e2e
+
+  e2e:
+    name: end-to-end test
+    runs-on: ubuntu-latest
+    # The test itself takes about 10 seconds; without caches, building
+    # the image and the binaries takes a few minutes more.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Show the programs that the test uses
+        # The runner has Docker, the OpenSSH client and git. The test
+        # needs OpenSSH 8.9 or newer.
+        run: |
+          docker version
+          ssh -V
+          git --version
+      - run: go vet -tags e2e ./test/e2e/...
+      - name: End-to-end test
+        # See DESIGN.md section 17. The test builds nodkey and the image
+        # of test/e2e/testdata/sshd, and removes every container, network
+        # and image that it makes. It fails if one is left.
+        run: go test -race -tags e2e ./test/e2e/...
 
   vuln:
     runs-on: ubuntu-latest
