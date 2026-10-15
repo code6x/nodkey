@@ -114,6 +114,9 @@ type Logger struct {
 	now     func() time.Time
 	last    Anchor // the last entry; seq 0 and a zero hash when there is none
 	err     error  // set after a failed write, sync or journal write
+	// found is the log_recovered entry that Open found as the last entry
+	// of the log, if any (see LastRecovery). It never changes after Open.
+	found *Recovery
 }
 
 // Open opens the audit log at path for appending, and makes it if it is
@@ -226,6 +229,9 @@ func (l *Logger) start(path string, self uint32, h hooks) (Recovery, bool, error
 				"check the log with nodkey audit verify", path, bad)
 		}
 		l.last = Anchor{Seq: e.seq, Hash: sha256.Sum256(t.last)}
+		if e.event == eventLogRecovered {
+			l.found = &Recovery{Seq: e.seq, TornLength: e.tornLength, TornSHA256: e.tornHash}
+		}
 	}
 	if t.torn == nil {
 		return Recovery{}, false, nil
@@ -473,6 +479,21 @@ func appendLine(b []byte, seq uint64, t time.Time, name string, prev [sha256.Siz
 		b = append(b, body[1:len(body)-1]...)
 	}
 	return append(b, '}')
+}
+
+// LastRecovery reports whether the last entry that Open found in the log,
+// before it wrote anything itself, is a log_recovered entry, and returns
+// what that entry records. Then an earlier Open recorded a torn line, and
+// nothing was written after it: the broker that opened the log then
+// stopped before its broker_started entry, so the alert about the torn
+// line may never have gone out (DESIGN.md section 9). The broker sends the
+// alert again. A log_recovered entry that this Open wrote does not count;
+// Options.Alert reports it.
+func (l *Logger) LastRecovery() (Recovery, bool) {
+	if l.found == nil {
+		return Recovery{}, false
+	}
+	return *l.found, true
 }
 
 // Close closes the log and releases its lock. Append fails after Close.

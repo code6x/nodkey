@@ -88,6 +88,7 @@ const (
 //     is set), it logs an alert, sends an alert message, and returns
 //     ErrPollConflict. When Telegram refuses getUpdates in another way,
 //     such as for a token that is no longer valid, it returns that error.
+//     After 401 or 404, that error wraps ErrTokenRefused.
 func (a *Approver) Run(ctx context.Context, answer func(approval.Answer) error) (err error) {
 	if answer == nil {
 		return errors.New("telegram: Run needs a function for the answers")

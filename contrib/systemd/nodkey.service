@@ -1,0 +1,140 @@
+# An example systemd unit for the nodkey broker (DESIGN.md sections 11,
+# 15 and 16). Copy it to /etc/systemd/system/nodkey.service, and change
+# the paths, the user and the credentials to fit your config.
+#
+# Before the first start:
+#
+#   1. Make the broker's own user:
+#        useradd --system --home-dir /var/lib/nodkey --shell /usr/sbin/nologin nodkey
+#   2. Put the config into /etc/nodkey/broker.toml and the known hosts into
+#      /etc/nodkey/known_hosts. Both owned by root, and only root may
+#      change them (mode 0644).
+#   3. Make each key, token and password file of the config an encrypted
+#      credential, readable only on this machine. For example:
+#        systemd-creds encrypt --with-key=host+tpm2 --name=broker-tls-key \
+#            broker.key /etc/nodkey/credentials/broker-tls-key.cred
+#      Without a TPM2 chip, use --with-key=host: then anyone with a full copy
+#      of the disk can open the credentials. Remove the plain files after.
+#      In the config, name each file as ${CREDENTIALS_DIRECTORY}/NAME, with
+#      the NAME before ":" in its LoadCredentialEncrypted= line below.
+#   4. Check the unit: systemd-analyze verify /etc/systemd/system/nodkey.service
+#
+# Read the log and the anchors of the audit log with journalctl -u nodkey.
+
+[Unit]
+Description=nodkey broker: secrets and SSH signatures after an approval on the phone
+Documentation=https://github.com/code6x/nodkey/blob/main/DESIGN.md
+# The broker listens on one address of the private network, and calls
+# Telegram. If that address is not there yet, the start fails, and systemd
+# tries again (Restart= below).
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=nodkey
+Group=nodkey
+ExecStart=/usr/local/bin/nodkey broker --config /etc/nodkey/broker.toml
+
+# Keys, tokens and passwords, as encrypted credentials. systemd opens them
+# at each start, and gives them to the broker in $CREDENTIALS_DIRECTORY.
+# One line for each file of the config; remove the lines you do not need.
+LoadCredentialEncrypted=broker-tls-key:/etc/nodkey/credentials/broker-tls-key.cred
+LoadCredentialEncrypted=telegram-token:/etc/nodkey/credentials/telegram-token.cred
+LoadCredentialEncrypted=bws-token:/etc/nodkey/credentials/bws-token.cred
+LoadCredentialEncrypted=bws-token-backup:/etc/nodkey/credentials/bws-token-backup.cred
+LoadCredentialEncrypted=bw-master-password:/etc/nodkey/credentials/bw-master-password.cred
+LoadCredentialEncrypted=ssh-deploy:/etc/nodkey/credentials/ssh-deploy.cred
+
+# /var/lib/nodkey holds the audit log (audit_log = "/var/lib/nodkey/audit.jsonl"),
+# and /var/lib/nodkey/stores holds the home directory of each store. The
+# broker checks that the store directory is a directory with mode 0700,
+# owned by its user.
+StateDirectory=nodkey nodkey/stores
+StateDirectoryMode=0700
+UMask=0077
+
+# A crash or an error starts the broker again, after 5 seconds. Not after
+# these exit codes, which only a person can fix (DESIGN.md section 15):
+#   64  wrong usage: check ExecStart=.
+#   76  a polling conflict at Telegram: another program polls with the bot
+#       token, so the token may be stolen. Make a new token first; starting
+#       again would only send the same alert again.
+#   77  Telegram does not accept the bot token, such as a revoked token.
+#       Put a new token into its credential first; starting again would only
+#       call Telegram with the old token every 5 seconds.
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=64 76 77
+# The stop waits for the requests in progress and for alert messages, at
+# most 80 seconds; then the broker ends on its own. systemd kills it
+# after 90 seconds, and stops every process of the unit, also a store
+# program that left its process group.
+TimeoutStopSec=90s
+KillMode=control-group
+
+# No core dumps. With a limit of exactly 1, a crashed bws or bw starts no
+# core handler that would copy its environment, with a token, into the
+# journal. The broker sets its own soft and hard limit to 1 too, and
+# refuses to start if it cannot.
+LimitCORE=1
+# The broker reads at most 16 request bodies at a time, about 320 MiB at
+# worst; bw runs on Node.js. Change this to fit your host.
+MemoryMax=1G
+# Keys, tokens and secret values are in the memory of the broker and of
+# its store programs. Swap would write that memory to disk, so the unit
+# may not use swap or zswap. Hibernation writes all memory to disk too:
+# use encrypted swap or none, and no hibernation, on the broker host.
+# MemoryZSwapMax= needs systemd 253 or newer; an older systemd ignores it
+# with a warning, and MemorySwapMax=0 alone is enough.
+MemorySwapMax=0
+MemoryZSwapMax=0
+# journald must never drop a line of the broker: the anchors of the audit
+# log are in its log. The broker limits its own lines.
+LogRateLimitIntervalSec=0
+
+# A proxy for the calls to Telegram, if you need one. Never use a proxy
+# that inspects TLS: it sees the bot token (DESIGN.md section 7). Every
+# user can read Environment= with systemctl show, so a proxy with a user
+# name and a password belongs in EnvironmentFile=, a file that only root
+# can read (mode 0600). The broker logs the proxy's host at start, and
+# SSL_CERT_FILE and SSL_CERT_DIR if they are set.
+#Environment=HTTPS_PROXY=http://proxy.example.com:3128
+#EnvironmentFile=/etc/nodkey/proxy.env
+
+# Sandbox. These settings still let bws and bw run.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+# Not set on purpose:
+#   MemoryDenyWriteExecute=yes  bw runs on Node.js, which needs memory that
+#                               is writable and executable.
+#   PrivateUsers=yes            files owned by root, such as the
+#                               credentials and the config, would look
+#                               owned by nobody, and the broker would
+#                               refuse them.
+
+[Install]
+WantedBy=multi-user.target

@@ -162,6 +162,9 @@ type fakeTelegram struct {
 	presses    map[string]fakePress   // the presses that tap queued, by callback query ID
 	changed    chan struct{}          // closed and made new on each change
 	pollWait   time.Duration          // how long getUpdates waits for an update
+	// pollsGone counts the getUpdates calls that ended because the client
+	// went away before the answer: it closed the connection.
+	pollsGone int
 }
 
 // fakePress is a button press that tap queued.
@@ -344,6 +347,10 @@ func (f *fakeTelegram) serveUpdates(w http.ResponseWriter, r *http.Request, call
 			writeBody(w, http.StatusOK, `{"ok":true,"result":[]}`)
 			return
 		case <-r.Context().Done():
+			f.mu.Lock()
+			f.pollsGone++
+			f.notifyLocked()
+			f.mu.Unlock()
 			return
 		}
 	}
