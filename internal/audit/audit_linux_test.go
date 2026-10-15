@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -410,6 +411,10 @@ func TestAppendFailsClosed(t *testing.T) {
 			if !errors.Is(err, cause) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Append: %v; want %q and %v", err, tt.want, cause)
 			}
+			// The caller knows at once that the log is broken.
+			if !errors.Is(err, ErrBroken) {
+				t.Errorf("Append: %v; want ErrBroken in the error of the failed Append too", err)
+			}
 			if strings.Contains(err.Error(), "CANARY") {
 				t.Errorf("Append: %v; the error shows a field", err)
 			}
@@ -458,8 +463,9 @@ func TestAppendFailsWhenTheJournalFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = l.Close() }()
-	if _, err := l.Append(BrokerStarted{Version: "dev"}); !errors.Is(err, errIO) || !strings.Contains(err.Error(), "journal") {
-		t.Fatalf("Append: %v; want a journal error", err)
+	if _, err := l.Append(BrokerStarted{Version: "dev"}); !errors.Is(err, errIO) || !errors.Is(err, ErrBroken) ||
+		!strings.Contains(err.Error(), "journal") {
+		t.Fatalf("Append: %v; want a journal error and ErrBroken", err)
 	}
 	if _, err := l.Append(BrokerStopped{}); !errors.Is(err, ErrBroken) {
 		t.Errorf("Append after the failure: %v; want ErrBroken", err)
@@ -747,6 +753,49 @@ func TestAppendRefusesAnEvent(t *testing.T) {
 	if got := l.journal.String(); got != journalOf(a) {
 		t.Errorf("journal = %q, want %q", got, journalOf(a))
 	}
+}
+
+// TestCheckEvent: CheckEvent refuses what Append refuses, without a log,
+// and counts the line with the largest seq.
+func TestCheckEvent(t *testing.T) {
+	for _, ev := range sampleEvents() {
+		if err := CheckEvent(ev); err != nil {
+			t.Errorf("CheckEvent(%T): %v", ev, err)
+		}
+	}
+	bad := secretsSubject()
+	bad.Client = "laptop " + canary // a space is not allowed in a name
+	for _, ev := range []Event{
+		nil,
+		&Request{Subject: secretsSubject()},
+		(*Signed)(nil),
+		Request{Subject: bad},
+		logRecovered{TornLength: 1, TornSHA256: zeros},
+	} {
+		err := CheckEvent(ev)
+		if err == nil {
+			t.Errorf("CheckEvent(%#v): no error", ev)
+			continue
+		}
+		if errors.Is(err, ErrBroken) || strings.Contains(err.Error(), "CANARY") {
+			t.Errorf("CheckEvent(%T): %v", ev, err)
+		}
+	}
+	// The longest message that fits at the largest seq, and one byte more.
+	probe := appendLine(nil, math.MaxUint64, testTime, eventRequest, [sha256.Size]byte{},
+		mustEncode(t, Request{Subject: secretsSubject()}))
+	longest := MaxLineSize - len(probe) - len(`,"message":""`)
+	if err := CheckEvent(Request{Subject: secretsSubject(), Message: strings.Repeat("m", longest)}); err != nil {
+		t.Errorf("CheckEvent with the longest message: %v", err)
+	}
+	err := CheckEvent(Request{Subject: secretsSubject(), Message: strings.Repeat("m", longest+1)})
+	if err == nil || strings.Contains(err.Error(), "mmmm") {
+		t.Errorf("CheckEvent with a message 1 byte too long: %v; want an error without the message", err)
+	}
+	// Append takes that message, as its seq is short; CheckEvent is never
+	// less strict than Append.
+	l := mustOpen(t, logPath(t), testHooks())
+	mustAppend(t, l, Request{Subject: secretsSubject(), Message: strings.Repeat("m", longest+1)})
 }
 
 func TestAppendAfterClose(t *testing.T) {

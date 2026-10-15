@@ -165,7 +165,9 @@ func newLogServer(t *testing.T) (*Server, *syncBuffer, *time.Time) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	srv.limit.now = func() time.Time { return now }
+	for _, l := range []*logLimiter{srv.connLimit, srv.pinLimit, srv.keyLimit} {
+		l.now = func() time.Time { return now }
+	}
 	return srv, logs, &now
 }
 
@@ -214,19 +216,75 @@ func checkOneShortLine(t *testing.T, log string) {
 func TestLogLimit(t *testing.T) {
 	srv, logs, now := newLogServer(t)
 	for range 3 * logLinesPerWindow {
-		srv.logLine(slog.LevelWarn, "transport: a test line", "remote", "192.0.2.20:51234")
+		srv.logLine(srv.connLimit, slog.LevelWarn, "transport: a test line", "remote", "192.0.2.20:51234")
 	}
 	if n := strings.Count(logs.String(), "a test line"); n != logLinesPerWindow {
 		t.Errorf("%d lines in one window, want %d", n, logLinesPerWindow)
 	}
 	// In the next window, the server first says how many it dropped.
 	*now = now.Add(logWindow)
-	srv.logLine(slog.LevelWarn, "transport: a test line")
+	srv.logLine(srv.connLimit, slog.LevelWarn, "transport: a test line")
 	got := logs.String()
 	if !strings.Contains(got, "dropped log lines") || !strings.Contains(got, "dropped="+strconv.Itoa(2*logLinesPerWindow)) {
 		t.Errorf("the log does not say how many lines it dropped:\n%s", got[max(0, len(got)-400):])
 	}
 	if n := strings.Count(got, "a test line"); n != logLinesPerWindow+1 {
 		t.Errorf("%d lines, want %d", n, logLinesPerWindow+1)
+	}
+}
+
+// TestLogLimitsAreSeparate: lines that any peer can cause, such as refused
+// handshakes or the pins of keys that no client has, do not crowd out the
+// lines about the requests of pinned clients, such as a handler that
+// panicked; and handshakes do not crowd out the pin of a new client.
+func TestLogLimitsAreSeparate(t *testing.T) {
+	srv, logs, _ := newLogServer(t)
+	for range 3 * logLinesPerWindow {
+		srv.netHTTPLine("http: TLS handshake error from 192.0.2.20:51234: tls: client didn't provide a certificate\n")
+		srv.logLine(srv.pinLimit, slog.LevelWarn, "transport: refused a client key that no [client.*] section pins",
+			"pin", "sha256:x")
+	}
+	srv.logLine(srv.keyLimit, slog.LevelError, "transport: a handler panicked", "where", "x")
+	got := logs.String()
+	if n := strings.Count(got, "the client sent no certificate"); n != logLinesPerWindow {
+		t.Errorf("%d handshake lines, want %d", n, logLinesPerWindow)
+	}
+	if n := strings.Count(got, "refused a client key"); n != logLinesPerWindow {
+		t.Errorf("%d lines about unknown keys, want %d", n, logLinesPerWindow)
+	}
+	if !strings.Contains(got, "a handler panicked") {
+		t.Error("handshakes and unknown keys crowded out the line about a pinned client")
+	}
+}
+
+// TestDroppedLinesAreReportedWithoutALaterLine: the count of dropped lines
+// is written at the end of the window, also when no later line comes, and
+// only once.
+func TestDroppedLinesAreReportedWithoutALaterLine(t *testing.T) {
+	srv, logs, now := newLogServer(t)
+	var waits []time.Duration
+	var flush func()
+	srv.keyLimit.afterFunc = func(d time.Duration, f func()) *time.Timer {
+		waits, flush = append(waits, d), f
+		return time.NewTimer(time.Hour) // never fires; the test calls flush
+	}
+	*now = now.Add(time.Second)
+	for range logLinesPerWindow + 5 {
+		srv.logLine(srv.keyLimit, slog.LevelError, "transport: a handler panicked", "where", "x")
+	}
+	if len(waits) != 1 || waits[0] != logWindow {
+		t.Fatalf("timers %v, want one for the rest of the window", waits)
+	}
+	flush() // the end of the window
+	flush() // a second call, as a late timer, changes nothing
+	got := logs.String()
+	if !strings.Contains(got, "dropped=5") || !strings.Contains(got, `lines="requests of pinned clients"`) {
+		t.Errorf("the log does not say how many lines it dropped:\n%s", got[max(0, len(got)-400):])
+	}
+	// A new window starts; the count is not reported twice.
+	*now = now.Add(logWindow)
+	srv.logLine(srv.keyLimit, slog.LevelError, "transport: a handler panicked", "where", "x")
+	if n := strings.Count(logs.String(), "dropped log lines"); n != 1 {
+		t.Errorf("the count was reported %d times, want 1", n)
 	}
 }

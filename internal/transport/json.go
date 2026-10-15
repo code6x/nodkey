@@ -28,9 +28,9 @@ import (
 //   - The largest request is an SSH request: maxCommandLines command lines
 //     (ssh and at most 3 of its parent processes) and the reason, so at
 //     most 2,015,238 bytes. A request for secrets has one command line and
-//     3 text fields (the working directory, the local user name and the
-//     reason): at most 1,585,159 bytes. The other fields of a request, such
-//     as names, keys and the data to sign, fit in maxOtherFields.
+//     2 text fields (the working directory and the reason): at most
+//     1,191,941 bytes. The other fields of a request, such as names, keys
+//     and the data to sign, fit in maxOtherFields.
 const MaxRequestBody = 2 << 20
 
 // The parts of the largest valid request; see MaxRequestBody. A test
@@ -544,10 +544,12 @@ func (s *jsonScanner) literal(word string) error {
 // WriteJSON answers a request with status and v as JSON. It sets a new
 // write deadline first (writeTimeout from now): the server's own deadline
 // counts from when the request came, and may have passed while the handler
-// waited for the approver. The answer may hold secret values, so it is
-// marked not to be stored (Cache-Control: no-store). The encoded copy is
-// cleared after it is written, as best effort: net/http's write buffer
-// keeps a copy. An error never holds anything from v.
+// waited for the approver. The answer is marked not to be stored
+// (Cache-Control: no-store). The encoded copy is cleared after it is
+// written, as best effort: net/http's write buffer keeps a copy, and so
+// does a buffer in the pool of encoding/json. So an answer with secret
+// values goes through WriteJSONBody instead. An error never holds anything
+// from v.
 func WriteJSON(w http.ResponseWriter, status int, v any) error {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -556,6 +558,57 @@ func WriteJSON(w http.ResponseWriter, status int, v any) error {
 	}
 	defer clear(body)
 	return writeBody(w, status, body)
+}
+
+// WriteJSONBody answers a request with status and body: one JSON value
+// that the caller wrote itself, such as an answer with secret values that
+// api.SecretsAnswer.Encode wrote, so that no other copy of the values is
+// made. It does not change body; the caller clears it after the call.
+// Otherwise it works as WriteJSON: a new write deadline, and
+// Cache-Control: no-store. A body that is not valid JSON is not written;
+// the client gets 500. An error never holds anything from body.
+func WriteJSONBody(w http.ResponseWriter, status int, body []byte) error {
+	if !json.Valid(body) {
+		WriteError(w, http.StatusInternalServerError)
+		return errors.New("transport: the answer is not valid JSON")
+	}
+	return writeBody(w, status, body)
+}
+
+// processingTimeout is the time a client has to take a 102 Processing
+// answer (WriteProcessing). It is short: that answer is small, and the
+// broker must not wait for a client that does not read while its request
+// waits for the approver. It is a variable only so that a test can make it
+// short.
+var processingTimeout = 5 * time.Second
+
+// WriteProcessing tells the client that its request is still being
+// worked on: an informational answer, 102 Processing, with the headers in
+// h, before the final answer. The broker sends it when a request starts to
+// wait for the approver, with the short code that the client prints
+// (DESIGN.md section 10). The final answer must still come, with WriteJSON
+// or WriteError; it does not carry the headers in h. Call WriteProcessing
+// only before the final answer.
+//
+// It first sets a short write deadline (processingTimeout), so a client
+// that does not read cannot hold the caller for long. WriteJSON and
+// WriteError set a new deadline for the final answer. net/http does not
+// say whether the informational answer reached the client; a client that
+// does not take it does not take the final answer either.
+func WriteProcessing(w http.ResponseWriter, h http.Header) error {
+	err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(processingTimeout))
+	if err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	header := w.Header()
+	for name, values := range h {
+		header[http.CanonicalHeaderKey(name)] = values
+	}
+	w.WriteHeader(http.StatusProcessing)
+	for name := range h {
+		header.Del(name)
+	}
+	return nil
 }
 
 // WriteError answers a request with an error: the HTTP status and its

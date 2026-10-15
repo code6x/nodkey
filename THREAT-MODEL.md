@@ -160,7 +160,9 @@ from a person's second tap. At most 20 refused taps a minute of other
 users are logged and written, and, as a separate budget, at most 20 of
 the approver's own taps. The broker counts the others, so the journal
 and the disk do not fill up, and forged taps cannot crowd out the
-entries of the person's taps. An attacker can also edit a message that
+entries of the person's taps. The broker only queues these entries in
+the polling, so a slow disk does not stop the answers; it drops more
+than 64 waiting entries, and logs how many. An attacker can also edit a message that
 waits for an answer, to show other names, or swap the labels of its
 buttons, so that the person approves without knowing it. The broker
 never edits a waiting message, so it refuses every Approve on an edited
@@ -324,7 +326,14 @@ The anchor lines are trusted only because no other broker output can
 print a line that is exactly `audit anchor SEQ:HASH`: not a log line, a
 panic, a server error or a child program's error output. A false anchor
 line could make a good log fail, or make entries after the newest real
-anchor look checked.
+anchor look checked. So the broker logs with slog's text handler, whose
+lines start with `time=` and escape a line break in a value. It never
+logs claimed text or a panic value, and it cuts every other value, such
+as an error text, to 1 KiB. The transport cuts net/http's lines to
+printable ASCII, and store programs' error output is never read. A test
+puts a line break and `audit anchor 1:…` into claimed text, errors, a
+panic value and the certificate of a refused client, and finds no such
+line.
 Risk that remains:
 - Without a copy of the journal on another machine, root on the broker
   host can rewrite the log unseen.
@@ -404,6 +413,8 @@ Risk that remains:
 **T21. Telegram, the network or the phone is down.**
 Requests expire and are denied. The agent waits, then fails. A request
 whose message cannot be sent is denied. If the polling stops for good, the
+broker denies every request from then on, also one that a grant would
+allow, and it stops. Also, the
 requests that wait for the person are denied at once, and a message or
 notice that is still being sent stops. A "never ask" use whose notice
 cannot be sent is denied too, and it still counts for `max_per_day`,
@@ -522,20 +533,41 @@ handshake.
   250 MiB.
 - An error answer gives only the HTTP status. A panic in a handler drops
   the connection, and the log shows where it happened, never the panic
-  value.
+  value. The request is denied, and the audit log records it, also when
+  the panic came before the approval core gave the request an ID; only a
+  broken audit log cannot record it.
+- The broker works on at most 32 requests of one client at a time, and
+  refuses more at once (429). The approval core lets at most 15 requests of
+  a client wait for the person (5 messages and a queue of 10), and grants
+  let more pass quickly, such as the parallel logins of Ansible. So the cap
+  does not stop normal work.
+- Reading and cleaning the largest valid body takes about 20 MiB for a
+  moment. So the broker reads and decodes at most 4 bodies of one client
+  and 16 in all at the same time; another request waits for a place, at
+  most 10 seconds, and then gets 429. That bounds this memory to about
+  80 MiB for one client, and 320 MiB in all.
 - The broker's log holds no text that a peer chose. A refused handshake
   gives one short line with the remote address and a fixed reason. The
-  broker logs at most 60 lines about connections per minute (DESIGN.md
-  section 10). So a peer cannot flood the journal, or write a line into
-  it that looks like an audit anchor.
+  broker logs at most 60 lines about connections per minute, 60 with the
+  pins of keys that no client has, and 60 about the requests of the
+  clients, so other peers cannot crowd out the lines about the clients
+  (DESIGN.md section 10). So a peer cannot flood the journal, or write a
+  line into it that looks like an audit anchor.
 Risk that remains: there is no limit on the number of connections. Any
 peer that can reach the broker port, even without a key, can hold a
 connection for up to 10 seconds, and makes the broker do a key exchange
-for each new one. A client with a valid key can also send many requests
-at once. Both use memory and CPU on the broker host. That is a denial of
+for each new one. A client with a valid key can send up to 32 requests at
+once, and many requests one after the other. A request that a limit
+denies, or that comes after the approver stopped, costs the client
+nothing, so the broker writes the entries of at most 20 such requests of
+a client in a minute, and counts the others in its log; it also logs at
+most 20 refused SSH logins a minute. Every other request writes at least
+two audit entries, also when it is denied, such as one for a name that
+does not exist, so such a client can still fill the disk over time. All
+of this uses memory, CPU and disk on the broker host. That is a denial of
 service, not a way to get a secret or an approval. The answer is a
 firewall that lets only the agent machines reach the broker port
-(DESIGN.md section 10).
+(DESIGN.md section 10), and a check of the log's size.
 
 **T29. A store program hangs, floods, or answers wrong or old data.**
 The broker gives each run of a store program 30 seconds and caps its
