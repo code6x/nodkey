@@ -13,7 +13,6 @@ package store
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -55,6 +54,11 @@ func scriptStore(t *testing.T, typ config.StoreType, body string, d deps) (Store
 	return s, filepath.Join(dir, cfg.Name), cfg
 }
 
+// shellQuote quotes s for sh, so that a script can hold any path.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // readPID reads a process ID that a script wrote to name in home.
 func readPID(t *testing.T, home, name string) int {
 	t.Helper()
@@ -81,11 +85,15 @@ func killLater(t *testing.T, pid int) {
 // A child that leaves the process group with setsid, and keeps stdout open.
 // The run fails after waitDelay, but the child survives the group kill, with
 // the token in its environment. THREAT-MODEL T29 accepts this.
+//
+// The child writes its process ID only after setsid, and the program waits
+// for that file. So the child has left the group before the program ends,
+// and before the group kill.
 func TestSetsidChildThatHoldsTheOutput(t *testing.T) {
 	d := testDeps()
 	d.waitDelay = 300 * time.Millisecond
 	s, home, _ := scriptStore(t, config.StoreBWS, `setsid sh -c 'echo $$ > "$HOME/escaped.pid"; exec sleep 300' &
-sleep 0.3
+while [ ! -e "$HOME/escaped.pid" ]; do sleep 0.01; done
 printf '{"value":"x"}'
 `, d)
 	start := time.Now()
@@ -115,7 +123,7 @@ printf '{"value":"x"}'
 // the child keeps running with the token. THREAT-MODEL T29 accepts this.
 func TestSetsidChildThatLetsGoOfTheOutput(t *testing.T) {
 	s, home, _ := scriptStore(t, config.StoreBWS, `setsid sh -c 'echo $$ > "$HOME/escaped.pid"; exec sleep 300' >/dev/null 2>&1 &
-sleep 0.3
+while [ ! -e "$HOME/escaped.pid" ]; do sleep 0.01; done
 printf '{"id":"`+testItemID+`","value":"x"}'
 `, testDeps())
 	v, err := s.Fetch(t.Context(), testItemID)
@@ -187,15 +195,20 @@ exec sleep 300
 }
 
 // /proc/PID/environ of a store program, which holds the token, is readable
-// only by its own user (and root). cmdline has no token.
+// only by its own user (and root). cmdline has no token. The program waits
+// for a marker file that the test makes after its checks, so the program
+// still runs while the test looks at it.
 func TestEnvironmentIsPrivate(t *testing.T) {
+	looked := filepath.Join(t.TempDir(), "looked")
 	s, home, _ := scriptStore(t, config.StoreBWS, `echo $$ > "$HOME/self.pid"
-sleep 1
+while [ ! -e `+shellQuote(looked)+` ]; do sleep 0.01; done
 printf '{"id":"`+testItemID+`","value":"x"}'
 `, testDeps())
 	done := make(chan error, 1)
 	go func() {
-		v, err := s.Fetch(context.Background(), testItemID)
+		// If the test fails before it makes the marker, the end of
+		// t.Context() stops the program.
+		v, err := s.Fetch(t.Context(), testItemID)
 		v.Clear()
 		done <- err
 	}()
@@ -217,6 +230,7 @@ printf '{"id":"`+testItemID+`","value":"x"}'
 	if bytes.Contains(cmdline, []byte("token-")) {
 		t.Error("the token is in the command line")
 	}
+	writeFile(t, looked, "") // the program may end now
 	if err := <-done; err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -224,35 +238,73 @@ printf '{"id":"`+testItemID+`","value":"x"}'
 
 // bw: Close waits until a running Fetch ends, and that Fetch still hands
 // out its value. The broker must cancel requests before it closes a store.
+//
+// The fake bw makes a marker file when bw sync starts, and another one
+// when bw get item ends. The test calls Close only when the first marker
+// is there: then Fetch holds the lock. When Close returns, the second
+// marker must be there. So the lock decides the order, not a clock. bw
+// sync takes half a second. A Close that does not wait returns in that
+// time, before bw get item ends, and the test fails.
+//
+// Like real bw, the fake bw get item fails when BW_SESSION is not the key
+// that bw unlock printed. So a Close that clears the key first and waits
+// after that fails the test too: the Fetch fails.
 func TestBWCloseWaitsForAFetch(t *testing.T) {
-	s, _, _ := scriptStore(t, config.StoreBW, `case "$1" in
-unlock) printf 'c2Vzc2lvbi1rZXk=' ;;
-sync) sleep 2; printf 'Syncing complete.' ;;
-get) printf '{"id":"`+testItemID+`","login":{"password":"x"}}' ;;
+	marks := t.TempDir()
+	syncStarted := filepath.Join(marks, "sync-started")
+	getEnded := filepath.Join(marks, "get-ended")
+	s, _, _ := scriptStore(t, config.StoreBW, `key='c2Vzc2lvbi1rZXk='
+case "$1" in
+unlock) printf '%s' "$key" ;;
+sync) : > `+shellQuote(syncStarted)+`; sleep 0.5; printf 'Syncing complete.' ;;
+get) code=0
+	if [ "$BW_SESSION" = "$key" ]; then printf '{"id":"`+testItemID+`","login":{"password":"x"}}'; else code=1; fi
+	: > `+shellQuote(getEnded)+`; exit $code ;;
 status) printf '{"status":"unlocked"}' ;;
 esac
 `, testDeps())
 	type result struct {
 		v   Value
 		err error
-		at  time.Time
 	}
 	done := make(chan result, 1)
 	go func() {
 		v, err := s.Fetch(t.Context(), testItemID)
-		done <- result{v, err, time.Now()}
+		done <- result{v, err}
 	}()
-	time.Sleep(500 * time.Millisecond)
+	// Wait until bw sync runs.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(syncStarted); err == nil {
+			break
+		}
+		select {
+		case r := <-done:
+			// Fetch has ended. If the test was slow, bw sync may have
+			// started after the check above. Then go on.
+			if _, err := os.Stat(syncStarted); err != nil {
+				r.v.Clear()
+				t.Fatalf("Fetch ended before bw sync started: %v", r.err)
+			}
+			done <- r // for the checks after Close
+			continue  // the marker is there, so the loop ends
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bw sync did not start within 10 seconds")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	s.Close()
-	closed := time.Now()
+	if _, err := os.Stat(getEnded); err != nil {
+		t.Errorf("Close returned before the Fetch ended: %v", err)
+	}
 	r := <-done
 	if r.err != nil {
 		t.Fatalf("Fetch: %v", r.err)
 	}
+	checkValue(t, r.v, "x")
 	r.v.Clear()
-	if closed.Before(r.at) {
-		t.Error("Close returned before the Fetch ended")
-	}
 }
 
 // newStore refuses a relative password_file. CheckPrivateFile would check
