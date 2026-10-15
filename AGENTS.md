@@ -28,6 +28,14 @@ Planned. Each v1 issue adds its part.
     (sections 6 and 15) and `nodkey ssh-grant` (sections 13 and 15).
 - `contrib/systemd/` - the example systemd unit of the broker, with
   encrypted credentials and a sandbox (DESIGN.md section 16).
+- `docs/` - the guides for people:
+  - `docs/setup.md` - the setup guide: the broker host, the stores, the
+    Telegram bot, the safety of the account and the host, the clients,
+    upgrades and key changes. `README.md` has a short quick start that
+    points to it.
+  - `docs/manual-telegram-test.md` - the manual test with a real
+    Telegram bot (issue #17), with a table for the results.
+  - `docs/releasing.md` - how releases are made and checked.
 - `test/e2e/` - the end-to-end test with `sshd` in a container (DESIGN.md
   section 17). Build tag `e2e`. The image of the container is
   `test/e2e/testdata/sshd`.
@@ -68,7 +76,9 @@ that it makes.
   finds. If you do not fix a finding, say why in the pull request.
 - **If a change alters** what a message shows, what the broker checks, or
   where a value goes, update DESIGN.md and THREAT-MODEL.md in the same pull
-  request.
+  request. If it changes the config, the example unit, a command, or a
+  line that `docs/setup.md` or `docs/manual-telegram-test.md` shows,
+  update these guides too.
 - **Dependencies:** the standard library, `golang.org/x/crypto` and
   `github.com/BurntSushi/toml`. Anything else needs a reason in the pull
   request.

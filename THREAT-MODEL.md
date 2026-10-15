@@ -725,6 +725,14 @@ user.
 - The broker host is patched, has no agent on it, and only the owner has
   root. It has a TPM2 chip, or the owner accepts that a full disk copy
   gives the credentials.
+- The broker host is set up from its console, or from a trusted computer
+  where no agent runs. Its tokens and passwords are made and copied only
+  there or on the phone, never through an agent machine. No agent
+  machine holds a way to get root on the broker host, such as an SSH
+  key, an SSH agent or a `ControlMaster` socket. The nodkey binary comes
+  to the broker host straight from where it was built or downloaded, and
+  its SHA-256 is checked there
+  ([docs/setup.md section 1](docs/setup.md#where-you-do-the-setup)).
 - The approver's Telegram account is not logged in on any agent machine.
 - The approver reads the verified lines before tapping.
 - The `ssh` program on the agent machine is OpenSSH 8.9 or newer, so it
