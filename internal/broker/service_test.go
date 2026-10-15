@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,16 @@ func (f *fakeAudit) setGate(gate chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gate = gate
+}
+
+// waitGated waits until an Append waits at the gate of setGate.
+func (f *fakeAudit) waitGated(t testing.TB) {
+	t.Helper()
+	select {
+	case <-f.gated:
+	case <-time.After(waitLimit):
+		t.Fatal("no Append waits at the gate")
+	}
 }
 
 // waitLog waits until the log holds want, and returns the log.
@@ -490,22 +501,50 @@ func TestForeignTap(t *testing.T) {
 	if got := e.audit.waitFor(t, 1); got[0] != audit.Event(tap) {
 		t.Errorf("the entry is %+v", got[0])
 	}
+	// A slow audit log: Append waits at the gate. ForeignTap must not
+	// wait for it. sendTaps calls ForeignTap n times in a goroutine, so a
+	// ForeignTap that waits fails the test and does not hang it.
 	gate := make(chan struct{})
 	e.audit.setGate(gate)
-	start := time.Now()
-	for range 3 * tapQueue {
-		e.svc.ForeignTap(tap)
+	openGate := sync.OnceFunc(func() { close(gate) })
+	defer openGate() // also when the test fails, so that the worker and Close can end
+	sendTaps := func(n int) {
+		t.Helper()
+		sent := make(chan struct{})
+		go func() {
+			defer close(sent)
+			for range n {
+				e.svc.ForeignTap(tap)
+			}
+		}()
+		select {
+		case <-sent:
+		case <-time.After(5 * time.Second):
+			t.Fatal("ForeignTap waited more than 5s for a slow audit log")
+		}
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("ForeignTap waited %v for a slow audit log", d)
-	}
+	// The worker takes the next tap, and its Append waits at the gate.
+	// Now the worker holds one tap, and the queue is empty.
+	sendTaps(1)
+	e.audit.waitGated(t)
+	// 3 times the queue: tapQueue taps fit, the others are dropped.
+	sendTaps(3 * tapQueue)
+	// The audit log is fast again. The worker writes the tap that it
+	// held, then the queue. Before the first entry of the queue, it logs
+	// how many taps it dropped.
 	e.audit.setGate(nil)
-	close(gate)
-	waitLog(t, e.logs, "dropped foreign_tap entries")
-	if n := len(e.audit.all()); n < 2 || n > 2+tapQueue {
-		t.Errorf("%d entries, want at most the queue", n)
+	openGate()
+	e.audit.waitFor(t, 2+tapQueue)
+	logs := waitLog(t, e.logs, "dropped foreign_tap entries")
+	if want := fmt.Sprintf("dropped=%d\n", 2*tapQueue); !strings.Contains(logs, want) {
+		t.Errorf("the log does not count the %d dropped taps:\n%s", 2*tapQueue, logs)
 	}
+	// Close waits until the worker has written every queued entry, so no
+	// entry can come later.
 	e.svc.Close()
+	if n := len(e.audit.all()); n > 2+tapQueue {
+		t.Errorf("%d entries, want at most %d: the queue keeps more than %d taps", n, 2+tapQueue, tapQueue)
+	}
 	e.svc.ForeignTap(tap) // no panic, no wait
 }
 

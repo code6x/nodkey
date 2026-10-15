@@ -148,12 +148,13 @@ type fakeAudit struct {
 	failOn  func(audit.Event) error // if set, Append fails with its error
 	broken  error
 	gate    chan struct{} // if set, Append waits until it is closed
+	gated   chan struct{} // gets a value when an Append starts to wait at the gate
 	panicOn func(audit.Event) bool
 	changed chan struct{}
 }
 
 func newFakeAudit() *fakeAudit {
-	return &fakeAudit{changed: make(chan struct{})}
+	return &fakeAudit{changed: make(chan struct{}), gated: make(chan struct{}, 64)}
 }
 
 func (f *fakeAudit) Append(ev audit.Event) (audit.Anchor, error) {
@@ -161,6 +162,10 @@ func (f *fakeAudit) Append(ev audit.Event) (audit.Anchor, error) {
 	gate := f.gate
 	f.mu.Unlock()
 	if gate != nil {
+		select {
+		case f.gated <- struct{}{}:
+		default:
+		}
 		<-gate
 	}
 	f.mu.Lock()
@@ -218,7 +223,7 @@ func (f *fakeAudit) waitFor(t testing.TB, n int) []audit.Event {
 		select {
 		case <-changed:
 		case <-deadline.C:
-			t.Fatalf("the audit log has %d entries, want %d: %s", len(events), n, eventNames(events))
+			t.Fatalf("the audit log has %d entries, want at least %d: %s", len(events), n, eventNames(events))
 			return nil
 		}
 	}
