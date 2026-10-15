@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -326,13 +325,6 @@ func tomlError(err error) error {
 	}
 	return fmt.Errorf("line %d, column %d: not valid TOML, or a number out of range",
 		pe.Position.Line, pe.Position.Col)
-}
-
-// readFile reads the client config file. It runs on the agent machine,
-// which nodkey does not trust anyway, so the file's permissions are not
-// checked; the broker's files are read with ReadConfigFile.
-func readFile(path string) ([]byte, error) {
-	return os.ReadFile(path) //nolint:gosec // G304: the person who runs nodkey chooses this path.
 }
 
 // parsePath expands a path from a config file and checks that it is set

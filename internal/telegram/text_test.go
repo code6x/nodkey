@@ -41,6 +41,15 @@ func secretsPrompt() approval.Prompt {
 	}
 }
 
+// designSecretsPrompt is secretsPrompt as nodkey run sends it: the
+// program of the command line is the absolute path of the file that runs
+// (DESIGN.md section 5).
+func designSecretsPrompt() approval.Prompt {
+	p := secretsPrompt()
+	p.Claim.Command = "/usr/bin/gh release create v1.2.0"
+	return p
+}
+
 func loginPrompt() approval.Prompt {
 	return approval.Prompt{
 		RequestID:  testID(2),
@@ -106,7 +115,7 @@ expires 14:03:10 (90 s)
 ✅ secrets: github-token
 — claimed by the agent —
 as: GH_TOKEN
-command: gh release create v1.2.0
+command: /usr/bin/gh release create v1.2.0
 in: /home/dev/src/app
 reason: publish the release the user asked for
 expires 14:05:40 (120 s)
@@ -128,7 +137,7 @@ func TestMessagesAsInDesign(t *testing.T) {
 		want   string
 	}{
 		{"ssh_login", loginPrompt(), designSSH},
-		{"secrets", secretsPrompt(), designRun},
+		{"secrets", designSecretsPrompt(), designRun},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !strings.Contains(string(doc), "```\n"+tc.want+"\n```") {

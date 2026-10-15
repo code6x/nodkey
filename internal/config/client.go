@@ -19,13 +19,15 @@ type clientFile struct {
 	TLSKey    string `toml:"tls_key"`
 }
 
-// LoadClient reads the client config file at path and checks it. It also
-// checks the TLS key file with CheckPrivateFile; read that file later with
-// ReadPrivateFile, never by path.
+// LoadClient reads the client config file at path and checks it. It reads
+// the file with ReadConfigFile, as the broker reads its config: broker_pin
+// is the client's only trust in the broker, so others must not be able to
+// change it. It also checks the TLS key file with CheckPrivateFile; read
+// that file later with ReadPrivateFile, never by path.
 func LoadClient(path string) (*ClientConfig, error) {
-	data, err := readFile(path)
+	data, err := ReadConfigFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: %w", err) // a *fs.PathError names the path
+		return nil, fmt.Errorf("config: %w", err) // the error names the path
 	}
 	var f clientFile
 	if err := decode(data, &f); err != nil {

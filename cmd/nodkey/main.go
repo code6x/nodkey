@@ -32,6 +32,7 @@ const usageText = `Usage: nodkey <command> [arguments]
 
 Commands:
   keygen    make a TLS key for the broker or a client, and print its pin
+  run       run a command with secrets, once a person approves on the phone
   audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
             check the hash chain of an audit log, and its anchors
   version   print the version
@@ -63,6 +64,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runKeygen(rest, stdout, stderr, writeKeyFile)
 	case "audit":
 		return runAudit(rest, stdin, stdout, stderr)
+	case "run":
+		return runRun(rest, stderr)
 	case "version":
 		return runVersion(rest, stdout, stderr)
 	case "help":
