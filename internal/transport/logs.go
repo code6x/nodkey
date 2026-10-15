@@ -22,7 +22,15 @@ import (
 //   - Any other line from net/http is cut to maxLogLine bytes of printable
 //     ASCII (logText).
 //   - The server logs at most logLinesPerWindow lines per logWindow, and
-//     then says how many it dropped (logLimiter).
+//     says how many it dropped (logLimiter): in its next line, or at the
+//     end of the window when no line comes. It counts in three parts, each
+//     with its own limit: lines that any peer can cause, such as a
+//     refused handshake (Server.connLimit); the pin of a key that no
+//     [client.*] section pins (Server.pinLimit), which any peer can cause
+//     too, with a new key for each connection; and lines about a request
+//     of a pinned client: a refused request, or a handler that panicked
+//     (Server.keyLimit). So other peers cannot crowd out the lines about
+//     the clients.
 const (
 	// maxLogLine is the most bytes of a line from net/http in the log,
 	// and of a value in the server's own lines.
@@ -33,13 +41,26 @@ const (
 )
 
 // logLimiter lets at most logLinesPerWindow lines through in each
-// logWindow, and counts the lines it drops.
+// logWindow, and counts the lines it drops. The count is reported by the
+// next line, or by a timer at the end of the window when no line comes.
 type logLimiter struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	start   time.Time // the start of the current window
 	lines   int       // the lines let through in the window
 	dropped int       // the lines dropped in the window
+	// report logs the count of dropped lines when no later line does.
+	report func(dropped int)
+	// afterFunc is time.AfterFunc; tests replace it.
+	afterFunc func(time.Duration, func()) *time.Timer
+	timer     *time.Timer // runs flush at the end of a window that dropped lines
+	window    uint64      // counts the windows, so a late timer changes nothing
+}
+
+// newLogLimiter returns a limiter whose count of dropped lines goes to
+// report when no later line reports it.
+func newLogLimiter(report func(dropped int)) *logLimiter {
+	return &logLimiter{now: time.Now, report: report, afterFunc: time.AfterFunc}
 }
 
 // allow reports whether a line may be logged now. At the first call in a
@@ -49,26 +70,59 @@ func (l *logLimiter) allow() (ok bool, droppedBefore int) {
 	defer l.mu.Unlock()
 	// time.Now has a monotonic clock reading, so Sub is not changed by a
 	// change of the wall clock.
-	if now := l.now(); l.start.IsZero() || now.Sub(l.start) >= logWindow {
+	now := l.now()
+	if l.start.IsZero() || now.Sub(l.start) >= logWindow {
 		droppedBefore = l.dropped
 		l.start, l.lines, l.dropped = now, 0, 0
+		l.window++
+		if l.timer != nil {
+			l.timer.Stop()
+			l.timer = nil
+		}
 	}
 	if l.lines >= logLinesPerWindow {
 		l.dropped++
+		if l.timer == nil {
+			window := l.window
+			l.timer = l.afterFunc(logWindow-now.Sub(l.start), func() { l.flush(window) })
+		}
 		return false, droppedBefore
 	}
 	l.lines++
 	return true, droppedBefore
 }
 
-// logLine logs a line about a connection, through the limiter. Each string
-// value is cut to maxLogLine bytes of printable ASCII, so that no value
-// can make a long line or a line break. A message must be a fixed text.
-func (s *Server) logLine(level slog.Level, msg string, args ...any) {
-	ok, dropped := s.limit.allow()
+// flush reports the lines that the window dropped, at its end, when no
+// later line has reported them, and starts a new window. A timer of an
+// older window does nothing.
+func (l *logLimiter) flush(window uint64) {
+	l.mu.Lock()
+	if window != l.window {
+		l.mu.Unlock()
+		return
+	}
+	dropped := l.dropped
+	l.start, l.lines, l.dropped, l.timer = time.Time{}, 0, 0, nil
+	l.mu.Unlock()
 	if dropped > 0 {
-		s.log.Warn("transport: dropped log lines about connections, to keep the log small", "dropped", dropped,
-			"window", logWindow.String())
+		l.report(dropped)
+	}
+}
+
+// reportDropped logs how many lines of a limiter were dropped. what names
+// the lines.
+func (s *Server) reportDropped(what string, dropped int) {
+	s.log.Warn("transport: dropped log lines, to keep the log small", "lines", what, "dropped", dropped,
+		"window", logWindow.String())
+}
+
+// logLine logs a line through the limiter l. Each string value is cut to
+// maxLogLine bytes of printable ASCII, so that no value can make a long
+// line or a line break. A message must be a fixed text.
+func (s *Server) logLine(l *logLimiter, level slog.Level, msg string, args ...any) {
+	ok, dropped := l.allow()
+	if dropped > 0 {
+		l.report(dropped)
 	}
 	if !ok {
 		return
@@ -133,10 +187,11 @@ func (s *Server) netHTTPLine(line string) {
 		if why == "" {
 			return // VerifyConnection logged it, with the pin
 		}
-		s.logLine(slog.LevelWarn, "transport: refused a TLS connection", "remote", remoteText(addr), "reason", why)
+		s.logLine(s.connLimit, slog.LevelWarn, "transport: refused a TLS connection", "remote", remoteText(addr),
+			"reason", why)
 		return
 	}
-	s.logLine(slog.LevelWarn, "transport: a line from net/http", "line", line)
+	s.logLine(s.connLimit, slog.LevelWarn, "transport: a line from net/http", "line", line)
 }
 
 // handshakeReasons maps the start of a handshake error's text to a fixed

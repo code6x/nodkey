@@ -20,7 +20,10 @@
 //
 // A request body is strict JSON (ReadJSON): at most MaxRequestBody bytes,
 // one object, no unknown or repeated keys, and nothing after it. An error
-// answer to the client says only the HTTP status (WriteError).
+// answer to the client says only the HTTP status (WriteError). While a
+// request waits for the approver, WriteProcessing can tell the client so,
+// with an informational answer before the final one. An answer with secret
+// values goes through WriteJSONBody, with bytes that the caller clears.
 package transport
 
 import (

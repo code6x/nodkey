@@ -179,8 +179,8 @@ func TestMaxRequestBodyFitsTheLargestRequest(t *testing.T) {
 	text := 2 + jsonEscapeFactor*maxClaimedText
 	command := 1 + 3*maxArguments + jsonEscapeFactor*maxClaimedText
 	ssh := maxCommandLines*command + text
-	secrets := command + 3*text
-	if text != 393218 || command != 405505 || ssh != 2015238 || secrets != 1585159 {
+	secrets := command + 2*text
+	if text != 393218 || command != 405505 || ssh != 2015238 || secrets != 1191941 {
 		t.Errorf("text field %d, command line %d, SSH request %d, request for secrets %d: "+
 			"not the numbers in the comment of MaxRequestBody and in DESIGN.md", text, command, ssh, secrets)
 	}
@@ -205,11 +205,10 @@ func TestMaxRequestBodyFitsTheLargestRequest(t *testing.T) {
 	type secretsRequest struct {
 		Command []string     `json:"command"`
 		Dir     string       `json:"dir"`
-		User    string       `json:"user"`
 		Reason  string       `json:"reason"`
 		Secrets []testSecret `json:"secrets"`
 	}
-	secretsReq := secretsRequest{Command: commandLine, Dir: worst, User: worst, Reason: worst}
+	secretsReq := secretsRequest{Command: commandLine, Dir: worst, Reason: worst}
 	for range 64 {
 		secretsReq.Secrets = append(secretsReq.Secrets, testSecret{Var: strings.Repeat("A", 64), Name: strings.Repeat("a", 64)})
 	}

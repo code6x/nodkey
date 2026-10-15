@@ -112,33 +112,49 @@ nodkey run --secret GH_TOKEN=github-token \
 
 1. The client reads its config, then connects to the broker over mutual TLS
    (see [section 10](#10-decision-1-how-client-and-broker-connect)).
-2. The client sends: the secret names, the environment variable names, the
-   command line, the working directory, the local user name and the reason.
-   The reason comes from `--reason`, or else from the `NODKEY_REASON`
-   environment variable. Section 10 limits their size.
-3. The broker checks that the client is known (its TLS key is pinned in the
-   broker config), that each name exists in the broker config, that this
-   client may use it, and that each variable name matches
-   `[A-Z_][A-Z0-9_]{0,63}`. If any check fails, the answer is **deny**. No
-   message is sent for a name the client may not use. (The client checks
-   the variable names too, but only to give a quick error. The broker does
-   not trust the client's checks.)
-4. The broker checks the rules and grants. If a grant or a "never ask" rule
-   covers every name, it skips to step 6.
+2. The client sends `POST /v1/secrets` (section 10): for each variable, its
+   name and the name of the secret, and the command line, the working
+   directory and the reason. The reason comes from `--reason`, or else
+   from the `NODKEY_REASON` environment variable. Section 10 limits their
+   size. The client does not send the local user name: no message
+   (section 7) and no audit entry (section 9) has a place for it.
+3. The broker takes the client name only from the pinned TLS key (section
+   10). It refuses a body that is not a valid request (400). Then it checks
+   that there are 1 to 32 variables, that each variable name matches
+   `[A-Z_][A-Z0-9_]{0,63}` and is there only once, that each secret name
+   exists in the broker config, and that this client may use it. If any
+   check fails, the answer is **deny** (403), and the audit log gets the
+   request with only the names that passed. No message is sent for a name
+   the client may not use. (The client checks the variable names too, but
+   only to give a quick error. The broker does not trust the client's
+   checks.)
+4. The broker makes the claimed text safe (section 7), and checks the rules
+   and grants. If a grant or a "never ask" rule covers every name, it skips
+   to step 6.
 5. Otherwise the broker sends one Telegram message for the whole request and
-   waits. See [section 7](#7-approval-messages). The client prints
+   waits. See [section 7](#7-approval-messages). First it tells the client
+   the short code (`102 Processing`, section 10). The client prints
    `nodkey: waiting for approval (request 7qd2)` to stderr, so a person at
    the terminal can match it with the message on the phone.
-6. On approval, the broker first writes the decision to the audit log and
-   syncs it to disk. Then it gets each value from its store and sends the
-   values back over the same TLS connection. To get a value, it runs the
-   store's program (section 16). If one value cannot be fetched, the
-   whole request is denied, and no value is sent.
+6. On approval, the broker first writes the `request` entry and the
+   `decision` (or `grant_used`) entry to the audit log; each one is synced
+   to disk. Only then do the grants of an "Approve N min" tap start, and
+   only then does the broker get the values: each secret once, from its
+   store, by running the store's program (section 16). If one value cannot
+   be fetched, the whole request is denied, and no value is sent. So is a
+   request with a value longer than 64 KiB, or with values longer than
+   1 MiB together: the environment of a command could not hold them.
+   Then the broker writes the `secret_sent` entry, and only then sends the
+   values back over the same TLS connection. If that entry cannot be
+   written, no value is sent. The broker writes the answer by hand into one
+   buffer of its own, not with Go's JSON encoder, which would keep a copy
+   of the values in a buffer that it uses again. It clears that buffer and
+   the values in its memory after the answer, and on every other way out.
 7. The client adds `GH_TOKEN=<value>` to its own environment and replaces
    itself with the command (`execve`). The command's exit code is the exit
    code of `nodkey run`.
 8. On deny, timeout or error, the client prints one line to stderr, without
-   any value, and exits with code 77.
+   any value, and exits with code 77 (section 15).
 
 There is no command that prints a secret. This is on purpose: the agent
 should never see the value in its own output.
@@ -161,16 +177,24 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
    message. It holds the server's host key, the session identifier, the
    server's signature over the session identifier, and an `is_forwarding`
    flag. The client keeps these for that agent connection.
-3. `ssh` asks the agent for its keys. The client asks the broker. The broker
-   returns the public keys this client may use.
+3. `ssh` asks the agent for its keys. The client asks the broker
+   (`POST /v1/keys`, section 10). The broker returns the public keys this
+   client may use.
 4. The server accepts one key. `ssh` asks the agent to sign the
    authentication request.
-5. The client sends the broker: the key, the data to sign, the flags, the
-   session-bind messages of this connection, and some claimed context: the
-   command lines of the `ssh` process and of at most 3 of its parent
-   processes (from `/proc`), and `NODKEY_REASON` from the environment of
-   the `ssh` process, if set. Section 10 limits their size.
-6. The broker checks, and denies on any failure:
+5. The client sends the broker (`POST /v1/sign`): the key, the data to
+   sign, the flags, the session-bind messages of this connection (at most
+   2), and some claimed context: the command lines of the `ssh` process and
+   of at most 3 of its parent processes (from `/proc`), and
+   `NODKEY_REASON` from the environment of the `ssh` process, if set.
+   Section 10 limits their size.
+6. The broker checks, and denies on any failure. It makes these checks
+   before any message or place in a queue (section 8). A request that fails
+   them gets no message, and the audit log gets it with the key name, if
+   the key was found, and no host. The broker's log gets the fixed text of
+   the check that failed.
+   - The key is one that this client may use: the broker compares the
+     exact bytes of the public key with each of those keys.
    - The data is an SSH authentication request (RFC 4252 section 7): the
      message `SSH_MSG_USERAUTH_REQUEST`, the service `ssh-connection`, the
      method `publickey` or `publickey-hostbound-v00@openssh.com`, and the
@@ -205,11 +229,14 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
    - A session-bind and the data to sign are each at most 8 KiB. Valid
      ones have less than 5 KiB, even with RSA keys of 16384 bits.
 7. The broker checks the rules and grants for (client, key, host key,
-   remote user), and asks the approver if needed.
-8. On approval, the broker writes and syncs the decision, then signs and
-   returns the signature. It signs exactly the data that it checked, with
-   the checked algorithm (for RSA, the hash that the flags ask for). It
-   checks the new signature before it returns it.
+   remote user), and asks the approver if needed. The message and the audit
+   log name the host from the broker's own `known_hosts`, and the remote
+   user after the check above.
+8. On approval, the broker writes and syncs the decision, then signs. It
+   signs exactly the data that it checked, with the checked algorithm (for
+   RSA, the hash that the flags ask for), and checks the new signature.
+   Then it writes the `signed` entry, and only then returns the signature.
+   If the client has hung up before the broker signs, it does not sign.
 
 The checks and the signing are in `internal/sshauth`. Signing takes the
 result of the checks, not raw bytes, so the broker cannot sign data that
@@ -340,7 +367,13 @@ Rules for the claimed part, because the agent writes it:
   together. The broker never cuts a field before it masks it, because a
   secret that was cut may no longer look like a secret.
 - A command line shows the program and at most 8 arguments. Each field is
-  cut to a fixed length, with `…` at the end.
+  cut to a fixed length, with `…` at the end. The broker keeps at most 2000
+  characters of the command line, and at most 1000 of the working
+  directory, of the reason, and of the variable names together (`as`). For
+  an SSH login, it keeps at most 500 characters of each command line, and
+  joins them with ` ← `, `ssh` first. So every audit entry fits in its line
+  (section 9), also with the longest names and the characters that take
+  the most bytes.
 - A Telegram message holds at most 4096 characters. So the Telegram code
   cuts each claimed field again, to 200 UTF-16 code units for `as`, 1000
   for `command`, 300 for `in` and 500 for `reason`. This keeps room for
@@ -612,7 +645,10 @@ Not masked, for example:
   `wrong_message` (such as a copy of the message), `not_allowed` (a
   button that the request does not offer) or `refused`. So a forged
   button can be told from a person's second tap. The Telegram code logs
-  each one, and passes it to the broker, which writes the entry. A tap
+  each one, and passes it to the broker, which writes the entry. The
+  broker only queues the entry there, and writes it in a goroutine of its
+  own, so a slow disk never holds up the polling; when 64 entries wait, it
+  drops more and logs how many. A tap
   that came too early is not written: it is the person's own tap, and
   they can tap again. But on a message that someone else changed, it is
   written, as `edited_message`. One tap that counts is written too: a
@@ -692,8 +728,11 @@ Not masked, for example:
   request that waits for the person is denied at once, and so is every new
   request that needs a message. A message or a notice that is still being
   sent stops too, and no new notice goes out, so a "never ask" use that
-  needs a notice is denied as well. Grants still work, and so do "never
-  ask" rules with `notify = false`. The broker should stop then.
+  needs a notice is denied as well. The approval core would still let
+  grants and "never ask" rules with `notify = false` allow requests, but
+  the broker denies every request from then on (503), and `nodkey broker`
+  stops. On a polling conflict, the broker first writes the `error` entry
+  with code `poll_conflict`.
 - Messages about "never ask" uses can go to a second chat
   (`notice_chat_id`), so the approval chat stays for approvals only.
   They are silent (`disable_notification`). At most 20 notices go out in
@@ -827,8 +866,10 @@ name exactly one client. The config check refuses all of these (section
   `secret_sent` or `signed` entry shows that the broker handed something
   out.
 - After a failed write or sync, every later entry fails too, so every
-  request is denied until the broker starts again. The file may now end in
-  a torn line, and the broker records it at the next start (below).
+  request is denied until the broker starts again. The broker denies them
+  at once, before any message (503), and sends one alert message. The file
+  may now end in a torn line, and the broker records it at the next start
+  (below).
 - After an entry is on disk, the broker writes `audit anchor SEQ:HASH` to
   stderr: the entry's number and the hash of its line. It never writes the
   content of an entry there. If this write fails, it counts as a failed
@@ -863,9 +904,35 @@ For each request, the broker writes its entries in this order. First
 `request`. Then one of these: `decision` (and `denied` with cause
 `approver` after a Deny); `grant_used`; or `denied` (with an `error` entry
 before it when the cause is `error`). After an approval, `secret_sent` or
-`signed` follows once the broker has handed something out. When grants and
-a "never ask" rule allow one request together, it gets two `grant_used`
-entries, one for each, and each lists the secrets it covered.
+`signed` follows: the broker writes it just before the answer with the
+values or the signature, and sends nothing if it cannot write it. If a
+later step fails after the approval, such as a store or the signature, an
+`error` entry and a `denied` entry with cause `error` follow instead. If
+the client hangs up after the approval, before anything was handed out, a
+`denied` entry with cause `cancelled` follows. An approved SSH grant hands
+out nothing, so it ends with its `decision`. When grants and a "never ask"
+rule allow one request together, it gets two `grant_used` entries, one for
+each, and each lists the secrets it covered.
+
+A request that the broker denies before the approval core sees it gets a
+request ID from the broker, in the same form, and the entries `request`
+and `denied`: with cause `not_allowed` for a body that is not a valid
+request or a check of section 5 or 6 that failed; with cause `limit` when
+the client has too many requests in progress, or waited too long for a
+place to read its body (section 10); and with cause `error`, after an
+`error` entry with code `approver_failed`, when the approver has stopped
+(section 7). So does a request that panics before the core has given it
+an ID: with cause `not_allowed` when the panic came before the core, and
+with cause `error`, after an `error` entry with code `approver_failed`,
+when it came inside the core, such as in the approver. A list of keys
+(`/v1/keys`) is not a request for a secret or a signature, so it has no
+entry.
+
+A client can send requests that a limit denies, or that come after the
+approver stopped, as fast as it wants: they cost it nothing. So the broker
+writes the entries of at most 20 such requests of one client in a minute,
+and only counts the others; the count goes to its log. Every other
+request has its entries.
 
 The broker writes the `request` entry only when the request has ended,
 together with the entries after it, because it holds the exact text of
@@ -1110,10 +1177,10 @@ at most 2 MiB (2,097,152 bytes). Every valid request fits:
   and a command line at most 1 + 3 × 4096 + 6 × 65,536 = 405,505 bytes.
 - The largest request is an SSH request: 4 command lines and the reason
   take at most 2,015,238 bytes. A request for secrets has one command line
-  and 3 text fields (the working directory, the local user name and the
-  reason): at most 1,585,159 bytes. All other fields of a request, such as
-  names, keys and the data to sign, must fit in 64 KiB. So every valid
-  request is at most 2,080,774 bytes.
+  and 2 text fields (the working directory and the reason): at most
+  1,191,941 bytes. All other fields of a request, such as names, keys and
+  the data to sign, must fit in 64 KiB. So every valid request is at most
+  2,080,774 bytes.
 
 The broker checks the body in one pass over its bytes before it decodes
 it:
@@ -1131,6 +1198,57 @@ it:
   keys are refused. So a request never uses data, such as a variable
   name, as a key; it uses a list of objects instead.
 
+**The API.** Every request is a `POST` with a JSON object as its body, on
+one of these paths. The broker compares the method and the request target
+exactly, so another method gets 405, and another path, another spelling of
+a path, a query, `OPTIONS *` or `PRI *` gets 404. The types are in
+`internal/api`.
+
+| path | client | request fields | answer fields |
+|---|---|---|---|
+| `/v1/keys` | `ssh-agent` | none: `{}` | `keys`: each with `name` and `public_key` (SSH wire form), sorted by name |
+| `/v1/secrets` | `run` | `secrets` (each with `var` and `name`), `command`, `dir`, `reason` | `secrets`: each with `var` and `value`, in the order of the request |
+| `/v1/sign` | `ssh-agent` | `public_key`, `data`, `flags`, `binds`, `commands`, `reason` | `format` and `blob` of the signature |
+| `/v1/ssh-grant` | `ssh-grant` | `key`, `user`, `hosts`, `seconds` (`--for`), `reason` | `minutes`: how long the grants last |
+
+- Each field must be there, none may be `null`, and no other field may be
+  there, on both sides. Bytes, such as a key or a value, are in base64. A
+  list is never `null`: an empty list is `[]`.
+- When a request starts to wait for the person, in the queue or with a
+  message, the broker first sends an informational answer:
+  `102 Processing`, with the short code in the header `Nodkey-Short-Code`.
+  It writes it with a deadline of 5 seconds, so a client that does not
+  read cannot hold the request. The client prints the code (section 5).
+  The final answer comes after the wait.
+- The final answer is `200` with the answer fields, or an error status with
+  only `{"error":"<status text>"}`:
+  - `400`: the body is not a valid request, or it is over a cap. (`413` and
+    `415` come from the checks of the body above.)
+  - `403`: denied by the person, by a check or by a rule, or because
+    nobody answered in time, or the client hung up.
+  - `429`: denied by a limit: the limits per client of section 8, the
+    limits of notices of "never ask" uses (sections 7 and 8), more than
+    32 requests of this client in progress, or a wait of more than
+    10 seconds for a place to read the body.
+  - `503`: the broker could not finish: the approver, a store, the
+    signature or the audit log failed, or the broker is starting or
+    stopping. A request that is still in progress when the broker stops
+    gets `503` too, also when the audit log says `cancelled`: the client
+    did not get a deny.
+- More caps, besides those above: at most 32 variables in a request; each
+  name (of a variable, a secret, a key, a host or a remote user) at most 64
+  bytes; a public key at most 4 KiB; the data to sign and each
+  session-bind at most 8 KiB; at most 2 session-binds; at most 20 hosts in
+  an SSH grant (a host listed twice counts twice here). The answer is at
+  most 2 MiB: each value is at most 64 KiB, and the values of one request
+  at most 1 MiB together (section 5).
+- The broker works on at most 32 requests of one client at a time. More get
+  `429` at once (THREAT-MODEL.md T28).
+- The broker reads and decodes at most 4 bodies of one client, and at most
+  16 in all, at the same time: the largest valid body takes about 20 MiB
+  for a moment. Another request waits for a place, at most 10 seconds,
+  and then gets `429`.
+
 **The broker's log.** Any peer can open a connection, and the log goes to
 the journal next to the audit anchors (section 9). So a log line about a
 connection never holds text that the peer chose, such as its ALPN names,
@@ -1144,8 +1262,19 @@ a field of its certificate, or a line break:
   That helps to add a new client.
 - Any other line from Go's HTTP server is cut to 1 KiB of printable
   ASCII.
-- The broker logs at most 60 such lines per minute. When it drops lines,
-  it says how many in its next line.
+- The broker logs at most 60 lines per minute in each of three parts:
+  lines that any peer can cause, such as a refused handshake; lines with
+  the pin of a key that no client has, which any peer can cause too, with
+  a new key each time; and lines about the requests of the clients: a
+  refused request and a handler that panicked. So other peers cannot crowd
+  out the lines about the clients. When it drops lines, it says how many:
+  in its next line, or at the end of the minute when no line comes.
+- The broker's own lines come from slog's text handler: each line starts
+  with `time=`, and a value with a line break is quoted and escaped. The
+  broker never logs claimed text, and cuts each value to 1 KiB. So no line
+  can start with `audit anchor ` (section 9), and none comes near the
+  48 KiB at which journald splits a line. It logs at most 20 SSH logins
+  that a check refused in a minute, and counts the others.
 
 ## 11. Decision 2: loading keys after a restart
 
@@ -1300,8 +1429,10 @@ approval would grant nothing. One tap makes a grant for each host key of
 each listed host (a host can have one host key of each key type), exactly
 as in B.
 Then the playbook runs without more taps. A host that is not in the list
-still asks. A host that is listed twice counts once. The broker refuses
-an `ssh-grant` when:
+still asks. A host that is listed twice counts once (but the list may have
+at most 20 names, section 10). The client sends `--for` in seconds; the
+broker rounds down to whole minutes. The broker refuses an `ssh-grant`
+before any message when:
 - the remote user name does not match the pattern in section 6;
 - the key's rule is not `window`;
 - `--for` is longer than the key's window, or shorter than one minute;
@@ -1544,6 +1675,10 @@ nodkey version
 | 126 | the command was found but cannot be run |
 | 127 | the command was not found |
 
+`nodkey run` exits with 77 when the broker answers `403` or `429`. It
+exits with 69 when it cannot reach the broker, and for every other answer
+that is not `200`, such as `503` (section 10). It never tries again.
+
 The command itself may also exit with one of these codes. To tell them
 apart, look at the last line on stderr. Only when nodkey itself exits, its
 last line is `nodkey: <reason> (exit <code>)`, for example
@@ -1608,8 +1743,8 @@ text of a line. It exits with:
   broker's state directory, and only the broker user can write to it; the
   example systemd unit makes it.
 - Limits on every input: request size (2 MiB, see section 10), number of
-  secrets per request, field lengths. JSON decoding rejects unknown and
-  repeated keys.
+  secrets per request (32), field lengths. JSON decoding rejects unknown
+  and repeated keys, and missing and `null` fields.
 - The broker turns off core dumps and marks itself not dumpable
   (`PR_SET_DUMPABLE`). For core dumps, it sets its own soft `RLIMIT_CORE`
   to 1 at start, and the example systemd unit sets `LimitCORE=1`. The store
@@ -1742,6 +1877,11 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
 - **Fake approver**: a test approver that says yes, no, nothing, or answers
   late, on command. It and a fake clock are in
   `internal/approval/approvaltest`, for the tests of the broker too.
+- **Broker tests**: the broker's service runs behind the real transport
+  server, over mutual TLS on the loopback address, with the real approval
+  core, the fake approver and clock, fake stores in memory, and an audit
+  log in memory that refuses what the real one refuses. SSH logins are
+  real: an in-process SSH server checks the signatures.
 - **Fake stores**: the test binary of `internal/store` acts like `bws` or
   `bw` when it runs under that name. It records its arguments and its
   environment, so the tests can check that no token, password or session

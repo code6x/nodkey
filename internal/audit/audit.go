@@ -46,10 +46,12 @@ const timeFormat = "2006-01-02T15:04:05.000Z07:00"
 var (
 	// ErrClosed is returned by Append after Close.
 	ErrClosed = errors.New("audit log: it is closed")
-	// ErrBroken is in the error of every Append after a failed write, sync
-	// or journal write. The log may then end in a torn line, so nothing
-	// more is written to it until it is opened again.
-	ErrBroken = errors.New("audit log: an earlier write failed, so nothing more is written until the broker starts again")
+	// ErrBroken is in the error of the Append whose write, sync or
+	// journal write failed, and of every Append after it. The log may then
+	// end in a torn line, so nothing more is written to it until it is
+	// opened again. So a caller that sees ErrBroken knows at once that
+	// every later entry fails too.
+	ErrBroken = errors.New("audit log: a write failed, so nothing more is written until the broker starts again")
 )
 
 // Recovery tells about a torn last line that Open found and recorded with
@@ -359,10 +361,11 @@ func syncDir(dir string) error {
 // a record (DESIGN.md section 9).
 //
 // An event that fails its checks, or that makes a line longer than
-// MaxLineSize, is not written, and Append returns an error. After a write,
-// sync or journal error, the log may end in a torn line. So Append then
-// returns an error that holds ErrBroken every time, until the log is
-// opened again (a broker restart), and Open records the torn line.
+// MaxLineSize, is not written, and Append returns an error (CheckEvent
+// returns the same error without a log). After a write, sync or journal
+// error, the log may end in a torn line. So the error of that Append
+// holds ErrBroken, and so does the error of every later Append, until the
+// log is opened again (a broker restart), and Open records the torn line.
 //
 // No error holds the value of a field.
 func (l *Logger) Append(ev Event) (Anchor, error) {
@@ -370,6 +373,27 @@ func (l *Logger) Append(ev Event) (Anchor, error) {
 		return Anchor{}, errors.New("audit log: only Open writes a log_recovered entry")
 	}
 	return l.append(ev, false)
+}
+
+// CheckEvent returns the error that Append returns for ev on a log that
+// works: ev is not an event of this package, it fails its checks, or its
+// line would be longer than MaxLineSize, even with the largest seq. It
+// writes nothing. The broker's tests use it in place of a log file, to
+// show that every entry the broker makes can be written (issue #11).
+func CheckEvent(ev Event) error {
+	if _, ok := ev.(logRecovered); ok {
+		return errors.New("audit log: only Open writes a log_recovered entry")
+	}
+	name, body, err := encodeEvent(ev)
+	if err != nil {
+		return fmt.Errorf("audit log: %w", err)
+	}
+	// The time field has the same length for every year from 1000 to 9999.
+	line := appendLine(nil, math.MaxUint64, time.Time{}, name, [sha256.Size]byte{}, body)
+	if len(line) > MaxLineSize {
+		return fmt.Errorf("audit log: the %s entry would be %d bytes, more than %d", name, len(line), MaxLineSize)
+	}
+	return nil
 }
 
 // append writes ev. afterTorn puts a newline before the entry, to end a
@@ -424,10 +448,11 @@ func (l *Logger) append(ev Event, afterTorn bool) (Anchor, error) {
 }
 
 // fail records the first failed write, so that every later Append fails
-// too, and returns err.
+// too. It returns err with ErrBroken, so the caller of the Append that
+// failed knows at once that the log is broken.
 func (l *Logger) fail(err error) error {
 	l.err = fmt.Errorf("%w (%w)", ErrBroken, err)
-	return err
+	return l.err
 }
 
 // appendLine appends one entry to b, without the newline: the fields seq,

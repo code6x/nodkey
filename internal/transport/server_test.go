@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/textproto"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -299,5 +301,98 @@ func TestSlowReaderIsDropped(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Error("the handler still writes to a client that reads nothing")
+	}
+}
+
+// TestWriteProcessing shows the informational answer that the broker sends
+// while a request waits for the approver: 102 Processing with its headers,
+// then the final answer, without those headers. The client sees the 102
+// before the final answer.
+func TestWriteProcessing(t *testing.T) {
+	broker, laptop := newTestKey(t), newTestKey(t)
+	release := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := ReadJSON[struct{}](w, r); err != nil {
+			return
+		}
+		if err := WriteProcessing(w, http.Header{"x-short-code": {"7qd2"}}); err != nil {
+			t.Errorf("WriteProcessing: %v", err)
+		}
+		<-release // the approver decides
+		_ = WriteJSON(w, http.StatusOK, whoAmI{Client: "waited"})
+	})
+	b := (&testBroker{key: broker}).start(t, clientTable(map[string]config.Pin{"laptop": laptop.pin}), handler, nil)
+	c := newTestClient(t, b, laptop, broker.pin)
+	got1xx := make(chan string, 2)
+	ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+		Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
+			got1xx <- strconv.Itoa(code) + " " + h.Get("X-Short-Code")
+			return nil
+		},
+	})
+	type result struct {
+		status int
+		err    error
+	}
+	done := make(chan result, 1)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+b.addr+"/wait", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	go func() {
+		resp, err := c.Do(req)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		_, err = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		done <- result{status: resp.StatusCode, err: err}
+	}()
+	select {
+	case got := <-got1xx:
+		if got != "102 7qd2" {
+			t.Errorf("the informational answer is %q, want 102 with the short code", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no informational answer while the request waits")
+	}
+	close(release)
+	res := <-done
+	if res.err != nil || res.status != http.StatusOK {
+		t.Errorf("the final answer: %d, %v; want 200", res.status, res.err)
+	}
+	if len(got1xx) != 0 {
+		t.Errorf("more than one informational answer")
+	}
+}
+
+// TestWriteProcessingHeaderNotInTheAnswer shows that the final answer does
+// not carry the headers of the informational answer.
+func TestWriteProcessingHeaderNotInTheAnswer(t *testing.T) {
+	broker, laptop := newTestKey(t), newTestKey(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := ReadJSON[struct{}](w, r); err != nil {
+			return
+		}
+		_ = WriteProcessing(w, http.Header{"X-Short-Code": {"7qd2"}})
+		WriteError(w, http.StatusForbidden)
+	})
+	b := (&testBroker{key: broker}).start(t, clientTable(map[string]config.Pin{"laptop": laptop.pin}), handler, nil)
+	c := newTestClient(t, b, laptop, broker.pin)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+b.addr+"/x", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Short-Code") != "" {
+		t.Errorf("final answer %d with X-Short-Code %q; want 403 without it", resp.StatusCode,
+			resp.Header.Get("X-Short-Code"))
 	}
 }

@@ -59,10 +59,13 @@ var errSecondHandshake = errors.New("nodkey: a second handshake on one connectio
 // Server is the broker's server: mutual TLS 1.3 with pinned client keys,
 // and HTTP/1.1.
 type Server struct {
-	http  *http.Server
-	tls   *tls.Config
-	log   *slog.Logger
-	limit *logLimiter // how often the server logs; see logLine
+	http *http.Server
+	tls  *tls.Config
+	log  *slog.Logger
+	// How often the server logs (see logs.go): lines that any peer can
+	// cause, lines with the pin of a key that no client has, and lines
+	// about a request of a pinned client.
+	connLimit, pinLimit, keyLimit *logLimiter
 }
 
 // NewServer returns the broker's server.
@@ -100,7 +103,10 @@ func NewServer(key tls.Certificate, clients map[string]config.Client, handler ht
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{log: logger, limit: &logLimiter{now: time.Now}}
+	s := &Server{log: logger}
+	s.connLimit = newLogLimiter(func(n int) { s.reportDropped("connections", n) })
+	s.pinLimit = newLogLimiter(func(n int) { s.reportDropped("unknown keys", n) })
+	s.keyLimit = newLogLimiter(func(n int) { s.reportDropped("requests of pinned clients", n) })
 	s.tls = s.tlsConfig(key, byPin)
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
@@ -200,7 +206,7 @@ func (s *Server) tlsConfig(key tls.Certificate, byPin map[config.Pin]string) *tl
 			if errors.Is(err, ErrUnknownClient) {
 				// The pin is the hash of the peer's public key, not text
 				// that the peer chose. It helps to add a new client.
-				s.logLine(slog.LevelWarn, "transport: refused a client key that no [client.*] section pins",
+				s.logLine(s.pinLimit, slog.LevelWarn, "transport: refused a client key that no [client.*] section pins",
 					"remote", remote, "pin", pin.String())
 			}
 			if err != nil {
@@ -301,7 +307,7 @@ func (s *Server) verified(next http.Handler) http.Handler {
 		}()
 		name, ok := verifiedClient(r)
 		if !ok {
-			s.logLine(slog.LevelError, "transport: refused a request without a verified client name",
+			s.logLine(s.keyLimit, slog.LevelError, "transport: refused a request without a verified client name",
 				"remote", remoteText(r.RemoteAddr))
 			WriteError(w, http.StatusForbidden)
 			return
@@ -319,7 +325,7 @@ func (s *Server) verified(next http.Handler) http.Handler {
 // is not logged; the error it wraps is not passed on either.
 func (s *Server) handlerPanicked(v any) {
 	if err, ok := v.(error); !ok || !errors.Is(err, http.ErrAbortHandler) {
-		s.logLine(slog.LevelError, "transport: a handler panicked; the connection is dropped, and the panic value is not logged",
+		s.logLine(s.keyLimit, slog.LevelError, "transport: a handler panicked; the connection is dropped, and the panic value is not logged",
 			"where", panicPlace())
 	}
 	panic(http.ErrAbortHandler)

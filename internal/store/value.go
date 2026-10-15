@@ -37,6 +37,14 @@ func newValue(b []byte) Value {
 	return Value{p: &valueBytes{b: b}}
 }
 
+// NewValue returns a Value that owns b: Clear overwrites b. The caller
+// must not use b after the call. The stores of this package make their
+// values themselves; NewValue is for other Store implementations, such as
+// the fake stores in the tests of the broker.
+func NewValue(b []byte) Value {
+	return newValue(b)
+}
+
 // Bytes returns the value. It is the Value's own memory, not a copy: do
 // not change it, and do not keep it after Clear. Never log or print it.
 // The zero Value and a cleared Value give nil.

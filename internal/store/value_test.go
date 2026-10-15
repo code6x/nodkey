@@ -93,6 +93,24 @@ func TestValueClear(t *testing.T) {
 	}
 }
 
+// TestNewValue: a Value from NewValue owns the bytes, and hides them.
+func TestNewValue(t *testing.T) {
+	t.Parallel()
+	secret := madeUp("value")
+	b := []byte(secret)
+	v := NewValue(b)
+	if !bytes.Equal(v.Bytes(), []byte(secret)) {
+		t.Error("Bytes is not the value")
+	}
+	if got := fmt.Sprintf("%v %s %q", v, v, v); bytes.Contains([]byte(got), []byte(secret)) {
+		t.Errorf("fmt shows the value: %q", got)
+	}
+	v.Clear()
+	if v.Bytes() != nil || !bytes.Equal(b, make([]byte, len(b))) {
+		t.Error("Clear did not overwrite the bytes that NewValue got")
+	}
+}
+
 // TestStoresHideTheirSecrets prints the stores in every way we know.
 func TestStoresHideTheirSecrets(t *testing.T) {
 	t.Parallel()

@@ -14,6 +14,11 @@ Planned. Each v1 issue adds its part.
 - `internal/` - one package per part (config, transport, audit, approval,
   telegram, store, sshauth, client parts). Packages do not import
   `cmd/`.
+  - `internal/api/` - the protocol between the clients and the broker:
+    the paths, the request and answer types, and their caps.
+  - `internal/broker/` - the broker's service: it answers each request in
+    the order of DESIGN.md sections 5 and 6. `nodkey broker` makes its
+    parts and runs it.
 - `test/e2e/` - end-to-end tests with `sshd` in a container. Build tag
   `e2e`.
 - `.claude/agents/security-reviewer.md` - the security review every change
