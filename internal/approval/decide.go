@@ -494,7 +494,10 @@ func (c *Core) Answer(a Answer) error {
 		res.Allowed = true
 		res.WindowMinutes = p.windowMinutes
 		res.grants = p.newGrants()
-		res.grantEnd = now.add(time.Duration(p.windowMinutes) * time.Minute)
+		// The message shows the time of the tap to the second, and the
+		// minutes. The grants end at the start of the second that they
+		// give, not later.
+		res.grantEnd = now.add(time.Duration(p.windowMinutes) * time.Minute).wholeSecond()
 		if p.kind == audit.KindSSHGrant {
 			res.grantEnd = p.grantEnds // the end shown in the message
 		}

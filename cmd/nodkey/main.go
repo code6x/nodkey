@@ -36,6 +36,7 @@ Commands:
   keygen    make a TLS key for the broker or a client, and print its pin
   run       run a command with secrets, once a person approves on the phone
   ssh-agent serve an SSH agent for ssh; the keys stay on the broker
+  ssh-grant ask once for SSH logins to a list of hosts, for some minutes
   audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
             check the hash chain of an audit log, and its anchors
   version   print the version
@@ -73,6 +74,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runRun(rest, stderr)
 	case "ssh-agent":
 		return runSSHAgent(rest, stderr)
+	case "ssh-grant":
+		return runSSHGrant(rest, stderr)
 	case "version":
 		return runVersion(rest, stdout, stderr)
 	case "help":

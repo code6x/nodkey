@@ -100,7 +100,18 @@ remains.
 **T1. The agent asks for a secret it should not have.**
 Only names in the broker config exist, and each lists the clients that may
 use it. Unknown names are denied without a message.
-Risk that remains: none beyond the rules the approver wrote.
+The answer tells the names apart, though. The broker checks the names
+before the limits of DESIGN.md section 8. So when a limit denies a
+request, such as in the pause of 60 seconds after a Deny, a request with
+valid names gets `429`, and one with a name that does not exist, or that
+the client may not use, gets `403`, both without a message. So an agent
+can learn, without a message, which secret names it may use, and with
+`nodkey ssh-grant` which hosts are in the broker's `known_hosts` and in
+the `hosts` of a key, and the rule and window of a key. We accept this small leak: these are names, not
+secret values. (The client may list its key names anyway, with
+`/v1/keys`.)
+Risk that remains: the agent can learn the names of the secrets and hosts
+that it may use; nothing beyond the rules the approver wrote.
 
 **T2. The agent lies about the command or the reason.**
 These fields are marked as claimed, below the verified ones. For
@@ -233,8 +244,13 @@ Risk that remains: real. nodkey cannot see which device pressed a button.
 A passkey page is a possible later step.
 
 **T8. Approval fatigue.** The person taps Approve without reading.
-Grants for N minutes and `ssh-grant` cut the number of taps. Limits stop
-floods. The message is short and puts the verified lines first. Notices
+Grants for N minutes and `ssh-grant` cut the number of taps. One tap on
+an `ssh-grant` message allows exactly what its verified lines show: logins
+by that client, with that key, as that remote user, to each listed host
+(by its host keys in the broker's `known_hosts`), until the end shown.
+The broker checks all of it itself; the checks of the client only give
+quick errors (DESIGN.md section 13). Limits stop floods. The message is
+short and puts the verified lines first. Notices
 about "never ask" uses can go to a separate chat, so the approval chat
 stays for real decisions. When the person sees something strange and taps
 Deny, the client's grants for that secret or key end at once (for a key:

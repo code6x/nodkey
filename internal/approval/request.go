@@ -153,8 +153,11 @@ func (r *Result) Events() []audit.Event {
 // then never start. So a grant never exists without its record.
 //
 // The grants end when the answer said: N minutes after the tap, or at the
-// end shown in the message of an SSH grant. Calling StartGrants later
-// does not make them last longer. A grant for a secret or key that the
+// end shown in the message of an SSH grant, each cut to the start of its
+// second, as a message shows a time. Calling StartGrants later does not
+// make them last longer. For an SSH grant, the broker does not call it
+// when the client hung up after the tap: the grants are all it gives. A
+// grant for a secret or key that the
 // person denied after this tap does not start: a Deny ends the client's
 // grants for it, also those that have not started yet. For any other
 // result, and on a second call, StartGrants does nothing.

@@ -190,7 +190,9 @@ func (c *Core) checkGrant(r *Request, p *pending) bool {
 		return false
 	}
 	p.windowMinutes = minutes
-	p.grantEnds = p.start.add(time.Duration(minutes) * time.Minute)
+	// The message shows the end to the second. The grants end at the
+	// start of that second, not later.
+	p.grantEnds = p.start.add(time.Duration(minutes) * time.Minute).wholeSecond()
 	return true
 }
 

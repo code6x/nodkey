@@ -143,6 +143,40 @@ func TestHangUpBeforeSign(t *testing.T) {
 	mustEvents(t, requestEvents(e.audit.waitFor(t, 3), id), "request decision:approve_once denied:cancelled")
 }
 
+// TestHangUpBeforeGrants: the same for an SSH grant. The person approves,
+// and the client hangs up while the decision entry is written, as after
+// SIGINT. Its grants are all that the approval gives, so none starts: a
+// login to a listed host still asks.
+func TestHangUpBeforeGrants(t *testing.T) {
+	wrap, contexts := requestContexts()
+	e := newEnv(t, envOptions{wrap: wrap})
+	gate := make(chan struct{})
+	e.audit.setFail(func(ev audit.Event) error {
+		if _, ok := ev.(audit.Decision); ok {
+			<-gate
+		}
+		return nil
+	})
+	c := e.httpClient("laptop")
+	p := e.start(c, api.PathSSHGrant, api.GrantRequest{
+		Key: "deploy", User: "deploy", Hosts: []string{"web-1"}, Seconds: 15 * 60, Reason: "r",
+	})
+	ctx := <-contexts
+	id := e.waitAsked(1)[0].Prompt.RequestID
+	e.tap(id, audit.AnswerApproveWindow)
+	time.Sleep(100 * time.Millisecond)
+	p.cancel()
+	p.wait(t)
+	waitDone(t, ctx)
+	close(gate)
+	mustEvents(t, requestEvents(e.audit.waitFor(t, 3), id), "request decision:approve_window denied:cancelled")
+	login := e.start(c, api.PathSign, e.signRequest(t, "deploy", "web-1", "deploy"))
+	<-contexts
+	e.waitAsked(2)
+	login.cancel()
+	login.wait(t)
+}
+
 // TestTwoLoginsAtOnce: two sign requests of one client wait at the
 // same time, for two remote users. The person approves the one for root
 // only. Its signature is over its own data, and the other gets 403.
@@ -178,7 +212,8 @@ func TestTwoLoginsAtOnce(t *testing.T) {
 	}
 }
 
-// waitDone waits until ctx has ended.
+// waitDone waits until ctx, the context of a request, has ended, and the
+// handler's context with it.
 func waitDone(t testing.TB, ctx context.Context) {
 	t.Helper()
 	select {
@@ -186,4 +221,9 @@ func waitDone(t testing.TB, ctx context.Context) {
 	case <-time.After(waitLimit):
 		t.Fatal("the server did not see the client hang up")
 	}
+	// Package context closes the Done channel of ctx before it ends the
+	// contexts made from it, such as the handler's own, and it does all of
+	// that under the lock of ctx. context.Cause takes that lock: once it
+	// returns, the handler's context has ended too.
+	_ = context.Cause(ctx)
 }

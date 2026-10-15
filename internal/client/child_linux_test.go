@@ -388,6 +388,10 @@ func TestRunInterrupted(t *testing.T) {
 			case <-time.After(waitLimit):
 				t.Fatal("no waiting line")
 			}
+			// The broker sends the short code just before the message. A
+			// signal before the message would end the request without one,
+			// and then no message is updated.
+			tb.waitAsked(t, 1)
 			if err := cmd.Process.Signal(sig); err != nil {
 				t.Fatal(err)
 			}
