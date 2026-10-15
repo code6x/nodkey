@@ -2607,7 +2607,7 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   [docs/manual-telegram-test.md](docs/manual-telegram-test.md). The token
   comes from a local file and is never committed. It ran on 2026-10-15,
   and its results are in issue #17. It could not test a double tap: in
-  the Telegram client used in the test, the buttons went away right
+  Telegram Web, the client used in the test, the buttons went away right
   after the first tap. So only the unit tests check a double tap, such
   as those with the fake Telegram server above.
 
