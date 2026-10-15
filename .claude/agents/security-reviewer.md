@@ -48,9 +48,12 @@ Review like an attacker who controls the agent machine.
   and attached; `password=` and similar; `Authorization:`; long
   random-looking strings). The broker does the masking, not the client.
 - The broker itself checks environment variable names against
-  `[A-Z_][A-Z0-9_]{0,63}` and remote user names against
+  `[A-Z_][A-Z0-9_]{0,63}` and against the deny list of DESIGN.md section 5
+  (`api.DeniedVar`: names that make a program print, store or run the
+  value), and remote user names against
   `[A-Za-z0-9._][A-Za-z0-9._-]{0,31}`. It never relies on checks done by
-  the client.
+  the client. A new tool or name that prints, stores or runs a value
+  belongs on the deny list.
 
 **SSH signing**
 - The broker parses the data to sign itself. It signs only an SSH

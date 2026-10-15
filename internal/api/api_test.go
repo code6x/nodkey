@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/textproto"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -440,6 +443,134 @@ func TestValidVar(t *testing.T) {
 		if ValidVar(bad) {
 			t.Errorf("ValidVar(%q) = true", bad)
 		}
+	}
+}
+
+// TestDeniedVar: every name on the deny list is refused, and every name
+// that starts with a prefix on it. Names that hold secrets on purpose, and
+// names that only look like an entry, pass: a prefix matches only at the
+// start and with its "_", and a name only as a whole.
+func TestDeniedVar(t *testing.T) {
+	names, prefixes := DenyList()
+	if len(names) == 0 || len(prefixes) == 0 {
+		t.Fatal("the deny list is empty")
+	}
+	for _, name := range names {
+		if prefix, denied := DeniedVar(name); !denied || prefix != "" {
+			t.Errorf("DeniedVar(%q) = %q, %v; want \"\", true", name, prefix, denied)
+		}
+	}
+	for _, p := range prefixes {
+		for _, name := range []string{p, p + "X", p + "PRELOAD_2", p + strings.Repeat("A", 64-len(p))} {
+			if prefix, denied := DeniedVar(name); !denied || prefix != p {
+				t.Errorf("DeniedVar(%q) = %q, %v; want %q, true", name, prefix, denied, p)
+			}
+		}
+	}
+	// Some names on the list, and the prefix that refuses them, if any.
+	// TF_CLI_ARGS is a name on the list. terraform reads its forms for one
+	// command, such as TF_CLI_ARGS_plan, only in lower case, which
+	// ValidVar refuses.
+	for _, tt := range []struct{ name, prefix string }{
+		{"LD_PRELOAD", "LD_"}, {"LC_ALL", "LC_"}, {"GIT_SSH_COMMAND", "GIT_"},
+		{"NPM_CONFIG_SCRIPT_SHELL", "NPM_CONFIG_"}, {"TF_CLI_ARGS", ""}, {"JAVA_OPTS", ""}, {"PATH", ""},
+		{"MAKEFLAGS", ""}, {"GOFLAGS", ""}, {"GH_HOST", ""}, {"DOCKER_HOST", ""}, {"SUDO_ASKPASS", ""},
+		{"MANPAGER", ""},
+	} {
+		if prefix, denied := DeniedVar(tt.name); !denied || prefix != tt.prefix {
+			t.Errorf("DeniedVar(%q) = %q, %v; want %q, true", tt.name, prefix, denied, tt.prefix)
+		}
+	}
+	for _, ok := range []string{
+		"GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "AWS_SECRET_ACCESS_KEY", "LDAP_PASSWORD", "NODE_AUTH_TOKEN",
+		"NPM_TOKEN", "HOMEBREW_GITHUB_API_TOKEN", "PGPASSWORD", "SSH_PRIVATE_KEY", "DB_PASSWORD",
+		"DOCKER_PASSWORD", "CARGO_REGISTRY_TOKEN", "EMAIL_PASSWORD", "TF_TOKEN_EXAMPLE_COM", "TF_VAR_DB_PASSWORD",
+		"GOPROXY", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+		"LD", "LDX_PRELOAD", "XLD_PRELOAD", "LC", "GIT", "MY_GIT_TOKEN", "DYLD", "GCONV", "RESOLV",
+		"PATHS", "HOME_DIR", "TERM_TOKEN", "PS", "PS5", "ENVIRONMENT", "LANGFUSE_SECRET_KEY", "CC_TOKEN",
+		"NPM_CONFIG", "MY_NPM_CONFIG_X", "TF_CLI_ARG", "TF_LOG", "TF_IN_AUTOMATION", "DOCKER_CONFIG_TOKEN",
+		"NODE_PATH", "PYTHONPATH", "RUBYLIB", "IFS", "LESSOPEN",
+		// Lower case is not on the list; ValidVar refuses it anyway, also
+		// Terraform's own forms of TF_TOKEN_ and TF_VAR_.
+		"ld_preload", "path", "TF_TOKEN_example_com", "TF_VAR_db_password",
+	} {
+		if prefix, denied := DeniedVar(ok); denied {
+			t.Errorf("DeniedVar(%q) = %q, true; want false", ok, prefix)
+		}
+	}
+}
+
+// TestDenyListIsClean: each entry is a valid name, each prefix ends with
+// "_", no entry is there twice, and no name or prefix is covered by
+// another prefix. DenyList returns copies, so a caller cannot change the
+// list.
+func TestDenyListIsClean(t *testing.T) {
+	names, prefixes := DenyList()
+	seen := make(map[string]bool)
+	for _, e := range slices.Concat(names, prefixes) {
+		if !ValidVar(e) || seen[e] {
+			t.Errorf("the entry %q is not a valid name, or is there twice", e)
+		}
+		seen[e] = true
+	}
+	for _, p := range prefixes {
+		if !strings.HasSuffix(p, "_") {
+			t.Errorf("the prefix %q does not end with _", p)
+		}
+		for _, q := range prefixes {
+			if p != q && strings.HasPrefix(p, q) {
+				t.Errorf("the prefix %q covers the prefix %q", q, p)
+			}
+		}
+	}
+	for _, name := range names {
+		if prefix, _ := DeniedVar(name); prefix != "" {
+			t.Errorf("the prefix %q covers the name %q", prefix, name)
+		}
+	}
+	names[0], prefixes[0] = "GH_TOKEN", "NPM_"
+	if _, denied := DeniedVar("GH_TOKEN"); denied {
+		t.Error("DenyList shares its names with the list")
+	}
+	if _, denied := DeniedVar("NPM_TOKEN"); denied {
+		t.Error("DenyList shares its prefixes with the list")
+	}
+}
+
+// TestDenyListAsInDesign: the table of DESIGN.md section 5 lists exactly
+// the names and the prefixes of the deny list, in its first column. A
+// prefix is written as LD_*.
+func TestDenyListAsInDesign(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "DESIGN.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(doc), "\n### Variable names that the broker refuses\n")
+	if !ok {
+		t.Fatal("DESIGN.md section 5 has no list of the variable names that the broker refuses")
+	}
+	section, _, _ = strings.Cut(section, "\n#")
+	var inDoc []string
+	for line := range strings.Lines(section) {
+		cell, ok := strings.CutPrefix(line, "| ")
+		if !ok {
+			continue
+		}
+		cell, _, _ = strings.Cut(cell, " |")
+		for i, part := range strings.Split(cell, "`") {
+			if i%2 == 1 {
+				inDoc = append(inDoc, part)
+			}
+		}
+	}
+	names, prefixes := DenyList()
+	for _, p := range prefixes {
+		names = append(names, p+"*")
+	}
+	slices.Sort(names)
+	slices.Sort(inDoc)
+	if !slices.Equal(inDoc, names) {
+		t.Errorf("DESIGN.md lists %q;\nthe deny list has %q", inDoc, names)
 	}
 }
 

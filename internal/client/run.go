@@ -42,7 +42,9 @@ on the phone. Then run COMMAND, with the value of the secret NAME in the
 environment variable VAR. nodkey never prints a value.
 
   --secret VAR=NAME  a secret for COMMAND; 1 to 32 of them. VAR must match
-                     [A-Z_][A-Z0-9_]{0,63}. NAME is a secret of the broker.
+                     [A-Z_][A-Z0-9_]{0,63}, and must not be a name whose
+                     value programs show or run, such as PATH, LD_PRELOAD
+                     or GIT_SSH_COMMAND. NAME is a secret of the broker.
   --reason TEXT      why COMMAND needs the secrets. Without it, the reason
                      is the environment variable NODKEY_REASON.
 
@@ -272,9 +274,9 @@ type runOptions struct {
 // options are never read as options of nodkey run.
 //
 // It checks what the broker checks too, to give a quick error: 1 to
-// api.MaxSecrets variables, each name valid (api.ValidVar) and there only
-// once, and each secret name 1 to api.MaxName bytes. The broker checks
-// all of it again.
+// api.MaxSecrets variables, each name valid (api.ValidVar), not on the
+// deny list (api.DeniedVar) and there only once, and each secret name 1
+// to api.MaxName bytes. The broker checks all of it again.
 func parseArgs(args []string) (*runOptions, error) {
 	o := &runOptions{}
 	vars := make(map[string]bool)
@@ -351,11 +353,18 @@ func splitOption(arg string) (name, value string, hasValue bool) {
 // parseSecret reads the value of --secret: VAR=NAME.
 func parseSecret(value string) (api.SecretRef, error) {
 	v, name, ok := strings.Cut(value, "=")
+	prefix, denied := api.DeniedVar(v)
 	switch {
 	case !ok:
 		return api.SecretRef{}, errors.New("--secret needs VAR=NAME, such as GH_TOKEN=github-token")
 	case !api.ValidVar(v):
 		return api.SecretRef{}, fmt.Errorf("--secret: the variable name %.64q must match [A-Z_][A-Z0-9_]{0,63}", v)
+	case denied && prefix != "":
+		return api.SecretRef{}, fmt.Errorf("--secret %s=...: nodkey refuses variables that start with %s, "+
+			"because programs show or run their values", v, prefix)
+	case denied:
+		return api.SecretRef{}, fmt.Errorf("--secret %s=...: nodkey refuses the variable %s, "+
+			"because programs show or run its value", v, v)
 	case name == "" || len(name) > api.MaxName:
 		return api.SecretRef{}, fmt.Errorf("--secret %s=...: the secret name must have 1 to %d bytes",
 			v, api.MaxName)

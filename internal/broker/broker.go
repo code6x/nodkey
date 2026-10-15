@@ -18,10 +18,11 @@
 //  4. It reads the body strictly (transport.ReadJSON into the types of
 //     package api), with their caps, while it holds one of the few places
 //     for reading bodies (maxBodiesPerClient, maxBodies).
-//  5. It checks every input itself: variable names, the names of secrets
-//     and keys against the config and the client's lists, the remote user
-//     name, and for an SSH login the data to sign and the session-bind
-//     (sshauth.Key.Check), before any message or place in a queue.
+//  5. It checks every input itself: variable names, also against the deny
+//     list (api.DeniedVar), the names of secrets and keys against the
+//     config and the client's lists, the remote user name, and for an SSH
+//     login the data to sign and the session-bind (sshauth.Key.Check),
+//     before any message or place in a queue.
 //  6. It makes the claimed text safe (claim.Mask and claim.Line, or
 //     claim.Command), and builds an approval.Request from checked data
 //     only.
@@ -100,8 +101,9 @@ const (
 	// whose audit entries the broker writes in a minute: requests denied
 	// for a limit, and requests refused after the approver stopped.
 	refusedEntriesPerMinute = 20
-	// refusedLinesPerMinute is the most log lines in a minute about SSH
-	// logins that a check refused, for all clients together.
+	// refusedLinesPerMinute is the most log lines in a minute about
+	// requests that a check refused, for all clients together: SSH logins,
+	// and requests for secrets with a variable on the deny list.
 	refusedLinesPerMinute = 20
 )
 
@@ -176,7 +178,8 @@ type Service struct {
 	clientBodies map[string]chan struct{}
 
 	// refusedEntries limits the audit entries of refused requests, by
-	// client; refusedLines limits the log lines about refused SSH logins.
+	// client; refusedLines limits the log lines about requests that a
+	// check refused: SSH logins, and variables on the deny list.
 	refusedEntries map[string]*rateLimit
 	refusedLines   *rateLimit
 
@@ -254,7 +257,7 @@ func New(p Parts) (*Service, error) {
 		})
 	}
 	s.refusedLines = newRateLimit(refusedLinesPerMinute, func(n int) {
-		s.log.Info("broker: did not log refused SSH login requests, to keep the log small", slog.Int("dropped", n),
+		s.log.Info("broker: did not log refused requests, to keep the log small", slog.Int("dropped", n),
 			slog.Int("limit_per_minute", refusedLinesPerMinute))
 	})
 	s.bg.Add(1)

@@ -97,7 +97,7 @@ func TestRefusedLoginLinesAreLimited(t *testing.T) {
 		t.Errorf("%d lines about refused logins, want %d", n, refusedLinesPerMinute)
 	}
 	e.svc.Close()
-	logs := waitLog(t, e.logs, "did not log refused SSH login requests")
+	logs := waitLog(t, e.logs, "did not log refused requests")
 	if !strings.Contains(logs, "dropped=5") {
 		t.Errorf("the log does not count the lines it dropped:\n%s", logs)
 	}

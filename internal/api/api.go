@@ -19,6 +19,8 @@ import (
 	"net/http"
 	"net/textproto"
 	"regexp"
+	"slices"
+	"strings"
 )
 
 // The paths of the broker. Each takes POST only.
@@ -112,8 +114,84 @@ var varPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 
 // ValidVar reports whether name is an environment variable name that the
 // broker accepts: it matches [A-Z_][A-Z0-9_]{0,63}. The client checks it
-// to give a quick error; the broker checks it again.
+// to give a quick error; the broker checks it again. The broker also
+// refuses the names of the deny list (DeniedVar).
 func ValidVar(name string) bool { return varPattern.MatchString(name) }
+
+// The deny list of variable names (DESIGN.md section 5). The variable
+// name decides what the command does with the value. With these names,
+// common programs print the value, write it into a file or a file name,
+// send it to a server, or run it: as a command, as code or as options. A
+// name is refused when it is in deniedVars, or starts with a prefix in
+// deniedVarPrefixes. DESIGN.md section 5 gives the reason for each entry;
+// a test checks that it lists exactly these.
+var (
+	deniedVarPrefixes = []string{
+		"DYLD_",       // the dynamic loader of macOS
+		"GCONV_",      // glibc loads character set modules, which are code, from GCONV_PATH
+		"GIT_",        // git runs, prints or stores the value of most of its GIT_ names
+		"LC_",         // bash and perl print a locale that is not valid; ssh sends LC_ names to the server
+		"LD_",         // the dynamic loader prints LD_PRELOAD, LD_AUDIT and LD_DEBUG, and loads code
+		"NPM_CONFIG_", // npm runs NPM_CONFIG_SCRIPT_SHELL, and makes or prints its other settings
+		"RESOLV_",     // the glibc resolver prints a RESOLV_MULTI or RESOLV_REORDER that is not valid
+	}
+	deniedVars = []string{
+		// The C library, the terminal, and names that many programs use.
+		"BROWSER", "EDITOR", "EMAIL", "GLIBC_TUNABLES", "HOME", "LANG", "LANGUAGE", "MANPAGER", "PAGER",
+		"PATH", "SHELL", "SSLKEYLOGFILE", "TEMP", "TERM", "TMP", "TMPDIR", "TZ", "VISUAL",
+		// CA files of curl and Python requests, and the config of wget.
+		"CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "WGETRC",
+		// sh, dash and bash.
+		"BASH_COMPAT", "BASH_ENV", "BASH_XTRACEFD", "ENV", "HISTFILE", "PROMPT_COMMAND",
+		"PS0", "PS1", "PS2", "PS3", "PS4", "SHELLOPTS", "TIMEFORMAT",
+		// ssh, sudo, gpg, rsync, ls, and the compression programs that tar
+		// runs.
+		"SSH_ASKPASS", "SSH_SK_HELPER", "SSH_SK_PROVIDER", "SUDO_ASKPASS", "GNUPGHOME", "RSYNC_CONNECT_PROG",
+		"RSYNC_RSH", "QUOTING_STYLE", "TIME_STYLE", "BZIP", "BZIP2", "GZIP", "ZSTD_CLEVEL",
+		// make, and C and C++ builds.
+		"CC", "CFLAGS", "CPPFLAGS", "CXX", "CXXFLAGS", "GNUMAKEFLAGS", "LDFLAGS", "LDLIBS", "MAKEFLAGS",
+		"TARGET_ARCH",
+		// gh, docker and terraform.
+		"GH_BROWSER", "GH_EDITOR", "GH_HOST", "GH_PAGER", "GH_REPO",
+		"COMPOSE_ENV_FILES", "COMPOSE_FILE", "DOCKER_API_VERSION", "DOCKER_CONTEXT", "DOCKER_HOST",
+		"TF_CLI_ARGS", "TF_CLI_CONFIG_FILE", "TF_LOG_PATH", "TF_PLUGIN_CACHE_DIR", "TF_WORKSPACE",
+		// The runtimes and build tools of Go, Java, Node.js, Perl, Python,
+		// Ruby and Rust.
+		"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_LDFLAGS", "GO111MODULE", "GOARCH", "GOCACHEPROG",
+		"GOEXPERIMENT", "GOFLAGS", "GOMEMLIMIT", "GOOS", "GOPATH", "GOROOT", "GOTMPDIR", "GOTOOLCHAIN",
+		"GRADLE_OPTS", "JAVA_HOME", "JAVA_OPTS", "JAVA_TOOL_OPTIONS", "JDK_ALTERNATE_VM",
+		"JDK_JAVA_OPTIONS", "MAVEN_OPTS", "_JAVA_OPTIONS",
+		"NODE_COMPILE_CACHE", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_REDIRECT_WARNINGS",
+		"NODE_REPL_EXTERNAL_MODULE", "NODE_V8_COVERAGE",
+		"PERL5LIB", "PERL5OPT", "PERLIO", "PERLLIB", "PERL_PERTURB_KEYS", "PERL_SIGNALS",
+		"PYTHONEXECUTABLE", "PYTHONHOME", "PYTHONIOENCODING", "PYTHONPLATLIBDIR",
+		"PYTHONPYCACHEPREFIX", "PYTHONSTARTUP", "PYTHONWARNINGS",
+		"RUBYOPT",
+		"CARGO_TARGET_DIR", "RUSTC_WRAPPER", "RUSTFLAGS", "RUSTUP_TOOLCHAIN",
+	}
+)
+
+// DeniedVar reports whether the broker refuses the variable name because
+// of the deny list of DESIGN.md section 5: the name is on the list, or
+// starts with a prefix on it, such as "LD_". prefix is that prefix, or ""
+// when the name itself is on the list. The match is exact: "LD_" does not
+// match "LDAP_PASSWORD", and "ld_preload" is not a valid name anyway
+// (ValidVar). The client checks it to give a clear error; the broker
+// checks it again.
+func DeniedVar(name string) (prefix string, denied bool) {
+	for _, p := range deniedVarPrefixes {
+		if strings.HasPrefix(name, p) {
+			return p, true
+		}
+	}
+	return "", slices.Contains(deniedVars, name)
+}
+
+// DenyList returns the deny list of DeniedVar: the names and the
+// prefixes, in new slices.
+func DenyList() (names, prefixes []string) {
+	return slices.Clone(deniedVars), slices.Clone(deniedVarPrefixes)
+}
 
 // shortCodePattern is the form of a short code: 4 characters from
 // 23456789abcdefghjkmnpqrstuvwxyz (DESIGN.md section 7).

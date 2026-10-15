@@ -351,12 +351,26 @@ names, `-p`, options of some programs such as `redis-cli -a`, values after
 keys such as `password=` or `"token":`, headers, passwords in URLs, PEM
 blocks, known token shapes, and long random-looking words. A field longer
 than 64 KiB is not shown at all, so no field is cut before it is masked.
+The variable name decides what the command does with the value. With some
+names, common programs print the value, write it into a file or a file
+name, send it to a server, or run it, for example `LD_PRELOAD`,
+`JAVA_TOOL_OPTIONS`, `GIT_TRACE`, `PS4` or `PYTHONWARNINGS`. The person
+sees the name in the message, but may not know what it means. So the
+broker refuses these names, before any message, grant or rule, and the
+client refuses them before it asks. DESIGN.md section 5 lists them, with
+the reason for each.
 Risk that remains: masking is best effort and finds the common forms only.
 A secret in another form is shown as it is, for example a plain word
 (`htpasswd -b users.txt dev SECRET`) or an option of a program the broker
 does not know. A hostile agent can always get a secret past masking. The
 claimed text stays a claim. The command itself may print a secret; version
-1 does not filter the command's output.
+1 does not filter the command's output. The deny list of variable names
+covers common programs only: a setting of another program can still show
+its value, such as `UNZIP` for unzip. The agent also sets the rest
+of the command's environment, which the message does not show, so a
+hostile agent can set `LD_PRELOAD` there and read any value (section 5,
+item 1). The deny list stops mistakes and simple tricks with the name that
+the person sees.
 
 **T16. The broker host is broken into.** Everything is lost. Advice: a
 dedicated user, the systemd sandbox settings in the example unit
@@ -637,10 +651,11 @@ once, and many requests one after the other. A request that a limit
 denies, or that comes after the approver stopped, costs the client
 nothing, so the broker writes the entries of at most 20 such requests of
 a client in a minute, and counts the others in its log; it also logs at
-most 20 refused SSH logins a minute. Every other request writes at least
-two audit entries, also when it is denied, such as one for a name that
-does not exist, so such a client can still fill the disk over time. All
-of this uses memory, CPU and disk on the broker host. That is a denial of
+most 20 lines a minute about SSH logins and variable names that a check
+refused. Every other request writes at least two audit entries, also
+when it is denied, such as one for a name that does not exist, so such a
+client can still fill the disk over time. All of this uses memory, CPU
+and disk on the broker host. That is a denial of
 service, not a way to get a secret or an approval. The answer is a
 firewall that lets only the agent machines reach the broker port
 (DESIGN.md section 10), and a check of the log's size.
