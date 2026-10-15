@@ -392,9 +392,11 @@ type sshServer struct {
 	addr    string
 	hostKey ssh.PublicKey
 
-	mu     sync.Mutex
-	kex    [][]byte // the session-bind of each key exchange, in order
-	logins int      // the logins that the server accepted
+	mu      sync.Mutex
+	kex     [][]byte      // the session-bind of each key exchange, in order
+	ended   int           // the connections whose handshake ended, with a login or without
+	logins  int           // the logins that the server accepted
+	changed chan struct{} // closed and made new when a handshake ends
 }
 
 // recordingSigner signs with a host key and records each signature.
@@ -429,7 +431,7 @@ func marshalBind(hostKey ssh.PublicKey, sessionID []byte, sig *ssh.Signature, fo
 // address. Only userKey may log in.
 func startSSHServer(t *testing.T, host ssh.AlgorithmSigner, userKey ssh.PublicKey) *sshServer {
 	t.Helper()
-	s := &sshServer{hostKey: host.PublicKey()}
+	s := &sshServer{hostKey: host.PublicKey(), changed: make(chan struct{})}
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			if !bytes.Equal(key.Marshal(), userKey.Marshal()) {
@@ -471,13 +473,21 @@ func (s *sshServer) serve(nc net.Conn, cfg *ssh.ServerConfig) {
 	defer func() { _ = nc.Close() }()
 	_ = nc.SetDeadline(time.Now().Add(2 * waitLimit))
 	conn, chans, reqs, err := ssh.NewServerConn(nc, cfg)
+	// NewServerConn sends the client its success before it returns, so the
+	// client can see its login work before the server counts it here. A
+	// test waits for the count with loginsAfter.
+	s.mu.Lock()
+	s.ended++
+	if err == nil {
+		s.logins++
+	}
+	close(s.changed)
+	s.changed = make(chan struct{})
+	s.mu.Unlock()
 	if err != nil {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	s.mu.Lock()
-	s.logins++
-	s.mu.Unlock()
 	go ssh.DiscardRequests(reqs)
 	for nch := range chans {
 		ch, chReqs, err := nch.Accept()
@@ -504,11 +514,28 @@ func (s *sshServer) binds() [][]byte {
 	return append([][]byte(nil), s.kex...)
 }
 
-// loginCount returns how many logins the server accepted.
-func (s *sshServer) loginCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.logins
+// loginsAfter waits until the handshake of n connections has ended, with
+// a login or without, and returns how many logins the server accepted.
+// Only then is the count final: the server answers a login before it
+// counts it, and a refused login ends after the client has given up.
+func (s *sshServer) loginsAfter(t testing.TB, n int) int {
+	t.Helper()
+	deadline := time.NewTimer(waitLimit)
+	defer deadline.Stop()
+	for {
+		s.mu.Lock()
+		ended, logins, changed := s.ended, s.logins, s.changed
+		s.mu.Unlock()
+		if ended >= n {
+			return logins
+		}
+		select {
+		case <-changed:
+		case <-deadline.C:
+			t.Fatalf("the SSH server ended %d handshakes within %s, want %d", ended, waitLimit, n)
+			return 0
+		}
+	}
 }
 
 // fakeSSHBroker is a test handler in place of the broker: it lists keys,

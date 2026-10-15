@@ -139,6 +139,13 @@ func (g granter) run(ctx context.Context, args []string, w io.Writer) int {
 	ans, err := Post[api.GrantAnswer](ctx, b, api.PathSSHGrant, body, func(code string) {
 		_, _ = fmt.Fprintf(stderr, "nodkey: waiting for approval (request %s)\n", code)
 	})
+	if err == nil && ctx.Err() != nil {
+		// A signal came while the request waited, and Post still returned
+		// the answer that came at that moment (see Post). As DESIGN.md
+		// sections 13 and 15 say, the client says cancelled then, and dies
+		// of the signal, so that a shell loop stops.
+		err = context.Cause(ctx)
+	}
 	if err != nil {
 		return requestFailed(ctx, stderr, err)
 	}

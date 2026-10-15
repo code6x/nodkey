@@ -588,6 +588,8 @@ func (c *agentConn) bind(contents []byte) []byte {
 // claimed context of the process that connected. It checks the answer
 // with checkSignAnswer before it gives the signature to ssh. When ssh
 // closes the connection while the request waits, it ends the request.
+// After a hang-up, the deadline or a stop of the agent, ssh gets no
+// signature, whatever the broker answers then.
 func (c *agentConn) sign(ctx context.Context, key, data []byte, flags uint32) []byte {
 	a := c.a
 	switch {
@@ -618,6 +620,15 @@ func (c *agentConn) sign(ctx context.Context, key, data []byte, flags uint32) []
 		a.log.waitingFor(s)
 	})
 	stop()
+	if cause := context.Cause(waitCtx); cause != nil {
+		// The request was cancelled: ssh hung up, the deadline passed, or the
+		// agent stops. Go's HTTP client can still return an answer that came
+		// while it closed the connection to the broker: the 403 that the
+		// broker sends when it sees the request cancelled, or a signature
+		// after a tap at that moment. A cancel means deny: the cause is the
+		// result, and ssh gets no signature after it.
+		err = cause
+	}
 	if err != nil {
 		a.log.note("no signature%s: %s", code.label(), failureText(err))
 		return failureMessage
