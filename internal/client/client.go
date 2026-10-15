@@ -1,5 +1,6 @@
-// Package client is the client side of nodkey (DESIGN.md sections 5 and
-// 10): the requests of a client to the broker, and the command nodkey run.
+// Package client is the client side of nodkey (DESIGN.md sections 5, 6
+// and 10): the requests of a client to the broker, and the commands
+// nodkey run and nodkey ssh-agent.
 //
 // A client reads its config with config.LoadClient and its TLS key with
 // transport.LoadKeyFile, and talks to the broker over the pinned mutual

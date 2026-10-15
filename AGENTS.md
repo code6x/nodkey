@@ -23,8 +23,9 @@ Planned. Each v1 issue adds its part.
     the order of DESIGN.md sections 5 and 6. `nodkey broker` makes its
     parts and runs it.
   - `internal/client/` - the client side: the requests to the broker
-    (config, TLS key, deadline, short code, strict answer), and
-    `nodkey run` (DESIGN.md sections 5 and 15).
+    (config, TLS key, deadline, short code, strict answer),
+    `nodkey run` (DESIGN.md sections 5 and 15), and `nodkey ssh-agent`
+    (DESIGN.md sections 6 and 15).
 - `contrib/systemd/` - the example systemd unit of the broker, with
   encrypted credentials and a sandbox (DESIGN.md section 16).
 - `test/e2e/` - end-to-end tests with `sshd` in a container. Build tag

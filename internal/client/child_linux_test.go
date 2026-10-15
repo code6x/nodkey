@@ -25,9 +25,10 @@ import (
 // These tests run nodkey run in a child process, with the real execve and
 // the real signals. The child is the test binary again: with the
 // variables childAddr, childPin and childKey it runs as nodkey run, with
-// the broker of the test. The command that it starts is the test binary
-// too, with the first argument helperArg (see helper), or a program such
-// as cat.
+// the broker of the test, and with childAgent too, as nodkey ssh-agent
+// (childSSHAgent). The command that it starts is the test binary too,
+// with the first argument helperArg (see helper), or a program such as
+// cat.
 
 // The variables of a child that runs as nodkey run.
 const (
@@ -44,33 +45,42 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == helperArg {
 		os.Exit(helper(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == agentClientArg {
+		os.Exit(agentClient(os.Args[2:]))
+	}
+	if os.Getenv(childAgent) != "" {
+		os.Exit(childSSHAgent(os.Args[1:]))
+	}
 	if os.Getenv(childAddr) != "" {
 		os.Exit(childRun(os.Args[1:]))
 	}
 	os.Exit(m.Run())
 }
 
-// childRun runs nodkey run as Run does, with the real signals and the real
-// execve, but with the key file and the broker of the test: Load would
-// refuse the system temporary directory, which everyone can write to.
-func childRun(args []string) int {
-	load := func(string) (*Broker, error) {
-		pin, err := config.ParsePin(os.Getenv(childPin))
-		if err != nil {
-			return nil, err
-		}
-		data, err := os.ReadFile(os.Getenv(childKey)) //nolint:gosec // G703: the test wrote this key file, and passes its path.
-		if err != nil {
-			return nil, err
-		}
-		key, err := transport.ParseKeyFile(data)
-		if err != nil {
-			return nil, err
-		}
-		return newBroker(os.Getenv(childAddr), key, pin)
+// childLoad takes the place of Load in a child: it reads the key file and
+// the broker of the test. Load would refuse the system temporary
+// directory, which everyone can write to.
+func childLoad(string) (*Broker, error) {
+	pin, err := config.ParsePin(os.Getenv(childPin))
+	if err != nil {
+		return nil, err
 	}
+	data, err := os.ReadFile(os.Getenv(childKey)) //nolint:gosec // G703: the test wrote this key file, and passes its path.
+	if err != nil {
+		return nil, err
+	}
+	key, err := transport.ParseKeyFile(data)
+	if err != nil {
+		return nil, err
+	}
+	return newBroker(os.Getenv(childAddr), key, pin)
+}
+
+// childRun runs nodkey run as Run does, with the real signals and the real
+// execve, but with the key file and the broker of the test (childLoad).
+func childRun(args []string) int {
 	r := runner{
-		load:        load,
+		load:        childLoad,
 		configPath:  func() (string, error) { return "test", nil },
 		environ:     os.Environ,
 		exec:        checkedExec,

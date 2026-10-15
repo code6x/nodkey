@@ -230,6 +230,8 @@ func eventNames(events []audit.Event) string {
 			names[i] = "decision:" + string(e.Answer)
 		case audit.SecretSent:
 			names[i] = "secret_sent"
+		case audit.Signed:
+			names[i] = "signed"
 		case audit.Denied:
 			names[i] = "denied:" + string(e.Cause)
 		case audit.Failure:

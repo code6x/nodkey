@@ -223,18 +223,55 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
 2. OpenSSH 8.9 and newer then sends the agent a `session-bind@openssh.com`
    message. It holds the server's host key, the session identifier, the
    server's signature over the session identifier, and an `is_forwarding`
-   flag. The client keeps these for that agent connection.
+   flag. The client keeps these for that agent connection, and answers
+   each with success, as OpenSSH's own agent does. It keeps at most 2,
+   each at most 8 KiB: the most that the broker reads. It refuses more.
+   Then that agent connection gets no signature, because the client could
+   not send all of its session-binds; it asks the broker nothing for it.
 3. `ssh` asks the agent for its keys. The client asks the broker
    (`POST /v1/keys`, section 10). The broker returns the public keys this
-   client may use.
+   client may use. The client gives `ssh` each key with its name as the
+   comment, as `ssh-add -l` shows it. It asks the broker each time.
 4. The server accepts one key. `ssh` asks the agent to sign the
    authentication request.
 5. The client sends the broker (`POST /v1/sign`): the key, the data to
-   sign, the flags, the session-bind messages of this connection (at most
-   2), and some claimed context: the command lines of the `ssh` process and
-   of at most 3 of its parent processes (from `/proc`), and
-   `NODKEY_REASON` from the environment of the `ssh` process, if set.
-   Section 10 limits their size.
+   sign and the flags, with exactly the bytes that `ssh` sent, the
+   session-bind messages of this connection (at most 2), and some claimed
+   context: the command lines of the `ssh` process and of at most 3 of its
+   parent processes (from `/proc`), and `NODKEY_REASON` from the
+   environment of the `ssh` process, if set. Section 10 limits their
+   size. Apart from these limits, the client checks nothing in the
+   request: the broker does all the checks.
+   - The `ssh` process is the process that connected to the agent's
+     socket. The kernel says which one (`SO_PEERCRED`). The client reads
+     `/proc/PID/cmdline` of it, and the parents from `/proc/PID/stat`. The
+     chain stops at a parent that cannot be read, has no command line
+     (such as a kernel thread), or is there twice. The client opens the
+     directory `/proc/PID` of a process once, and reads its files through
+     it, so that they all come from that one process.
+   - A read of `/proc` can block, such as on a stuck FUSE or NFS file
+     system. The client waits for it at most 2 seconds, and runs at most
+     4 such reads at the same time. Otherwise the request goes without
+     the command lines and the reason, and a line says why.
+   - The reason is the first `NODKEY_REASON` in `/proc/PID/environ` of the
+     `ssh` process, as `getenv` finds it. The client keeps no other
+     variable of that environment, and does not use its own environment.
+   - All of this is claimed: the agent machine can change the command
+     line and the environment of its own processes, and a process ID can
+     be used again by a new process. A field that is too long becomes
+     `[hidden: too long]`, as for `nodkey run`.
+   - The request has a deadline of 115 seconds: the longest `ssh_timeout`
+     of the broker (110 seconds, section 14), and 5 seconds for the rest.
+     So a late tap still counts. It is below `sshd`'s `LoginGraceTime`
+     (120 seconds by default): after that, a signature cannot log in. As
+     for `nodkey run` (section 5), the client sends the request once, on
+     a connection of its own, and never again.
+   - When `ssh` closes its agent connection while the request waits, such
+     as after Ctrl-C, the client closes its connection to the broker, so
+     the broker cancels the request (section 7). It sees this also when
+     `ssh` sent more bytes before: it asks the kernel whether the other
+     side hung up (`poll` with `POLLRDHUP`), and does not read those
+     bytes.
 6. The broker checks, and denies on any failure. It makes these checks
    before any message or place in a queue (section 8). A request that fails
    them gets no message, and the audit log gets it with the key name, if
@@ -284,6 +321,16 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
    RSA, the hash that the flags ask for), and checks the new signature.
    Then it writes the `signed` entry, and only then returns the signature.
    If the client has hung up before the broker signs, it does not sign.
+9. Only a final `200` whose body passes the strict decoding of section 10
+   counts. The client takes the short code only from the
+   `102 Processing` answer, and prints it as in section 5. Before it gives
+   the signature to `ssh`, it checks it: the format must be the one that
+   the key and the flags ask for (for RSA, `rsa-sha2-256` or
+   `rsa-sha2-512`, as the flags say; for Ed25519 and ECDSA, the key type,
+   with no flags), and the signature must be valid for the data with that
+   key. Every other answer, and every error, gives `ssh` a failure
+   (`SSH_AGENT_FAILURE`), which says nothing about why. The client prints
+   one line that says why (section 15).
 
 The checks and the signing are in `internal/sshauth`. Signing takes the
 result of the checks, not raw bytes, so the broker cannot sign data that
@@ -1925,9 +1972,72 @@ after it.
 0, with 64 on wrong usage, and with 1 on any other error. Then its last
 line on stderr is `nodkey: <reason> (exit 1)`.
 
-`nodkey ssh-agent` creates its socket in a `0700` directory with mode
-`0600`. It refuses connections from other users. It refuses `ssh-add`
-(adding, removing, locking keys).
+`nodkey ssh-agent [--socket PATH]` serves the SSH agent protocol on a
+Unix socket until `SIGINT` or `SIGTERM` (section 6). It holds no SSH key.
+
+- The default socket is `$XDG_RUNTIME_DIR/nodkey/agent.sock`. Without
+  `XDG_RUNTIME_DIR`, give `--socket`. The path must be absolute and
+  clean, and at most 107 bytes: the limit of a Unix socket. Point ssh to
+  it: `export SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/nodkey/agent.sock`.
+- The socket's directory must be a directory, not a symbolic link, owned
+  by the user, with mode `0700`. Any such directory passes, also
+  `$XDG_RUNTIME_DIR` itself. nodkey makes the directory with mode `0700`
+  if it is missing, such as `$XDG_RUNTIME_DIR/nodkey`, and never changes
+  a directory that is there. Every directory on the way must pass the
+  checks of the directories on the way to a key file (section 14), so
+  that no other user can swap the socket's directory. The socket has
+  mode `0600`, whatever the umask.
+- While it runs, the agent holds a lock (`flock`) on the file
+  `PATH.lock` next to the socket. nodkey makes that file with mode
+  `0600`; it must be a regular file of the user, and it stays after the
+  agent ends. A second agent on the same path stops at once (exit 1), so
+  two agents never remove each other's socket.
+- A socket that is already at the path is removed only when it is a
+  socket of the user that no program serves: an agent ended without
+  removing it. If a program serves it, or anything else is at the path,
+  it stays, and the agent does not start.
+- It refuses connections of other users, also of root: the kernel says
+  who connected (`SO_PEERCRED`). Root can read the client's TLS key
+  anyway.
+- It serves at most 128 connections at the same time, and closes more at
+  once. A message is at most 256 KiB, as for OpenSSH's own agent; its
+  buffer grows as its bytes come, so a length alone takes little memory.
+- It refuses `ssh-add` (adding, removing, locking and unlocking keys),
+  every extension but `session-bind@openssh.com`, and every request that
+  it does not know, with `SSH_AGENT_FAILURE`. It does not parse the
+  private key that `ssh-add` sends, and clears that message from its
+  memory, as best effort.
+- It serves the agent protocol itself. The agent server of
+  `golang.org/x/crypto` writes the text of each error to Go's global
+  logger, without escaping and without a limit, so nodkey does not use
+  it, and sends Go's global logger nowhere.
+- On stderr, it prints where it listens, the short code of each request
+  that waits for the person (`nodkey: waiting for approval (request
+  k3f9)`), and one line about each request that it refused or that
+  failed, such as `nodkey: no signature (request k3f9): denied`, with the
+  same texts as `nodkey run`: `denied` for `403`, and `denied by a limit
+  of the broker` for `429`. A line holds only fixed text, numbers, the
+  short code, the broker's address, the socket's path and errors of the
+  operating system, never text that a process on the agent machine sent.
+- Any process of the user can cause both kinds of lines: the broker
+  sends a short code for every request that starts to wait, also in its
+  queue. So each kind has its own budget: at most 60 lines in a minute.
+  Honest use has at most 15 requests that wait at the same time (section
+  8). The lines over a budget are counted. The next line of the same kind
+  in a later minute says how many were left out, and so does the agent
+  when it stops.
+- On `SIGINT` or `SIGTERM`, it closes the open connections, so the broker
+  cancels the requests that still wait, and it waits for the connections
+  at most 5 seconds. It removes its socket, if the socket is still the
+  one it made, prints `nodkey: stopped by SIGTERM (exit 143)`, and ends
+  itself with the same signal, as `nodkey run` does. So a shell sees 130
+  or 143, and systemd sees a clean stop. A signal while the agent starts
+  ends it the same way. After the first signal, nodkey no longer catches
+  them: a second one ends it at once, and the socket stays until the next
+  start removes it.
+- It exits with 64 on wrong usage, with 69 when the client config or the
+  TLS key cannot be read (as `nodkey run`), and with 1 when it cannot make
+  its socket.
 
 `nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]`
 takes `FILE` before or after the options.
