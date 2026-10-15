@@ -1231,8 +1231,11 @@ restart the broker. Its key no longer works.
 
 ### A new bot token
 
-Make a new token with `/revoke` in BotFather, make the credential again
-as in [section 4](#4-the-telegram-bot), and restart the broker. Do this
+Make a new token with `/revoke` in BotFather. If BotFather says the bot
+is invalid, send its user name with the `@`, for example
+`@my_nodkey_bot`, or use `/mybots`, choose the bot, then **API Token**,
+then **Revoke current token**. Then make the credential again as in
+[section 4](#4-the-telegram-bot), and restart the broker. Do this
 at once when the token may have leaked. When Telegram no longer takes
 the old token, the broker stops with exit code 77, and systemd does not
 start it again until you do.

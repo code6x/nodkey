@@ -451,9 +451,10 @@ type (
 		ParseMode          string             `json:"parse_mode"`
 		LinkPreviewOptions linkPreviewOptions `json:"link_preview_options"`
 		// ReplyMarkup is always sent, as an empty keyboard: that removes
-		// the buttons for sure. Telegram probably removes them also when
-		// it is left out, but that is not sure; the manual test of issue
-		// #17 checks it (DESIGN.md section 7).
+		// the buttons. An edit without it removes them too, as the manual
+		// test of issue #17 showed on 2026-10-15 (DESIGN.md section 7).
+		// The broker still sends the empty keyboard, so that it does not
+		// depend on this behaviour of Telegram.
 		ReplyMarkup inlineKeyboard `json:"reply_markup"`
 	}
 

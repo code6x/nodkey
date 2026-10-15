@@ -159,9 +159,11 @@ expires. A restart forgets all IDs. The approval core checks all of this
 again after the Telegram code, also the user and the button. Taking the
 request out of the waiting list and deciding it is one step under one
 lock, so two taps cannot both count. A tap that fails a check changes
-nothing. The button data is read strictly. A copy of a message, such as
-one that the bot forwards with a stolen token, has another message ID, so
-its buttons do not count. An Approve on a message that was edited, or
+nothing. The button data is read strictly. A copy of a message with the
+same buttons, which someone with a stolen token can send as the bot, has
+another message ID, so its buttons do not count. (A forwarded copy has
+no buttons at all: the manual test of issue #17 showed this on
+2026-10-15.) An Approve on a message that was edited, or
 whose buttons are not the ones the broker sent, never counts, because
 the broker never edits a message while its request waits (T6). A Deny
 there still counts: a Deny is safe whatever the message shows. A second

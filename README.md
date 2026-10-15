@@ -3,10 +3,10 @@
 nodkey lets an AI coding agent use a secret or an SSH key only after a
 person approves that one request on a phone.
 
-**Status:** on 2026-10-15, the code of version 1 is on `main`, but there
-is no release yet, and the test with a real Telegram bot
-([#17](https://github.com/code6x/nodkey/issues/17)) is still open. Try it
-on a test setup first. See the
+**Status:** on 2026-10-15, the code of version 1 is on `main`, and the
+test with a real Telegram bot
+([#17](https://github.com/code6x/nodkey/issues/17)) is done. There is no
+release yet. Try it on a test setup first. See the
 [v1 milestone](https://github.com/code6x/nodkey/milestone/1).
 
 ## How it works

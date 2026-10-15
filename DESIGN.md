@@ -821,8 +821,8 @@ Not masked, for example:
   each tap (`reply_markup` of the message). Without them, no Approve
   would count, and the broker would alert: that fails closed. The manual
   test of issue #17
-  ([docs/manual-telegram-test.md](docs/manual-telegram-test.md)) checks
-  that Telegram sends them.
+  ([docs/manual-telegram-test.md](docs/manual-telegram-test.md)) showed
+  on 2026-10-15 that Telegram sends them.
 - A Deny is safe whatever the message shows. So when someone else changed
   a message while its request may still wait, a tap on the Deny button
   that the broker sent on it still goes to the approval core, as on any
@@ -865,15 +865,17 @@ Not masked, for example:
   as "Approved." or "This request has ended.", except for a tap from
   another user, which gets no text.
 - When a request ends, the broker edits the message: it removes the buttons
-  (by sending an empty keyboard, not by leaving it out; Telegram probably
-  removes them also when the keyboard is left out, but that is not sure,
-  and the manual test of issue #17 checks it, in
-  [docs/manual-telegram-test.md](docs/manual-telegram-test.md)), and the
-  result replaces the expiry line: "👍 approved once by you at 14:02:41",
+  (by sending an empty keyboard, not by leaving it out), and the result
+  replaces the expiry line: "👍 approved once by you at 14:02:41",
   "👍 approved for 15 min by you at 14:02:41", "👍 approved by you at
   14:05:12, until 14:20:00" (an SSH grant), "⛔ denied by you at
   14:02:41", "⌛ expired — denied", "⛔ cancelled by the client" or
-  "⛔ denied: the broker stopped taking answers".
+  "⛔ denied: the broker stopped taking answers". An edit without a
+  keyboard (`reply_markup`) removes the buttons too: the manual test of
+  issue #17 showed this on 2026-10-15
+  ([docs/manual-telegram-test.md](docs/manual-telegram-test.md), check
+  7). The broker still sends the empty keyboard, so that it does not
+  depend on this behaviour of Telegram.
 - Typed replies never count. Only buttons do. Every tap that does not
   count is written to the audit log as a `foreign_tap` entry, with a
   fixed `cause`: `other_user`, `other_chat`, `inline_message`,
@@ -2603,7 +2605,11 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   that leaves out the cases makes the search fail, not pass.
 - **One manual test with a real Telegram bot**, written down in
   [docs/manual-telegram-test.md](docs/manual-telegram-test.md). The token
-  comes from a local file and is never committed.
+  comes from a local file and is never committed. It ran on 2026-10-15,
+  and its results are in issue #17. It could not test a double tap: in
+  the Telegram client used in the test, the buttons went away right
+  after the first tap. So only the unit tests check a double tap, such
+  as those with the fake Telegram server above.
 
 ## 18. Build, CI and releases
 
