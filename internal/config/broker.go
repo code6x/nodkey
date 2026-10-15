@@ -21,10 +21,14 @@ const (
 	defaultTimeout    = 120 * time.Second
 	defaultSSHTimeout = 90 * time.Second
 	minTimeout        = 15 * time.Second
-	// sshd drops a login that does not finish within LoginGraceTime,
-	// 120 seconds by default (DESIGN.md section 6).
-	maxSSHTimeout = 110 * time.Second
 )
+
+// MaxSSHTimeout is the longest timeout of an SSH request that the broker
+// config allows (ssh_timeout in [telegram]). sshd drops a login that does
+// not finish within LoginGraceTime, 120 seconds by default (DESIGN.md
+// section 6). nodkey ssh-agent does not know the broker's own setting, so
+// it waits this long, and a short margin.
+const MaxSSHTimeout = 110 * time.Second
 
 // MaxTimeout is the longest timeout of a request for secrets that the
 // broker config allows (timeout in [telegram]). nodkey run does not know
@@ -316,7 +320,7 @@ func parseTelegram(s *telegramSection) (Telegram, error) {
 	if t.Timeout, err = parseTimeout(sec, "timeout", s.Timeout, defaultTimeout, MaxTimeout); err != nil {
 		return Telegram{}, err
 	}
-	if t.SSHTimeout, err = parseTimeout(sec, "ssh_timeout", s.SSHTimeout, defaultSSHTimeout, maxSSHTimeout); err != nil {
+	if t.SSHTimeout, err = parseTimeout(sec, "ssh_timeout", s.SSHTimeout, defaultSSHTimeout, MaxSSHTimeout); err != nil {
 		return Telegram{}, err
 	}
 	return t, nil

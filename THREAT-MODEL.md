@@ -115,6 +115,10 @@ request waits, its new target runs. Whoever can change the link, its
 directory or the file already controls that program (for `/usr/bin`, only
 root). This helps against honest mistakes and tricks, not against a
 hostile agent: the client runs on the agent machine.
+For an SSH login, `nodkey ssh-agent` reads the command lines of `ssh` and
+its parents, and the reason, from `/proc` (DESIGN.md section 6). A
+process can change its own command line and environment, and a process ID
+can be used again by a new process. So these are claims too.
 Risk that remains: the person can still be fooled. Deny any request that
 looks strange.
 
@@ -291,6 +295,13 @@ result of the checks, not raw bytes, so the broker signs only data that
 it checked. The forwarding flag comes from the client, so refusing it
 stops honest mistakes, not a hostile agent; the host check above does not
 depend on that flag.
+`nodkey ssh-agent` sends the broker every session-bind of the agent
+connection, at most 2, with the exact bytes of the key, the data and the
+flags; it refuses a third session-bind, and then asks nothing for that
+connection. It gives `ssh` a signature only after it checked that the
+format fits the key and the flags, and that the signature is valid for
+the data. That is a check of the broker's answer, as for `nodkey run`
+(T10); the checks that matter are the broker's.
 Risk that remains: low.
 
 **T13. The agent keeps access after an approved login.** See section 5,
@@ -639,6 +650,44 @@ Risk that remains: a process that leaves the program's process group (for
 example with `setsid`) is not killed; systemd stops it when the service
 stops. Such a process keeps the token or the session key in its
 environment.
+
+**T30. Another user on the agent machine uses the agent socket.**
+With the socket, a user could ask for signatures in the name of this
+client, and the message would show this machine. `nodkey ssh-agent` puts
+its socket in a directory of the user with mode `0700`, below directories
+that no other user can change, and gives the socket mode `0600`. It also
+asks the kernel who connected (`SO_PEERCRED`), and closes the connection
+of any other user, also of root, before it reads a request. It never
+removes a file that is not a socket of the user, or a socket that a
+program serves, and it holds a lock while it runs, so a second agent on
+the same path does not start (DESIGN.md section 15).
+Risk that remains: root on the agent machine can still act as the user,
+and so use the socket. Root can read the client's TLS key anyway (T11),
+and every request still needs the approver. Any process of the user can
+keep the agent busy, but it serves at most 128 connections at the same
+time, and a message takes memory only as its bytes come. That is a
+denial of service, which a process of the user can cause anyway.
+
+**T31. A process on the agent machine writes into the agent's log.**
+Any process of the user can send `nodkey ssh-agent` requests, and the
+agent's stderr may go to a terminal or to the journal. The agent server
+of `golang.org/x/crypto` writes the text of each error to Go's global
+logger, without escaping and without a limit. So `nodkey ssh-agent`
+serves the agent protocol itself, and sends Go's global logger nowhere.
+Its own lines hold fixed text, numbers, the short code, the broker's
+address, the socket's path and errors of the operating system, never text
+that a process sent. A process can also cause many lines with a short
+code: the broker sends one for every request that starts to wait, also in
+its queue, and a request that hangs up frees its place. So the agent
+writes at most 60 lines with a short code, and 60 about refused and
+failed requests, in a minute, each kind with its own budget, and says
+how many it left out. A test checks that a refused request gives one
+fixed line, and nothing in Go's global logger.
+Risk that remains: low. A process can still fill a budget. Then the
+other lines of that kind are left out for the rest of that minute, also
+the short code of a real request. The person can still match the message
+on the phone by its verified lines: the host, the key and the remote
+user.
 
 ## 7. Assumptions
 
