@@ -23,7 +23,7 @@ func newClientHome(t *testing.T) (home, key string) {
 func TestLoadClient(t *testing.T) {
 	home, _ := newClientHome(t)
 	pin := testPin("broker")
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	path := writeFile(t, dir, "client.toml", `# A client config for tests.
 broker = "192.0.2.10:7743"
 broker_pin = "`+pin.String()+`"
@@ -127,7 +127,7 @@ func TestLoadClientErrors(t *testing.T) {
 			if tt.extra != "" {
 				lines = append(lines, tt.extra)
 			}
-			path := writeFile(t, t.TempDir(), "client.toml", strings.Join(lines, "\n")+"\n", 0o600)
+			path := writeFile(t, privateTempDir(t), "client.toml", strings.Join(lines, "\n")+"\n", 0o600)
 			c, err := LoadClient(path)
 			if c != nil {
 				t.Errorf("LoadClient returned a config with the error")
@@ -139,7 +139,68 @@ func TestLoadClientErrors(t *testing.T) {
 }
 
 func TestLoadClientMissingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "client.toml")
+	path := filepath.Join(privateTempDir(t), "client.toml")
 	_, err := LoadClient(path)
-	checkError(t, err, "config: open "+path, "")
+	checkError(t, err, "config: lstat "+path+": no such file or directory", "")
+}
+
+// TestLoadClientChecksTheFile: the client config is read as the broker
+// reads its config (ReadConfigFile). broker_pin is the client's only trust
+// in the broker, so a file or a directory on the way that others can
+// write to is refused. Anyone may read the file, and it may be a symbolic
+// link.
+func TestLoadClientChecksTheFile(t *testing.T) {
+	config := "broker = \"192.0.2.10:7743\"\nbroker_pin = \"" + testPin("broker").String() +
+		"\"\ntls_key = \"~/.config/nodkey/client.key\"\n"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, dir string) string // returns the path to load
+		want  string                                // "" when the config loads
+	}{
+		{"private", func(t *testing.T, dir string) string {
+			return writeFile(t, dir, "client.toml", config, 0o600)
+		}, ""},
+		{"readable by others", func(t *testing.T, dir string) string {
+			return writeFile(t, dir, "client.toml", config, 0o644)
+		}, ""},
+		{"a symbolic link", func(t *testing.T, dir string) string {
+			target := writeFile(t, dir, "real.toml", config, 0o600)
+			return symlink(t, target, filepath.Join(dir, "client.toml"))
+		}, ""},
+		{"writable by the group", func(t *testing.T, dir string) string {
+			return writeFile(t, dir, "client.toml", config, 0o620)
+		}, "client.toml: group or others can write to it (mode 0620)"},
+		{"writable by others", func(t *testing.T, dir string) string {
+			return writeFile(t, dir, "client.toml", config, 0o602)
+		}, "client.toml: group or others can write to it (mode 0602)"},
+		{"in a directory that others can write to", func(t *testing.T, dir string) string {
+			open := mkdir(t, dir, "open", 0o777)
+			return writeFile(t, open, "client.toml", config, 0o600)
+		}, "/open: group or others can write to this directory (mode 0777)"},
+		{"a link in a directory that others can write to", func(t *testing.T, dir string) string {
+			target := writeFile(t, dir, "real.toml", config, 0o600)
+			open := mkdir(t, dir, "open", 0o777)
+			return symlink(t, target, filepath.Join(open, "client.toml"))
+		}, "/open: group or others can write to this directory (mode 0777)"},
+		{"a directory", func(t *testing.T, dir string) string {
+			return mkdir(t, dir, "client.toml", 0o700)
+		}, "client.toml: is not a regular file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newClientHome(t)
+			path := tt.setup(t, privateTempDir(t))
+			c, err := LoadClient(path)
+			if tt.want == "" {
+				if err != nil || c == nil || c.BrokerPin != testPin("broker") {
+					t.Errorf("LoadClient = %+v, %v; want the config", c, err)
+				}
+				return
+			}
+			if c != nil {
+				t.Errorf("LoadClient returned a config with the error")
+			}
+			checkError(t, err, tt.want, "")
+		})
+	}
 }

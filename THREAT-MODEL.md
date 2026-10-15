@@ -103,7 +103,18 @@ use it. Unknown names are denied without a message.
 Risk that remains: none beyond the rules the approver wrote.
 
 **T2. The agent lies about the command or the reason.**
-These fields are marked as claimed, below the verified ones.
+These fields are marked as claimed, below the verified ones. For
+`nodkey run`, the program in the command line is the absolute path of
+the file that the client runs, as `PATH` found it. So when a directory
+early in `PATH`, such as `node_modules/.bin` of a package or a directory
+that direnv adds, has its own `gh`, the person sees that path, not only
+`gh`. A name that `PATH` finds only through a relative directory, such as
+`.`, is refused. A program that is a symbolic link shows as the link, and
+the kernel follows the link at `execve`, so if the link changes while the
+request waits, its new target runs. Whoever can change the link, its
+directory or the file already controls that program (for `/usr/bin`, only
+root). This helps against honest mistakes and tricks, not against a
+hostile agent: the client runs on the agent machine.
 Risk that remains: the person can still be fooled. Deny any request that
 looks strange.
 
@@ -241,7 +252,12 @@ connection, and TLS session resumption is off: the broker sends no session
 tickets, the client keeps no sessions, and both sides refuse a resumed
 session. Each side must send exactly one certificate and prove
 that it holds its private key, so a copy of a certificate is not enough.
-The client never uses a proxy and follows no redirects.
+The client never uses a proxy and follows no redirects. It sends each
+request once, and only a final `200` with a valid answer counts. Before
+the pin check, anyone on the network can answer. So the errors that the
+client prints hold only fixed text, errors of the operating system and
+the pins, never text that the other side chose, such as a field of its
+certificate: the agent reads that output.
 Risk that remains: low.
 
 **T11. The client's TLS key is copied.**
@@ -271,16 +287,25 @@ item 2.
 Risk that remains: real; outside nodkey.
 
 **T14. The agent keeps a secret after approval.** See section 5, item 1.
-Use short-lived or narrow secrets, and rotate a secret after a strange
-request.
+`nodkey run` itself keeps no value: it replaces itself with the command
+(`execve`), so the value is only in the environment of the command.
+Before it asks, it marks itself not dumpable, so it writes no core dump
+while it holds the values, also when the agent sets `GOTRACEBACK`, and
+other processes of the user cannot read its memory then. The command
+itself is dumpable again. Use short-lived or narrow secrets, and rotate a
+secret after a strange request.
 Risk that remains: real.
 
 **T15. A secret leaks by accident into logs, messages or the agent's
 output.**
 No print command. Values that nodkey fetched are never logged, never in
 errors, never in the audit log, never in Telegram. Store program output is
-never logged. A command line can hold a secret the agent typed in (for
-example `mysql -pSECRET`), and it would go to Telegram and the audit log. So
+never logged. `nodkey run` prints only its own fixed text, the short code
+of the `102 Processing` answer, the HTTP status, and names from its
+arguments and its config. It never prints an answer body or another
+header, and nothing after the command started. A command line can hold
+a secret the agent typed in (for example `mysql -pSECRET`), and it would
+go to Telegram and the audit log. So
 the broker masks values that look like secrets in every claimed field, and
 shows at most 8 arguments. DESIGN.md section 7 lists what is masked, and
 gives examples of what is not. It masks values of options with secret
@@ -411,8 +436,10 @@ Risk that remains:
   immutable releases stop changes to a published release.
 
 **T21. Telegram, the network or the phone is down.**
-Requests expire and are denied. The agent waits, then fails. A request
-whose message cannot be sent is denied. If the polling stops for good, the
+Requests expire and are denied. The agent waits, then fails. `nodkey run`
+waits at most 15 minutes for the broker's answer, then exits with 69, so
+a broker that hangs does not hold it for ever. A request whose message
+cannot be sent is denied. If the polling stops for good, the
 broker denies every request from then on, also one that a grant would
 allow, and it stops. Also, the
 requests that wait for the person are denied at once, and a message or
@@ -470,9 +497,11 @@ all of these below a directory that group or others can write to, also a
 directory that holds a symbolic link on the way.
 nodkey opens each file once, checks the open file, and reads from that
 same open file. So the file cannot be swapped between the check and the
-read. The client checks its own TLS key in the same way. `nodkey keygen`
-writes a new key file with mode `0600`, never over a file or a link that
-is there. It checks the directories and the new, empty file in the same
+read. The client checks its own TLS key in the same way, and reads its
+config file as the broker reads its config file: other users must not be
+able to change `broker_pin`, the client's only trust in the broker.
+`nodkey keygen` writes a new key file with mode `0600`, never over a file
+or a link that is there. It checks the directories and the new, empty file in the same
 way before it writes the key.
 Each store program keeps its state, such as bw's copy of the vault, in
 its own home directory, with mode `0700`, owned by the broker user, below

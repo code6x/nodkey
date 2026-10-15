@@ -110,14 +110,44 @@ nodkey run --secret GH_TOKEN=github-token \
            -- gh release create v1.2.0
 ```
 
-1. The client reads its config, then connects to the broker over mutual TLS
-   (see [section 10](#10-decision-1-how-client-and-broker-connect)).
+1. The client checks its arguments: 1 to 32 `--secret` options, each
+   variable name valid and there only once, and the command after `--`.
+   It looks for the command in `PATH`, as a shell does, and takes the
+   absolute path of the file that it found: a relative path starts from
+   the real working directory, not from `$PWD`, and the path is not
+   cleaned, so `..` stays and names the same file as for the shell. A
+   name without `/` that `PATH` finds only through a relative directory,
+   such as `.`, is refused. A program that is a symbolic link shows as the
+   link, and the kernel follows the link at `execve`: if the link changes
+   while the request waits, its new target runs. Whoever can change the
+   link, its directory or the file already controls that program (for
+   `/usr/bin`, only root). If the command is not there, or cannot be
+   run, the client exits at once (127 or 126, section 15), and nobody is
+   asked. Then it reads its config (`~/.config/nodkey/client.toml`,
+   section 14) and its TLS key, and connects to the broker over mutual
+   TLS (see [section 10](#10-decision-1-how-client-and-broker-connect)).
 2. The client sends `POST /v1/secrets` (section 10): for each variable, its
    name and the name of the secret, and the command line, the working
-   directory and the reason. The reason comes from `--reason`, or else
-   from the `NODKEY_REASON` environment variable. Section 10 limits their
-   size. The client does not send the local user name: no message
-   (section 7) and no audit entry (section 9) has a place for it.
+   directory and the reason. In the command line, the program is the
+   absolute path of step 1, the file that will run, and the arguments are
+   as the agent gave them. So a `gh` that `PATH` finds in another
+   directory first, such as `node_modules/.bin`, shows as that path. The
+   reason comes from `--reason`, or else from the `NODKEY_REASON`
+   environment variable. Section 10 limits their size: a longer field
+   becomes `[hidden: too long]`. The client does not send the local user
+   name: no message (section 7) and no audit entry (section 9) has a
+   place for it. Before it sends the request, the client marks itself as
+   not dumpable (section 16). The request has a deadline of 15 minutes:
+   the longest `timeout` of the broker (10 minutes, section 14), and 5
+   minutes for the rest, such as the fetch of the values. That is usually
+   enough: one fetch takes a few seconds. But a fetch can take up to 130
+   seconds when a store is slow (with `bw`, up to 4 runs of 30 seconds,
+   section 16), and the broker fetches the secrets one after the other.
+   After a late tap, 3 or more such fetches can pass the deadline. Then
+   the client exits with 69 after the approval, and the command does not
+   run: it fails closed. There is no other time limit on the wait for the
+   person. The client sends the request once, on a connection of its own,
+   and never again.
 3. The broker takes the client name only from the pinned TLS key (section
    10). It refuses a body that is not a valid request (400). Then it checks
    that there are 1 to 32 variables, that each variable name matches
@@ -135,7 +165,9 @@ nodkey run --secret GH_TOKEN=github-token \
    waits. See [section 7](#7-approval-messages). First it tells the client
    the short code (`102 Processing`, section 10). The client prints
    `nodkey: waiting for approval (request 7qd2)` to stderr, so a person at
-   the terminal can match it with the message on the phone.
+   the terminal can match it with the message on the phone. It takes the
+   code only from that answer, and prints it once, only when it has the
+   form of a short code. It never prints another header.
 6. On approval, the broker first writes the `request` entry and the
    `decision` (or `grant_used`) entry to the audit log; each one is synced
    to disk. Only then do the grants of an "Approve N min" tap start, and
@@ -150,11 +182,26 @@ nodkey run --secret GH_TOKEN=github-token \
    buffer of its own, not with Go's JSON encoder, which would keep a copy
    of the values in a buffer that it uses again. It clears that buffer and
    the values in its memory after the answer, and on every other way out.
-7. The client adds `GH_TOKEN=<value>` to its own environment and replaces
-   itself with the command (`execve`). The command's exit code is the exit
-   code of `nodkey run`.
+7. Only a final `200` whose body passes the strict decoding of section 10
+   counts: at most 2 MiB, every field there, and no other field. The
+   client checks that the answer has exactly one value for each variable,
+   in the order of the request and with the same names, each 1 byte to
+   64 KiB and without a NUL byte. Otherwise the command does not run, and
+   the client exits with 69. Then the client adds `GH_TOKEN=<value>` to
+   its own environment, in place of a variable of the same name, and
+   replaces itself with the command (`execve`): the path of step 1, with
+   the arguments as the agent gave them. So no nodkey process stays in
+   memory with the values. The command's exit code is the exit code of
+   `nodkey run`. The client never ignores `SIGPIPE`: an ignored signal
+   stays ignored after `execve`, so the command would run with it ignored.
 8. On deny, timeout or error, the client prints one line to stderr, without
-   any value, and exits with code 77 (section 15).
+   any value, and exits: with 77 when the broker denies the request, and
+   with 69 when it cannot reach the broker or gets another answer
+   (section 15). It never prints an answer body. If the person stops
+   `nodkey run` with Ctrl-C (`SIGINT`) or with `SIGTERM` while it waits,
+   the client closes the connection, so the broker cancels the request.
+   Then it prints its last line and ends itself with the same signal
+   (section 15).
 
 There is no command that prints a secret. This is on purpose: the agent
 should never see the value in its own output.
@@ -293,7 +340,7 @@ expires 14:03:10 (90 s)
 ✅ secrets: github-token
 — claimed by the agent —
 as: GH_TOKEN
-command: gh release create v1.2.0
+command: /usr/bin/gh release create v1.2.0
 in: /home/dev/src/app
 reason: publish the release the user asked for
 expires 14:05:40 (120 s)
@@ -366,7 +413,10 @@ Rules for the claimed part, because the agent writes it:
   `[hidden: too long]`. For a command line, all the arguments count
   together. The broker never cuts a field before it masks it, because a
   secret that was cut may no longer look like a secret.
-- A command line shows the program and at most 8 arguments. Each field is
+- A command line shows the program and at most 8 arguments. For
+  `nodkey run`, the program is the absolute path of the file that the
+  client will run, as `PATH` found it (section 5), such as `/usr/bin/gh`.
+  The client sends it, so it is claimed too. Each field is
   cut to a fixed length, with `…` at the end. The broker keeps at most 2000
   characters of the command line, and at most 1000 of the working
   directory, of the reason, and of the variable names together (`as`). For
@@ -1158,6 +1208,12 @@ handler sees it.
   anything from the request.
 - The client connects only to the `broker` address in its config, never
   through a proxy (it ignores `HTTPS_PROXY`). It follows no redirects.
+- The client sends each request once, on a connection of its own, with
+  `Connection: close`. No other request goes on that connection, so there
+  is no pipelining, and a request is never sent again. Each request has a
+  deadline, and no other time limit on the wait for the person
+  (section 5). The client takes at most 4 informational answers for one
+  request, and only a final `200` with a valid answer counts.
 
 **The request body.** It is JSON with the content type `application/json`,
 at most 2 MiB (2,097,152 bytes). Every valid request fits:
@@ -1651,7 +1707,11 @@ any problem:
   refuses two `[key.*]` sections with the same public key.
 
 The client checks its `tls_key` file in the same way as the broker checks
-a key file.
+a key file. It reads its config file as the broker reads its config file:
+a regular file owned by the user or root, that group and others cannot
+write to, below directories that pass the same checks. It may be a
+symbolic link. `broker_pin` is the client's only trust in the broker, so
+other users must not be able to change it.
 
 ## 15. Commands and exit codes
 
@@ -1677,7 +1737,40 @@ nodkey version
 
 `nodkey run` exits with 77 when the broker answers `403` or `429`. It
 exits with 69 when it cannot reach the broker, and for every other answer
-that is not `200`, such as `503` (section 10). It never tries again.
+that is not `200`, such as `503` or a redirect (section 10). It never
+tries again. More cases:
+
+- 69: the client config or the TLS key cannot be read or is not valid,
+  as then the broker cannot be reached; nodkey cannot mark itself as not
+  dumpable (section 16); the broker sends no answer within the deadline
+  of 15 minutes (section 5); a `200` whose body is not a valid answer, or
+  whose answer does not fit the request, such as a missing value, an
+  empty one, or one with a NUL byte (section 5, step 7): the person
+  approved, and the broker is at fault; more than 4 informational
+  answers.
+- 127: the command is not in `PATH`, or its path does not exist.
+- 126: the command cannot be run: a directory, a file without execute
+  permission, a file that `PATH` finds only through a relative directory
+  such as `.` (also when `GODEBUG=execerrdot=0` turns off Go's own check),
+  or a file that `execve` refuses after the approval, such as a file that
+  is not a program.
+
+`nodkey run` looks for the command before it asks anyone. So 126 and
+127 come without a request, unless `execve` itself fails.
+
+`SIGINT` (Ctrl-C) or `SIGTERM` while nodkey waits: it closes the
+connection, so the broker cancels the request, and prints the last line
+`nodkey: cancelled by SIGINT (exit 130)`, or `SIGTERM` and 143. Then it
+ends itself with the same signal, as a program that does not catch it.
+A shell then shows 130 or 143. A shell stops a loop or a script only when
+a command dies of `SIGINT`; with a plain exit code, one Ctrl-C would end
+only one `nodkey run`, and the next one would send its request to the
+phone. Once the command starts, the signals are the command's.
+
+`nodkey run -h` or `nodkey run --help` prints the usage and exits with 0,
+but only as the only argument. With other arguments, `-h` and `--help`
+are wrong usage (64): an exit with 0 that runs nothing would look like a
+command that ran.
 
 The command itself may also exit with one of these codes. To tell them
 apart, look at the last line on stderr. Only when nodkey itself exits, its
@@ -1757,6 +1850,11 @@ text of a line. It exits with:
   not stop a core handler, and a socket `core_pattern` (`@`) does not look
   at the limit at all. So keep a pipe or file `core_pattern` on the broker
   host.
+- `nodkey run` marks itself not dumpable (`PR_SET_DUMPABLE` 0) before it
+  sends its request, so it writes no core dump while it holds the values,
+  also when the agent sets `GOTRACEBACK`, and other processes of the user
+  cannot read its memory. `execve` makes the command dumpable again. It
+  does not change `RLIMIT_CORE`, which the command would inherit.
 - Time limits use Go's monotonic clock, so setting the wall clock does not
   move them. The monotonic clock stops while the host sleeps (suspend), so
   a request and a grant also end when the wall clock reaches their end:

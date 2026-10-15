@@ -21,11 +21,15 @@ const (
 	defaultTimeout    = 120 * time.Second
 	defaultSSHTimeout = 90 * time.Second
 	minTimeout        = 15 * time.Second
-	maxTimeout        = 10 * time.Minute
 	// sshd drops a login that does not finish within LoginGraceTime,
 	// 120 seconds by default (DESIGN.md section 6).
 	maxSSHTimeout = 110 * time.Second
 )
+
+// MaxTimeout is the longest timeout of a request for secrets that the
+// broker config allows (timeout in [telegram]). nodkey run does not know
+// the broker's own setting, so it waits this long, and a margin.
+const MaxTimeout = 10 * time.Minute
 
 // Broker is the broker config, such as /etc/nodkey/broker.toml. All paths
 // in it are expanded with ExpandPath and absolute.
@@ -309,7 +313,7 @@ func parseTelegram(s *telegramSection) (Telegram, error) {
 		}
 		t.NoticeChatID = *s.NoticeChatID
 	}
-	if t.Timeout, err = parseTimeout(sec, "timeout", s.Timeout, defaultTimeout, maxTimeout); err != nil {
+	if t.Timeout, err = parseTimeout(sec, "timeout", s.Timeout, defaultTimeout, MaxTimeout); err != nil {
 		return Telegram{}, err
 	}
 	if t.SSHTimeout, err = parseTimeout(sec, "ssh_timeout", s.SSHTimeout, defaultSSHTimeout, maxSSHTimeout); err != nil {
