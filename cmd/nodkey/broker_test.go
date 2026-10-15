@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -13,7 +14,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -306,6 +309,179 @@ func TestStopStep(t *testing.T) {
 	if waitUntil(make(chan struct{}), time.Now().Add(-time.Second)) {
 		t.Error("an open channel counted after the deadline")
 	}
+}
+
+// startAlerts are the alert messages of the start in the tests of
+// sendAlerts.
+var startAlerts = []string{"alert one", "alert two", "alert three"}
+
+// alertLines returns the lines of log whose message ends in msgEnd, about
+// the alert with the number n.
+func alertLines(log, msgEnd string, n int) []string {
+	var lines []string
+	for line := range strings.SplitSeq(log, "\n") {
+		if strings.Contains(line+" ", fmt.Sprintf(`%s" alert=%d `, msgEnd, n)) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// TestStartAlertsAtTheSameTime: three alerts of the start, and a Telegram
+// that takes each alert message but never answers, so each try runs into
+// its time limit. The stop begins right after the start. The first tries
+// run at the same time, so the stop waits as long as one try takes, well
+// within its limit, and is clean. Each alert gets exactly one try, and one
+// log line for it; one more line says that the three are lost. Tried one
+// after the other, the three tries took longer than the stop limit (issue
+// #59). synctest runs the real times on a fake clock, and fails if a
+// goroutine is left.
+func TestStartAlertsAtTheSameTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var logs bytes.Buffer
+		b := &brokerParts{log: broker.NewLogger(&logs), alerts: slices.Clone(startAlerts)}
+		var mu sync.Mutex
+		tries := make(map[string]int)
+		inFlight, most := 0, 0
+		b.sendAlerts(func(ctx context.Context, msg string) error {
+			mu.Lock()
+			tries[msg]++
+			inFlight++
+			most = max(most, inFlight)
+			mu.Unlock()
+			<-ctx.Done() // Telegram does not answer
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+			return errors.New("made-up: the call timed out")
+		})
+		start := time.Now()
+		runErr, clean := b.stop(start.Add(stopTimeout))
+		if took := time.Since(start); runErr != nil || !clean || took != alertTimeout {
+			t.Errorf("the stop: error %v, clean %v, after %v; want a clean stop after one try, %v",
+				runErr, clean, took, alertTimeout)
+		}
+		// After a stop that was not clean, the tries go on: the test waits
+		// for them, so it fails without a panic of synctest.
+		<-b.alertsDone
+		mu.Lock()
+		defer mu.Unlock()
+		if most != len(startAlerts) {
+			t.Errorf("%d tries at the same time, want %d", most, len(startAlerts))
+		}
+		log := logs.String()
+		for i, msg := range startAlerts {
+			if tries[msg] != 1 {
+				t.Errorf("%d tries of %q, want 1", tries[msg], msg)
+			}
+			if n := len(alertLines(log, "an alert message did not go out", i+1)); n != 1 {
+				t.Errorf("%d lines about the failed try of alert %d, want 1", n, i+1)
+			}
+		}
+		if strings.Contains(log, "tries again") || !strings.Contains(log, `they are lost" lost=3`) {
+			t.Errorf("want no try again, and a line that says that three alerts are lost; the log:\n%s", log)
+		}
+	})
+}
+
+// TestStartAlertsTryAgain: Telegram cannot be reached for the first 20
+// minutes after the start. Each alert tries again on its own, with a wait
+// that doubles from alertFirstWait up to alertMaxWait, and one log line
+// for each failed try. Once Telegram can be reached, each alert goes out
+// exactly once, and makes no try after that. The stop finds none lost.
+func TestStartAlertsTryAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const outage = 20 * time.Minute
+		var logs bytes.Buffer
+		b := &brokerParts{log: broker.NewLogger(&logs), alerts: slices.Clone(startAlerts)}
+		start := time.Now()
+		var mu sync.Mutex
+		tries := make(map[string][]bool) // for each alert: whether each try went out
+		b.sendAlerts(func(_ context.Context, msg string) error {
+			out := time.Since(start) >= outage
+			mu.Lock()
+			tries[msg] = append(tries[msg], out)
+			mu.Unlock()
+			if !out {
+				return errors.New("made-up: cannot connect to the server")
+			}
+			return nil
+		})
+		time.Sleep(outage + alertMaxWait) // each alert has had its next try after the outage
+		if runErr, clean := b.stop(time.Now().Add(stopTimeout)); runErr != nil || !clean {
+			t.Errorf("the stop: error %v, clean %v; want a clean stop", runErr, clean)
+		}
+		// The wait after each failed try of one alert, in the outage.
+		var waits []string
+		for at, wait := time.Duration(0), alertFirstWait; at < outage; wait = min(2*wait, alertMaxWait) {
+			waits = append(waits, "next_try_in="+wait.String())
+			at += wait
+		}
+		log := logs.String()
+		mu.Lock()
+		defer mu.Unlock()
+		for i, msg := range startAlerts {
+			if want := append(slices.Repeat([]bool{false}, len(waits)), true); !slices.Equal(tries[msg], want) {
+				t.Errorf("the tries of %q went out: %v; want %d that failed, then one that went out",
+					msg, tries[msg], len(waits))
+			}
+			lines := alertLines(log, "the broker tries again", i+1)
+			if len(lines) != len(waits) {
+				t.Errorf("%d lines about failed tries of alert %d, want %d", len(lines), i+1, len(waits))
+				continue
+			}
+			for j, line := range lines {
+				if !strings.HasSuffix(line, " "+waits[j]) {
+					t.Errorf("alert %d, failed try %d: the line %q does not end in %q", i+1, j+1, line, waits[j])
+				}
+			}
+		}
+		if strings.Contains(log, "they are lost") {
+			t.Errorf("the log says that alerts are lost:\n%s", log)
+		}
+	})
+}
+
+// TestStartAlertPanics: a panic while one alert is sent ends only that
+// alert. Its panic value is not logged, the other alerts still go out, and
+// the stop counts the alert as lost.
+func TestStartAlertPanics(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var logs bytes.Buffer
+		b := &brokerParts{log: broker.NewLogger(&logs), alerts: slices.Clone(startAlerts)}
+		var mu sync.Mutex
+		var out []string
+		b.sendAlerts(func(_ context.Context, msg string) error {
+			if msg == startAlerts[1] {
+				panic(canaryWord())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			out = append(out, msg)
+			return nil
+		})
+		if runErr, clean := b.stop(time.Now().Add(stopTimeout)); runErr != nil || !clean {
+			t.Errorf("the stop: error %v, clean %v; want a clean stop", runErr, clean)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		want := []string{startAlerts[0], startAlerts[2]}
+		slices.Sort(out)
+		slices.Sort(want)
+		if !slices.Equal(out, want) {
+			t.Errorf("these alerts went out: %q, want %q", out, want)
+		}
+		log := logs.String()
+		if len(alertLines(log, "the panic value is not logged", 2)) != 1 {
+			t.Errorf("no line about the panic of alert 2; the log:\n%s", log)
+		}
+		if !strings.Contains(log, `they are lost" lost=1`) {
+			t.Errorf("the log does not say that one alert is lost:\n%s", log)
+		}
+		if strings.Contains(log, canaryWord()) {
+			t.Error("the log holds the panic value")
+		}
+	})
 }
 
 // TestUnitPreventsRestarts: the example systemd unit does not start the

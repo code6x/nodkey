@@ -64,8 +64,10 @@ const (
 	// stopTimeout bounds the whole stop. The service waits for the
 	// requests in progress, which may write an answer for up to 30
 	// seconds, and for its alert messages, up to 30 seconds more. The
-	// example unit sets TimeoutStopSec=90s, so the broker ends on its own
-	// first and logs why.
+	// tries of the alert messages of the start that are in progress run at
+	// the same time, for at most alertTimeout (sendAlerts). The example
+	// unit sets TimeoutStopSec=90s, so the broker ends on its own first and
+	// logs why.
 	stopTimeout = 80 * time.Second
 )
 
@@ -222,8 +224,9 @@ type brokerParts struct {
 	// alerts are the alert messages that wait until the approver can send
 	// them: a torn line in the audit log, and stores that did not start.
 	alerts []string
-	// alertsDone is closed when the alerts went out, or the sender gave
-	// up because the stop began. stop closes alertsStop when it begins.
+	// alertsDone is closed when each alert went out, or its sender gave
+	// up because the stop began. stop closes alertsStop when it begins;
+	// the senders of the alerts read it.
 	alertsDone chan struct{}
 	alertsStop chan struct{}
 
@@ -352,7 +355,7 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 	}
 	b.started = true
 	b.startRun(core)
-	b.sendAlerts()
+	b.sendAlerts(tg.Alert)
 	b.serve(srv, ln)
 	b.log.Info("nodkey broker: listening; the broker is ready", slog.String("address", ln.Addr().String()))
 	return nil
@@ -449,29 +452,42 @@ func (b *brokerParts) startRun(core *approval.Core) {
 	b.log.Info("nodkey broker: the approver runs: it polls Telegram for the answers")
 }
 
-// sendAlerts sends the alert messages that waited for the approver, one
-// after the other, in a goroutine of its own. Each one gets a first try,
-// also when the stop has begun; the stop waits for it. After a failed
-// try, sendAlert tries again (see alertFirstWait) until the alert is out
-// or the stop begins. Each failed try gets one log line; the growing wait
-// limits them to one line in 5 seconds at first and one in 5 minutes
-// later. An alert that did not go out before the stop is lost, and the
-// journal says so.
-func (b *brokerParts) sendAlerts() {
+// sendAlerts sends the alert messages that waited for the approver with
+// send, each in a goroutine of its own. So their tries run at the same
+// time: a slow try of one alert does not delay the others, and the stop
+// waits for them at most as long as one try takes, however many alerts
+// wait. Each alert gets a first try, also when the stop has begun; the
+// stop waits for it. After a failed try, sendAlert tries again (see
+// alertFirstWait) until the alert is out or the stop begins. Each failed
+// try gets one log line, with the number of the alert: its place in the
+// queue, from 1. The growing wait limits the lines of each alert to one
+// in 5 seconds at first and one in 5 minutes later. An alert that did not
+// go out before the stop is lost, and the journal says so.
+func (b *brokerParts) sendAlerts(send broker.AlertFunc) {
 	msgs := b.alerts
 	b.alerts = nil
-	b.alertsDone = make(chan struct{})
+	done := make(chan struct{})
+	b.alertsDone = done
 	b.alertsStop = make(chan struct{})
+	sent := make([]bool, len(msgs))
+	var wg sync.WaitGroup
+	for i, msg := range msgs {
+		wg.Go(func() {
+			defer func() {
+				if recover() != nil {
+					b.log.Error("nodkey broker: sending an alert message panicked; the panic value is not logged",
+						slog.Int("alert", i+1))
+				}
+			}()
+			sent[i] = b.sendAlert(send, i+1, msg)
+		})
+	}
 	go func() {
-		defer close(b.alertsDone)
-		defer func() {
-			if recover() != nil {
-				b.log.Error("nodkey broker: sending an alert message panicked; the panic value is not logged")
-			}
-		}()
+		defer close(done)
+		wg.Wait()
 		lost := 0
-		for _, msg := range msgs {
-			if !b.sendAlert(msg) {
+		for _, ok := range sent {
+			if !ok {
 				lost++
 			}
 		}
@@ -482,13 +498,14 @@ func (b *brokerParts) sendAlerts() {
 	}()
 }
 
-// sendAlert tries to send msg until it is out, and reports true. After the
-// stop began, it makes no new try, and reports false.
-func (b *brokerParts) sendAlert(msg string) bool {
+// sendAlert tries to send msg, the alert with the number n, until it is
+// out, and reports true. After the stop began, it makes no new try, and
+// reports false.
+func (b *brokerParts) sendAlert(send broker.AlertFunc, n int, msg string) bool {
 	wait := alertFirstWait
 	for try := 1; ; try++ {
 		ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
-		err := b.tg.Alert(ctx, msg)
+		err := send(ctx, msg)
 		cancel()
 		if err == nil {
 			return true
@@ -496,12 +513,12 @@ func (b *brokerParts) sendAlert(msg string) bool {
 		select {
 		case <-b.alertsStop:
 			// Telegram's errors never hold the token or Go's error text.
-			b.log.Warn("nodkey broker: an alert message did not go out", slog.String("error", err.Error()),
-				slog.Int("try", try))
+			b.log.Warn("nodkey broker: an alert message did not go out", slog.Int("alert", n),
+				slog.String("error", err.Error()), slog.Int("try", try))
 			return false
 		default:
 		}
-		b.log.Warn("nodkey broker: an alert message did not go out; the broker tries again",
+		b.log.Warn("nodkey broker: an alert message did not go out; the broker tries again", slog.Int("alert", n),
 			slog.String("error", err.Error()), slog.Int("try", try), slog.Duration("next_try_in", wait))
 		t := time.NewTimer(wait)
 		select {
