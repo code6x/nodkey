@@ -1,0 +1,17 @@
+# The config of each sshd of the end-to-end test of nodkey. The
+# entrypoint gives each sshd its own port and its own host key. The
+# authorized_keys of each user is a file of root, so that the entrypoint
+# needs no capability to write it.
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+AllowUsers deploy ops
+PermitRootLogin no
+UsePAM no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+StrictModes yes
+DisableForwarding yes
+PermitTTY no
+PrintMotd no
+PidFile none
+LogLevel VERBOSE

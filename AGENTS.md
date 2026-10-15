@@ -28,22 +28,24 @@ Planned. Each v1 issue adds its part.
     (sections 6 and 15) and `nodkey ssh-grant` (sections 13 and 15).
 - `contrib/systemd/` - the example systemd unit of the broker, with
   encrypted credentials and a sandbox (DESIGN.md section 16).
-- `test/e2e/` - end-to-end tests with `sshd` in a container. Build tag
-  `e2e`.
+- `test/e2e/` - the end-to-end test with `sshd` in a container (DESIGN.md
+  section 17). Build tag `e2e`. The image of the container is
+  `test/e2e/testdata/sshd`.
 - `.claude/agents/security-reviewer.md` - the security review every change
   gets.
 
 ## Commands
 
-These work once the Go module exists (issue #2); the e2e test comes with
-issue #15.
-
 ```sh
 go test -race ./...
 go vet ./...
-golangci-lint run
-go test -race -tags e2e ./test/e2e/...   # needs Docker
+golangci-lint run --build-tags e2e       # the tag adds the files of test/e2e
+go test -race -tags e2e ./test/e2e/...   # needs Docker, ssh and git
 ```
+
+The last one is the end-to-end test (DESIGN.md section 17). It builds
+nodkey and a Docker image, and removes every container, network and image
+that it makes.
 
 ## Rules
 

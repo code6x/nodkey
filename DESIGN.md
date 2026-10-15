@@ -2490,18 +2490,97 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   `bw` when it runs under that name. It records its arguments and its
   environment, so the tests can check that no token, password or session
   key is ever an argument.
-- **End-to-end test**: a throwaway key, `sshd` in a container, the broker and
-  the client on the test machine, and the fake approver. It checks that
-  `ssh` and `git` over SSH work, that a deny blocks the login, that an
-  unknown host key is refused, that `ssh-grant` covers exactly the listed
-  hosts, and that `nodkey run` passes a secret into a command without
-  printing it. It needs Docker, so it has its own build tag and its own CI
-  job.
-- **Canary test**: the end-to-end test uses a planted secret value and then
-  searches every log, the audit log, every message sent to the fake
-  Telegram server, and the client's output for it. A second canary sits in
-  a parent process's command line, to test the masking. Any hit fails the
-  test.
+- **End-to-end test** (`test/e2e`): the real programs, with only Telegram
+  and the store faked. It builds the `nodkey` binary from the repository,
+  with the race detector when the test runs with it.
+  - The SSH targets run in one Docker container, built from
+    `test/e2e/testdata/sshd`: OpenSSH's `sshd` and git from Debian, on a
+    base image pinned by its digest. Each target is an `sshd` of its own,
+    with its own throwaway host key: `web-1` (Ed25519), `web-2` (ECDSA),
+    `db-1` (RSA) and `web-3` (Ed25519). The broker's `known_hosts` has the
+    first three, not `web-3`. The remote users `deploy` and `ops` have the
+    public half of the broker's throwaway key `deploy` in their
+    `authorized_keys`. Only the broker holds its private half. `deploy`
+    has a bare git repository. The container has no capability but those
+    that `sshd` needs, no new privileges, limits on its processes and
+    memory, and `DisableForwarding yes`. It publishes its ports on
+    `127.0.0.1` only, from a network of its own.
+  - `nodkey broker`, `nodkey run`, `nodkey ssh-agent`, `nodkey ssh-grant`,
+    `ssh` and `git` run on the test machine. The files of the broker and
+    the clients are in a private directory that passes every check of
+    section 14, with TLS keys from `nodkey keygen`. The store is a fake
+    `bws`, a shell script. The broker's Telegram code is the real one: it
+    reaches a fake Telegram server through a fake HTTPS proxy and a test
+    CA, as in the tests of `nodkey broker`. The test taps "Approve once",
+    "Approve 15 min" or "Deny" there. Two clients, `laptop` and `ci`, have
+    their own keys and home directories.
+  - The cases: `nodkey run` passes the secret into a command, which proves
+    it with the SHA-256 of the value; after a Deny, the command does not
+    run; an SSH login after "Approve once"; an unknown host key is refused
+    before any message; after `ssh-grant` for `web-1` and `web-2`, these
+    hosts need no tap, and `db-1` and the remote user `ops` still ask;
+    `git clone` and `git push` over SSH, where one "Approve 15 min" covers
+    the logins after it; a denied login, after which the grants of the key
+    have ended. Each case also checks what the message shows, what the
+    clients print, the entries in the audit log, and that no other
+    message goes out. The config has no "never ask" rule, and nothing in
+    the test makes an alert, so every message must have buttons. At the
+    end, `nodkey audit verify` checks the whole audit log with every
+    anchor of the broker's journal, and a copy of the log with one changed
+    entry fails.
+  - The root-only test of `internal/client` runs as root in a container
+    without a network, with only the capabilities `SETUID` and `SETGID`:
+    a process of another user connects to the socket of
+    `nodkey ssh-agent`, and the agent refuses it (`SO_PEERCRED`).
+  - Run it with `go test -race -tags e2e ./test/e2e/...`. It needs
+    Docker, OpenSSH's `ssh` 8.9 or newer, and `git`. Once the image and
+    the binaries are built, it takes about 10 seconds. The CI job `e2e`
+    runs it.
+  - Each run of the test has a run ID: its start time and a random part.
+    The names and labels of its containers, its network and its image
+    hold it, and so does the name of its private directory, in
+    `$XDG_RUNTIME_DIR`, or else in the cache directory (`$XDG_CACHE_HOME`,
+    or else `~/.cache`). While it runs, the test holds a lock on the file
+    `nodkey-e2e-RUNID.lock` in the temporary directory (`$TMPDIR`, or else
+    `/tmp`). At the end, it removes everything that it made, and fails if
+    something is left. A run that is killed, such as by the `-timeout` of
+    `go test` or by Ctrl-C, cannot do that: the kernel stops its programs,
+    its containers end on their own after 15 minutes, and the rest stays.
+    So each run first removes
+    what runs that have ended left: those whose lock file nobody holds,
+    and those older than an hour whose lock file it cannot check: it is
+    not there, or not a regular file. It never touches a run that holds
+    its lock, or anything without a run ID. By hand, when no end-to-end
+    test runs:
+
+    ```sh
+    docker ps --all --quiet --filter label=nodkey-e2e | xargs -r docker rm --force
+    docker network ls --quiet --filter label=nodkey-e2e | xargs -r docker network rm
+    docker image ls nodkey-e2e-sshd --format '{{.Repository}}:{{.Tag}}' | xargs -r docker image rm
+    rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/nodkey-e2e-* "${TMPDIR:-/tmp}"/nodkey-e2e-*.lock
+    if [ -n "$XDG_RUNTIME_DIR" ]; then rm -rf "$XDG_RUNTIME_DIR"/nodkey-e2e-*; fi
+    ```
+- **Canary test**: part of the end-to-end test. The first canary is the
+  value of the secret in the store. The second canary is a random word in
+  the command line of a wrapper process, which runs `ssh` and `git`: as
+  the value of `--api-token=`, and as a word of its own. The test searches
+  every log (the broker's journal, `nodkey ssh-agent` and the `sshd`s),
+  the audit log, every call to the fake Telegram server, and every output
+  of the clients. It looks for the first canary as it is, in lower and
+  upper case, in hex, and in base64 and base64url at each offset, and for
+  each part of 12 characters of its random part in the same forms, so
+  that a value that was cut is found too. It looks for the made-up bot
+  token and the token of the store in the same forms, and for the second
+  canary in any case. Any hit fails the test. The command line of the
+  wrapper is claimed text, so section 7 shows it only in the message and
+  in the audit log, masked. The test checks that every message and every
+  audit entry of an SSH login shows `***` in place of both forms. It also
+  checks that no other call to Telegram, and no output of `nodkey`, holds
+  claimed text: a reason, a word of a command line, the working
+  directory, or the variable name. Guards make sure that there was
+  something to find: the broker handed out the secret (a `secret_sent`
+  entry), and SSH logins went through the wrapper. So a `-run` filter
+  that leaves out the cases makes the search fail, not pass.
 - **One manual test with a real Telegram bot**, written down in
   `docs/manual-telegram-test.md`. The token comes from a local file and is
   never committed.
