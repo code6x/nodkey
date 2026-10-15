@@ -820,7 +820,9 @@ Not masked, for example:
   alert goes out. This check needs the buttons that Telegram sends with
   each tap (`reply_markup` of the message). Without them, no Approve
   would count, and the broker would alert: that fails closed. The manual
-  test of issue #17 checks that Telegram sends them.
+  test of issue #17
+  ([docs/manual-telegram-test.md](docs/manual-telegram-test.md)) checks
+  that Telegram sends them.
 - A Deny is safe whatever the message shows. So when someone else changed
   a message while its request may still wait, a tap on the Deny button
   that the broker sent on it still goes to the approval core, as on any
@@ -865,8 +867,9 @@ Not masked, for example:
 - When a request ends, the broker edits the message: it removes the buttons
   (by sending an empty keyboard, not by leaving it out; Telegram probably
   removes them also when the keyboard is left out, but that is not sure,
-  and the manual test of issue #17 checks it), and the result replaces
-  the expiry line: "👍 approved once by you at 14:02:41",
+  and the manual test of issue #17 checks it, in
+  [docs/manual-telegram-test.md](docs/manual-telegram-test.md)), and the
+  result replaces the expiry line: "👍 approved once by you at 14:02:41",
   "👍 approved for 15 min by you at 14:02:41", "👍 approved by you at
   14:05:12, until 14:20:00" (an SSH grant), "⛔ denied by you at
   14:02:41", "⌛ expired — denied", "⛔ cancelled by the client" or
@@ -1589,7 +1592,8 @@ and the example unit (section 16) has a line for each.
 An SSH key stored this way needs no passphrase; the broker refuses a key
 with a passphrase.
 - Without a TPM2 chip, encrypt with `--with-key=host` instead. Then anyone
-  with a full copy of the disk can open them. The docs say this plainly.
+  with a full copy of the disk can open them. The setup guide says this
+  plainly ([docs/setup.md](docs/setup.md#encrypted-credentials)).
 - Plain files (mode `0600`, owned by the broker user) also work, for tests
   and for machines without systemd. The broker refuses to start if a key or
   secret file can be read by group or others.
@@ -1614,10 +1618,11 @@ How the broker uses `bw`:
 
 - A person logs in once on the broker host, as the broker user, with the
   store's `program` and with the store's home directory (section 16) as
-  `HOME`, for example:
-  `sudo -u nodkey env -i HOME=/var/lib/nodkey/stores/vault PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/bw login --apikey`.
+  `HOME` and as the working directory, for example:
+  `sudo -u nodkey env -i -C /var/lib/nodkey/stores/vault HOME=/var/lib/nodkey/stores/vault PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/bw login --apikey`.
   For Bitwarden's EU cloud or your own server, run `bw config server URL`
-  in the same way first.
+  in the same way first. [docs/setup.md](docs/setup.md#bw-a-separate-bitwarden-account)
+  has the steps.
 - At start, the broker unlocks with
   `bw unlock --passwordfile FILE --raw --nointeraction`. bw reads the
   password file itself, so the password never passes through the broker,
@@ -1810,6 +1815,9 @@ one message. D gives the same result with less risk: the list in the
 message cannot change while the person reads it.
 
 ## 14. Configuration
+
+[docs/setup.md](docs/setup.md#7-the-config-file) explains this config
+part by part, and how to make the files that it names.
 
 Broker, `/etc/nodkey/broker.toml`:
 
@@ -2032,7 +2040,8 @@ nodkey version
 `nodkey broker` runs the broker. The default config is
 `/etc/nodkey/broker.toml`. Run it as its own user, from a systemd unit;
 [contrib/systemd/nodkey.service](contrib/systemd/nodkey.service) is an
-example (section 16). It writes its log to stderr, which systemd keeps in
+example (section 16), and [docs/setup.md](docs/setup.md) sets it up step
+by step. It writes its log to stderr, which systemd keeps in
 the journal, with the anchors of the audit log (section 9). All its
 lines, also an error at start and a wrong argument, come from the logger
 of section 10, so no line can look like an anchor.
@@ -2593,8 +2602,8 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   entry), and SSH logins went through the wrapper. So a `-run` filter
   that leaves out the cases makes the search fail, not pass.
 - **One manual test with a real Telegram bot**, written down in
-  `docs/manual-telegram-test.md`. The token comes from a local file and is
-  never committed.
+  [docs/manual-telegram-test.md](docs/manual-telegram-test.md). The token
+  comes from a local file and is never committed.
 
 ## 18. Build, CI and releases
 
