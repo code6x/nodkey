@@ -835,6 +835,12 @@ func TestBrokerForgedRecoveryAlertsOnce(t *testing.T) {
 // torn_length out of range, or a hash that is not 64 lower-case hex
 // digits, is not a valid entry: the broker does not start, writes nothing
 // and calls no Telegram; a person must look (DESIGN.md section 9).
+//
+// Only the calls with the proxy user name of the second start count. The
+// fake proxy can take a call of the first start after that broker ended
+// (see brokerenv_linux_test.go), and a count of all calls then blamed the
+// second start (issue #69). The first start polls before its stop, so the
+// test also sees that the proxy tells the starts apart.
 func TestBrokerBadRecoveryStopsTheStart(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -851,14 +857,19 @@ func TestBrokerBadRecoveryStopsTheStart(t *testing.T) {
 			t.Parallel()
 			e := startListening(t, brokerOptions{})
 			e.stderr.wait(t, lineListening)
+			e.tg.waitPolling()
+			first := e.proxyUser
 			e.signal(syscall.SIGTERM)
 			e.mustExit(exitOK)
+			if len(e.tg.proxiedBy(first)) == 0 {
+				t.Fatalf("the proxy got no call with the user name of the first start; all calls: %q",
+					e.tg.proxied())
+			}
 			appendForgedRecovery(t, e, tt.length, tt.hash)
 			before, err := os.ReadFile(e.auditPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			calls := len(e.tg.proxied())
 			e.start()
 			e.mustExit(exitFailure)
 			after, err := os.ReadFile(e.auditPath)
@@ -868,8 +879,8 @@ func TestBrokerBadRecoveryStopsTheStart(t *testing.T) {
 			if !bytes.Equal(before, after) {
 				t.Error("the broker wrote to the audit log")
 			}
-			if n := len(e.tg.proxied()); n != calls {
-				t.Errorf("the broker called Telegram %d times", n-calls)
+			if p := e.tg.proxiedBy(e.proxyUser); len(p) != 0 {
+				t.Errorf("the broker called Telegram: %q", p)
 			}
 			if !e.stderr.has("the last complete line is not a valid entry") {
 				t.Errorf("the log does not say why; its log:\n%s", e.stderr.text())

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -48,8 +49,16 @@ type fakeTelegram struct {
 	hold        chan struct{}             // if set, alert messages wait until it is closed
 	held        int                       // the alert messages that wait at hold now
 	offline     bool                      // the proxy refuses every new connection, as if Telegram were unreachable
-	connects    []string                  // what the proxy was asked to connect to
+	connects    []proxyRequest            // what the proxy was asked to connect to, and by which start
 	changed     chan struct{}             // closed and made new on each change
+}
+
+// proxyRequest is one request that the fake proxy got.
+type proxyRequest struct {
+	target string // the method and the host, such as "CONNECT api.telegram.org:443"
+	// user is the user name in its Proxy-Authorization header: the start
+	// of the broker that sent it (brokerEnv.proxyUser), or "" for none.
+	user string
 }
 
 // tgCall is one call that the fake got.
@@ -136,7 +145,7 @@ func (f *fakeTelegram) connect(c net.Conn, cfg *tls.Config, tunnels *chanListene
 		return
 	}
 	f.mu.Lock()
-	f.connects = append(f.connects, req.Method+" "+req.Host)
+	f.connects = append(f.connects, proxyRequest{target: req.Method + " " + req.Host, user: proxyUser(req)})
 	offline := f.offline
 	f.mu.Unlock()
 	if offline {
@@ -159,6 +168,22 @@ func (f *fakeTelegram) connect(c net.Conn, cfg *tls.Config, tunnels *chanListene
 	case <-tunnels.done:
 		_ = c.Close()
 	}
+}
+
+// proxyUser returns the user name in the Proxy-Authorization header of
+// req, or "" if there is none. Go's HTTP client sends the user name and
+// the password of the proxy setting there, with basic authentication.
+func proxyUser(req *http.Request) string {
+	scheme, encoded, _ := strings.Cut(req.Header.Get("Proxy-Authorization"), " ")
+	if !strings.EqualFold(scheme, "Basic") {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+	user, _, _ := strings.Cut(string(decoded), ":")
+	return user
 }
 
 // bufferedConn is a connection whose first bytes may wait in r.
@@ -603,5 +628,23 @@ func (f *fakeTelegram) bodies() string {
 func (f *fakeTelegram) proxied() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Clone(f.connects)
+	var out []string
+	for _, r := range f.connects {
+		out = append(out, r.target)
+	}
+	return out
+}
+
+// proxiedBy returns what the proxy was asked to connect to by the start of
+// the broker with the proxy user name user (brokerEnv.proxyUser).
+func (f *fakeTelegram) proxiedBy(user string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, r := range f.connects {
+		if r.user == user {
+			out = append(out, r.target)
+		}
+	}
+	return out
 }

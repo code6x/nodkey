@@ -47,6 +47,14 @@ import (
 // runs the same code as in production, and nothing goes to the real Bot
 // API. Go reads the proxy setting and the system's CAs once per process,
 // which is one more reason for a child process.
+//
+// Each start of the broker gets a new made-up user name in HTTPS_PROXY.
+// Go's HTTP client sends it to the proxy with each CONNECT, so the fake
+// knows which start made each call. This matters when a test starts the
+// broker again: Go's HTTP client goes on with a dial after the request
+// that started it was canceled, so a broker that stops can send a CONNECT
+// just before it ends, and the proxy, in its own goroutines, can take it
+// only after the test saw that broker end (issue #69).
 
 // Variables of the child process.
 const (
@@ -322,6 +330,9 @@ type brokerEnv struct {
 	stderr  *lineLog // the child's stderr: the broker's journal
 	exited  chan struct{}
 	waitErr error // set before exited is closed
+	// proxyUser is the user name in HTTPS_PROXY of the last start: a new
+	// one for each start (see fakeTelegram.proxiedBy).
+	proxyUser string
 }
 
 // newBrokerEnv makes the files of a broker in a new private directory,
@@ -615,18 +626,21 @@ func startListening(t *testing.T, opts brokerOptions, seams ...string) *brokerEn
 // start starts the broker in a child process, with the test changes
 // seams. The child's environment holds only what the broker needs, so
 // nothing from the environment of the test, such as NO_PROXY, changes
-// where the calls to Telegram go.
+// where the calls to Telegram go. The start gets a new proxy user name,
+// e.proxyUser.
 func (e *brokerEnv) start(seams ...string) {
 	t := e.t
 	t.Helper()
 	e.stderr = newLineLog()
+	// Upper-case letters and digits: nothing to escape in the URL.
+	e.proxyUser = rand.Text()
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestBrokerChild$") //nolint:gosec // G204: the test runs its own binary again.
 	cmd.Env = []string{
 		brokerChildConfig + "=" + e.cfgPath,
 		brokerChildSeams + "=" + strings.Join(seams, ","),
 		brokerChildProxy + "=" + e.tg.proxyAddr,
 		"CREDENTIALS_DIRECTORY=" + filepath.Join(e.dir, "creds"),
-		"HTTPS_PROXY=http://" + e.tg.proxyAddr,
+		"HTTPS_PROXY=http://" + e.proxyUser + "@" + e.tg.proxyAddr,
 		"SSL_CERT_FILE=" + e.tg.caFile,
 		"SSL_CERT_DIR=" + e.tg.caDir,
 	}
