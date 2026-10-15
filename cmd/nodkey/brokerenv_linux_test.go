@@ -208,8 +208,7 @@ func usableTestDir(t *testing.T, dir string) bool {
 		return false
 	}
 	probe := filepath.Join(dir, "probe")
-	//nolint:gosec // G703: a file in the test's own new directory.
-	if os.WriteFile(probe, []byte("#!/bin/sh\nexit 0\n"), 0o600) != nil || config.CheckPrivateFile(probe) != nil {
+	if writeUninherited(probe, []byte("#!/bin/sh\nexit 0\n")) != nil || config.CheckPrivateFile(probe) != nil {
 		return false
 	}
 	if os.Chmod(probe, 0o700) != nil { //nolint:gosec // G302: a program of the test.
@@ -223,12 +222,28 @@ func usableTestDir(t *testing.T, dir string) bool {
 // writeTestFile writes data to path with exactly mode.
 func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	t.Helper()
-	if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // G703: a file in the test's own directory.
+	if err := writeUninherited(path, data); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeUninherited writes data to path with mode 0600, so that no child
+// process gets a copy of the file descriptor that writes it. The tests run
+// in parallel, and many start child processes. A child gets a copy of each
+// open descriptor of the test process and keeps it until it runs its own
+// program. While a child keeps a copy of the descriptor that writes a
+// program, the start of that program fails with ETXTBSY, "text file busy"
+// (go.dev/issue/22315): then the probe of privateTestDir failed, and the
+// test failed or was skipped. Each start of a child holds syscall.ForkLock
+// for writing until the child runs its program, so no child starts while
+// this holds it for reading.
+func writeUninherited(path string, data []byte) error {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	return os.WriteFile(path, data, 0o600) //nolint:gosec // G703: a file in the test's own directory.
 }
 
 // madeUp returns a made-up value with what at its start, made at run time,
@@ -458,11 +473,13 @@ var (
 
 // freeAddress returns an address on the loopback interface with a port
 // that is free now, for the broker of one test. The broker listens on it
-// a moment later. So the port is outside the range of ports that the
-// kernel gives out by itself, to sockets that ask for any port or connect
-// (net.ipv4.ip_local_port_range): no other socket of the tests takes it in
-// between. No two tests of this process get the same port. When the
-// kernel's range leaves no room, the kernel chooses the port, and
+// a moment later, and again when the test starts it again. So the port is
+// outside the range of ports that the kernel gives out by itself, to
+// sockets that ask for any port or connect (net.ipv4.ip_local_port_range):
+// no other socket of the tests takes it in between. No two tests of this
+// process get the same port, and no two tests of two processes that run
+// at the same time (reservePort), such as the tests of two checkouts. When
+// the kernel's range leaves no room, the kernel chooses the port, and
 // startListening tries again if another socket takes it first.
 func freeAddress(t *testing.T) string {
 	t.Helper()
@@ -489,7 +506,7 @@ func freeAddress(t *testing.T) string {
 		taken := portsTaken[port]
 		portsTaken[port] = true
 		portsMu.Unlock()
-		if taken {
+		if taken || !reservePort(t, port) {
 			continue
 		}
 		addr := "127.0.0.1:" + strconv.FormatInt(port, 10)
@@ -515,12 +532,33 @@ func freeAddress(t *testing.T) string {
 		taken := portsTaken[int64(addr.Port)]
 		portsTaken[int64(addr.Port)] = true
 		portsMu.Unlock()
-		if !taken {
+		if !taken && reservePort(t, int64(addr.Port)) {
 			return addr.String()
 		}
 	}
 	t.Fatal("found no free port for the broker")
 	return ""
+}
+
+// reservePort reserves port for the test t against other processes of
+// these tests, such as a second go test run at the same time. Until t
+// ends, it holds the abstract Unix socket "@nodkey-test-port-PORT", and
+// only one socket can hold such a name. It reports false when another
+// process holds the name. Without it, such a process could take the port
+// while the broker of t was stopped, and the next start of that broker
+// failed; or it could listen there, and TestBrokerNoListenBeforeTheAuditLog
+// saw a broker listen. The kernel frees the name when the socket closes,
+// also when the process ends without cleanup. A port that turns out to be
+// in use stays reserved until t ends; that does no harm.
+func reservePort(t *testing.T, port int64) bool {
+	t.Helper()
+	c, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "unixgram",
+		"@nodkey-test-port-"+strconv.FormatInt(port, 10))
+	if err != nil {
+		return false
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return true
 }
 
 // portsOutside returns the ports [low, high) for the brokers of the tests,

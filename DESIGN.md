@@ -406,7 +406,9 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
      the broker cancels the request (section 7). It sees this also when
      `ssh` sent more bytes before: it asks the kernel whether the other
      side hung up (`poll` with `POLLRDHUP`), and does not read those
-     bytes.
+     bytes. After a hang-up, the client gives `ssh` no signature, also
+     when an answer of the broker comes at that moment, and its line says
+     that `ssh` closed its connection.
 6. The broker checks, and denies on any failure. It makes these checks
    before any message or place in a queue (section 8). A request that fails
    them gets no message, and the audit log gets it with the key name, if

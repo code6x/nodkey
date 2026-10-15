@@ -212,7 +212,9 @@ func (tr *trace) isConnected() bool {
 // answer: no other request goes on that connection, so there is no
 // pipelining. The request is never sent again. When ctx ends, the
 // connection closes, so the broker cancels the request; Post then returns
-// context.Cause(ctx).
+// context.Cause(ctx). An answer that comes while the connection closes can
+// still be returned instead, as Go's HTTP client does: a caller that must
+// deny after ctx ends checks ctx after Post.
 //
 // Every other failure is an *Error: a final answer other than 200, also a
 // redirect; a 200 whose body api.ReadAnswer refuses; more than a few

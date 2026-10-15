@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -734,6 +735,38 @@ func TestSSHGrantCancel(t *testing.T) {
 	}
 	gb.waitEvents(t, p.RequestID, "request denied:cancelled")
 	gb.mustAsk(t, laptop, gb.signRequest(t, "deploy", "web-1", 0, "deploy"), 2)
+}
+
+// TestSSHGrantCancelWinsOverALateAnswer: a signal comes while nodkey
+// ssh-grant waits, and the broker's 200 comes at that moment, which Go's
+// HTTP client can still return (lateAnswer). As DESIGN.md sections 13 and
+// 15 say, the client says cancelled, with the status of the signal, so
+// that main ends nodkey with it and a shell loop stops. (From the review
+// of issue #63: it said "allowed until" and exited with 0.)
+func TestSSHGrantCancelWinsOverALateAnswer(t *testing.T) {
+	t.Parallel()
+	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
+		in := interrupted{sig: sig}
+		t.Run(in.name(), func(t *testing.T) {
+			t.Parallel()
+			got := make(chan []byte, 1)
+			b := &Broker{addr: "192.0.2.10:7743", timeout: RequestTimeout,
+				client: &http.Client{Transport: lateAnswer{got: got, answer: func([]byte) (int, []byte) {
+					return http.StatusOK, []byte(`{"minutes":15}`)
+				}}}}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			go func() {
+				<-got
+				cancel(in)
+			}()
+			code, stderr := grantIn(ctx, testGranter(b, nil), grantArgs()...)
+			want := fmt.Sprintf("nodkey: cancelled by %s (exit %d)", in.name(), in.status())
+			if code != in.status() || lastLine(stderr) != want || strings.Contains(stderr, "allowed") {
+				t.Errorf("exit code %d, stderr %q; want the last line %q", code, stderr, want)
+			}
+		})
+	}
 }
 
 // TestSSHGrantUnreachable: nodkey ssh-grant exits with 69 when it cannot

@@ -155,10 +155,10 @@ func TestOpenSSHLogin(t *testing.T) {
 			}
 			res := <-done
 			if tt.answer == audit.AnswerApproveOnce {
-				if res.err != nil || srv.loginCount() != 1 {
+				if res.err != nil || srv.loginsAfter(t, 1) != 1 {
 					t.Fatalf("ssh: %v; agent lines %q\n%s", res.err, au.lines(), res.out)
 				}
-			} else if res.err == nil || srv.loginCount() != 0 {
+			} else if res.err == nil || srv.loginsAfter(t, 1) != 0 {
 				t.Fatalf("ssh logged in: %v\n%s", res.err, res.out)
 			}
 			p := asked.Prompt
@@ -216,8 +216,11 @@ func TestOpenSSHSignRequest(t *testing.T) {
 	cmd := exec.CommandContext(ctx, sh, append([]string{"-c", script, sshPath}, args...)...) //nolint:gosec // G204: the test runs ssh through sh.
 	cmd.Env = sshEnv(au.socket, dir, "NODKEY_REASON=from the shell", "SECRET_OF_THE_SHELL="+canary)
 	out, err := cmd.CombinedOutput()
-	if err != nil || srv.loginCount() != 0 {
-		t.Fatalf("sh: %v; %d logins\n%s", err, srv.loginCount(), out)
+	if err != nil {
+		t.Fatalf("sh: %v\n%s", err, out)
+	}
+	if n := srv.loginsAfter(t, 1); n != 0 {
+		t.Fatalf("%d logins\n%s", n, out)
 	}
 	var body []byte
 	select {
@@ -296,12 +299,12 @@ func TestOpenSSHAgentChecksTheSignature(t *testing.T) {
 			dir := shortTempDir(t)
 			out, err := runSSH(t, sshPath, sshArgs(t, srv.addr, "deploy", host.PublicKey(), dir), sshEnv(au.socket, dir))
 			if tt.want == "" {
-				if err != nil || srv.loginCount() != 1 {
+				if err != nil || srv.loginsAfter(t, 1) != 1 {
 					t.Fatalf("ssh: %v; agent lines %q\n%s", err, au.lines(), out)
 				}
 				return
 			}
-			if err == nil || srv.loginCount() != 0 {
+			if err == nil || srv.loginsAfter(t, 1) != 0 {
 				t.Fatalf("ssh logged in\n%s", out)
 			}
 			if got := au.lines(); len(got) != 1 || got[0] != "nodkey: no signature: "+tt.want {
@@ -326,7 +329,7 @@ func TestOpenSSHAgentChecksTheSignature(t *testing.T) {
 		au := startAgent(t, b, agentOptions{})
 		dir := shortTempDir(t)
 		out, err := runSSH(t, sshPath, sshArgs(t, srv.addr, "deploy", host.PublicKey(), dir), sshEnv(au.socket, dir))
-		if err == nil || srv.loginCount() != 0 {
+		if err == nil || srv.loginsAfter(t, 1) != 0 {
 			t.Fatalf("ssh logged in\n%s", out)
 		}
 		// Another test may take the free port at once: then the TLS

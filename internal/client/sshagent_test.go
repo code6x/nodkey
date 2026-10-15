@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,7 +64,8 @@ func (s *agentSigner) SignWithAlgorithm(_ io.Reader, data []byte, algorithm stri
 
 // login logs in to srv as user, with the first key that the agent ag
 // lists, as OpenSSH does with an agent. Give it a new agent connection.
-// It may run in a goroutine of its own: it only returns errors.
+// It may run in a goroutine of its own: it only returns errors. It can
+// return before srv counts the login: see sshServer.loginsAfter.
 func login(ctx context.Context, ag agent.ExtendedAgent, srv *sshServer, user string) error {
 	keys, err := ag.List()
 	if err != nil {
@@ -128,11 +130,11 @@ func TestAgentLogin(t *testing.T) {
 			waiting := "nodkey: waiting for approval (request " + code + ")"
 			want := []string{waiting}
 			if tt.answer == audit.AnswerApproveOnce {
-				if err != nil || srv.loginCount() != 1 {
+				if err != nil || srv.loginsAfter(t, 1) != 1 {
 					t.Fatalf("the login failed: %v; agent lines %q", err, au.lines())
 				}
 			} else {
-				if err == nil || srv.loginCount() != 0 {
+				if err == nil || srv.loginsAfter(t, 1) != 0 {
 					t.Fatalf("the login worked, %v", err)
 				}
 				want = append(want, "nodkey: no signature (request "+code+"): denied")
@@ -1198,8 +1200,8 @@ func TestAgentCancelsWhenSSHHangsUp(t *testing.T) {
 	go func() { done <- login(t.Context(), ag, srv, "deploy") }()
 	code := sb.waitAsked(t, 1)[0].Prompt.ShortCode
 	_ = c.Close()
-	if err := <-done; err == nil {
-		t.Fatal("the login worked")
+	if err := <-done; err == nil || srv.loginsAfter(t, 1) != 0 {
+		t.Fatalf("the login worked, %v", err)
 	}
 	if got := eventNames(sb.audit.waitFor(t, 2)); got != "request denied:cancelled" {
 		t.Errorf("audit entries %q", got)
@@ -1321,6 +1323,107 @@ func TestAgentCancelsWhenSSHHangsUpAfterMoreBytes(t *testing.T) {
 			}
 			const last = "nodkey: no signature: ssh closed its connection while the request waited"
 			waitFor(t, "the agent's line", func() bool { return slices.Contains(au.lines(), last) })
+		})
+	}
+}
+
+// lateAnswer is an HTTP transport in place of the broker's connection.
+// For each request, it sends the body to got, waits until the context of
+// the request ends, and then returns the answer of answer all the same.
+// Go's HTTP client does that with an answer that comes while it closes the
+// connection after a cancel: the broker answers a cancelled request with
+// 403 at once, and a tap can come at that moment.
+type lateAnswer struct {
+	got    chan<- []byte
+	answer func(body []byte) (int, []byte)
+}
+
+func (l lateAnswer) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+	l.got <- body
+	select {
+	case <-r.Context().Done():
+	case <-time.After(waitLimit):
+		return nil, errors.New("the request was not cancelled")
+	}
+	status, answer := l.answer(body)
+	return &http.Response{StatusCode: status, Status: http.StatusText(status), Proto: "HTTP/1.1", ProtoMajor: 1,
+		ProtoMinor: 1, Header: http.Header{"Content-Type": {api.ContentType}}, Body: io.NopCloser(bytes.NewReader(answer)),
+		ContentLength: int64(len(answer)), Request: r}, nil
+}
+
+// TestAgentCancelWinsOverALateAnswer: when ssh hangs up while its request
+// waits, or the deadline of the request passes, the agent cancels the
+// request, and ssh gets no signature, also when an answer of the broker
+// comes at that moment. The line names the cancel. (Issue #63: the agent
+// wrote "denied", the broker's answer to the cancel, and it would have
+// passed on a signature.) For the hang-up, ssh closes only its half for
+// writing: the agent sees a hang-up, and the test can still read the
+// agent's answer.
+func TestAgentCancelWinsOverALateAnswer(t *testing.T) {
+	t.Parallel()
+	deploy, _ := newSSHKey(t)
+	signature := func(body []byte) (int, []byte) {
+		var req api.SignRequest
+		if err := req.UnmarshalJSON(body); err != nil {
+			return http.StatusBadRequest, nil
+		}
+		sig, err := deploy.Sign(rand.Reader, req.Data)
+		if err != nil {
+			return http.StatusInternalServerError, nil
+		}
+		answer, err := json.Marshal(api.SignAnswer{Format: sig.Format, Blob: sig.Blob})
+		if err != nil {
+			return http.StatusInternalServerError, nil
+		}
+		return http.StatusOK, answer
+	}
+	forbidden := func([]byte) (int, []byte) { return http.StatusForbidden, []byte(`{"error":"Forbidden"}`) }
+	const hungUp = "nodkey: no signature: ssh closed its connection while the request waited"
+	for _, tt := range []struct {
+		name     string
+		answer   func(body []byte) (int, []byte)
+		deadline time.Duration // the deadline of the request; 0: ssh hangs up
+		line     string
+	}{
+		{"a valid signature after a hang-up", signature, 0, hungUp},
+		{"403 after a hang-up", forbidden, 0, hungUp},
+		{"a valid signature after the deadline", signature, 100 * time.Millisecond,
+			"nodkey: no signature: no answer from the broker within 100ms"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := make(chan []byte, 1)
+			b := &Broker{addr: "192.0.2.10:7743", timeout: RequestTimeout,
+				client: &http.Client{Transport: lateAnswer{got: got, answer: tt.answer}}}
+			au := startAgent(t, b, agentOptions{signTimeout: tt.deadline})
+			c := au.conn(t)
+			if !bindAgent(t, c, []byte("bind")) {
+				t.Fatal("the session-bind was refused")
+			}
+			if err := writeAgentMessage(c, signRequestMessage(deploy.PublicKey().Marshal(), []byte("data"), 0)); err != nil {
+				t.Fatal(err)
+			}
+			<-got
+			if tt.deadline == 0 {
+				uc, ok := c.(*net.UnixConn)
+				if !ok {
+					t.Fatal("not a Unix connection")
+				}
+				if err := uc.CloseWrite(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = c.SetReadDeadline(time.Now().Add(waitLimit))
+			if answer, err := readAgentMessage(c); err != nil || !bytes.Equal(answer, failureMessage) {
+				t.Fatalf("after the cancel, the agent answered % x, %v; want SSH_AGENT_FAILURE", answer, err)
+			}
+			if got := au.lines(); !slices.Equal(got, []string{tt.line}) {
+				t.Errorf("the agent wrote %q, want %q", got, tt.line)
+			}
 		})
 	}
 }
