@@ -298,6 +298,9 @@ func (f *fakeTelegram) keepLocked(c fakeCall) {
 
 // editByOther changes the message msgID as someone else with the bot
 // token would: it gets an edit date, and, if markup is set, new buttons.
+// With markup nil, the buttons stay, as after an edit that sends the same
+// buttons again (check 8 of docs/manual-telegram-test.md). A real edit
+// without reply_markup removes the buttons.
 func (f *fakeTelegram) editByOther(msgID int64, markup any, editDate bool) {
 	f.t.Helper()
 	f.mu.Lock()

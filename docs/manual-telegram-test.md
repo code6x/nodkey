@@ -4,7 +4,8 @@ The tests of nodkey use a fake Telegram server. It cannot prove that the
 real Bot API behaves the same. This test runs a throwaway broker with a
 real bot, and you tap the buttons on your phone. It is the test of issue
 [#17](https://github.com/code6x/nodkey/issues/17). Write the results into
-that issue.
+that issue. The results of the first run, on 2026-10-15, are there too.
+Some checks below say what that run saw.
 
 What the test checks, in the words of issue #17:
 
@@ -16,7 +17,7 @@ What the test checks, in the words of issue #17:
 | Telegram sends the buttons of the message (`reply_markup`) with every tap. | [1](#check-1-approve-once) and [2](#check-2-approve-n-min) |
 | What an edit without `reply_markup` does to the buttons. | [7](#check-7-an-edit-without-reply_markup) |
 | A tap on a message edited by another client is refused (`edit_date`). | [7](#check-7-an-edit-without-reply_markup) or [8](#check-8-an-edit-that-keeps-the-buttons) |
-| How "message is not modified" is handled. | [5](#check-5-double-tap) and [9](#check-9-message-is-not-modified) |
+| How "message is not modified" is handled. | [9](#check-9-message-is-not-modified) |
 | A second poller gets a 409, and the broker stops with an alert. | [10](#check-10-a-second-poller) |
 | (Also: the errors of the real Bot API never put the token into a log, THREAT-MODEL.md T19.) | [13](#check-13-the-bot-token-in-the-logs) |
 
@@ -287,22 +288,24 @@ shows `⌛ expired — denied`, without buttons.
 ### Check 5: Double tap
 
 1. Terminal 2: `ask demo-always "check 5"`.
-2. Tap **Approve once** two times, as fast as you can. If the buttons are
-   gone before the second tap, write that down: a double tap was not
-   possible.
+2. Tap **Approve once** two times, as fast as you can. If the buttons
+   are gone before the second tap, write "not possible in this client"
+   into the results, with the name of the Telegram client, and go on.
 
 Expected:
 
 - The command runs once.
-- The second tap, if it reached Telegram: the phone shows
+- If a second tap was possible: the Telegram client shows
   `This request has ended.`, and the log of the broker (terminal 1) has
-  `telegram: refused a button press` with `cause=unknown_request`.
-- The message still shows `👍 approved once by you at HH:MM:SS`. The
-  second tap must not change it.
-- The log has no line `cannot update the message of a request that
-  ended`. After the second tap, the broker writes the same text again.
-  Telegram answers "message is not modified", and the broker takes that
-  as done.
+  `telegram: refused a button press` with `cause=unknown_request`. The
+  message still shows `👍 approved once by you at HH:MM:SS`, and the log
+  has no line `cannot update the message of a request that ended`.
+
+In the run of 2026-10-15, the buttons went away in the tester's Telegram
+client after the first tap, so no second tap reached the broker. Another
+Telegram client, another version of it, or a slow network may still send
+a second tap. The tests with the fake Telegram server check that the
+broker refuses it.
 
 ### Check 6: Late tap after a restart
 
@@ -354,31 +357,23 @@ chats the next number, so send a probe message first:
    tg editMessageText "{\"chat_id\":$CHAT,\"message_id\":$M,\"text\":\"check 7: changed by another client\"}" | jq -c '.ok, .result.reply_markup'
    ```
 
+   It prints `true`, then `null`: the changed message has no buttons.
    The phone must show the new text on the message of step 2. If the
    call failed, or another message changed, the number was not right:
    tap **Deny**, and start again at step 1.
-4. Look at the message. Write down whether the buttons are still there.
-5. If the buttons are still there, tap **Approve once**, then **Deny**.
-   If they are gone, wait 60 seconds for the expiry.
+4. Look at the message: its buttons are gone. Wait 60 seconds for the
+   expiry.
 
 Expected:
 
-- If the buttons stayed: **Approve once** shows
-  `Someone else changed this message. This tap does not count.`, and
-  terminal 2 still waits. An alert message comes:
-  `⚠️ nodkey: Someone else changed a message of the broker while its
-  request waited for an answer...`. The log has
-  `telegram: ALERT: someone else changed a message of the broker`, and
-  `telegram: refused a button press` with `cause=edited_message`. Then
-  **Deny** shows `Denied. Someone else changed this message.`, terminal
-  2 prints `nodkey: denied (exit 77)`, and the message gets its own text
-  back, with `⛔ denied by you at HH:MM:SS` and no buttons. The buttons
-  were the same as before, so the broker refused the Approve only for
-  the edit (`edit_date`): this also passes
-  [check 8](#check-8-an-edit-that-keeps-the-buttons).
-- If the buttons went away: after 60 seconds, terminal 2 prints
+- The edit removed the buttons. After 60 seconds, terminal 2 prints
   `nodkey: denied (exit 77)`. The message gets its own text back, with
-  `⌛ expired — denied`. No alert comes, because there was no tap.
+  `⌛ expired — denied`. No alert comes, because there was no tap. This
+  is what the run of 2026-10-15 saw.
+- If the buttons stayed (not seen with the real Bot API): write that
+  down. Tap **Approve once**, then **Deny**, before the request expires.
+  Expect what [check 8](#check-8-an-edit-that-keeps-the-buttons)
+  expects, and skip check 8.
 
 ### Check 8: An edit that keeps the buttons
 
@@ -387,49 +382,76 @@ message and give it its own buttons again, as someone with the token
 could. The broker never edits a message while it waits, so it must
 refuse the Approve because of the edit (`edit_date`) alone.
 
-1. Terminal 3, a new probe:
+This check needs more than 60 seconds: in the run of 2026-10-15, 60
+seconds were too short for it. So first give each request 3 minutes.
+
+1. Terminal 3, change the timeout in the config of the broker:
+
+   ```sh
+   sed -i 's/^timeout = "60s"$/timeout = "180s"/' "$T/broker.toml"
+   grep '^timeout' "$T/broker.toml"    # must show: timeout = "180s"
+   ```
+
+2. Restart the broker, so that it reads the new timeout. First stop it
+   cleanly, with SIGTERM. Terminal 3:
+
+   ```sh
+   pkill -TERM -f "nodkey broker --config $T/broker.toml"
+   ```
+
+   Terminal 1 prints `the broker exited with 0`. Do not use Ctrl-C
+   here: in bash, it stops `tee` too, and then the broker cannot write
+   its log, and does not stop cleanly. Then start the broker again in
+   terminal 1, with the same command as in
+   [step 6](#6-start-the-broker).
+3. Terminal 3, a new probe:
 
    ```sh
    P=$(tg sendMessage "{\"chat_id\":$CHAT,\"text\":\"probe 8\"}" | jq .result.message_id)
    M=$((P + 1)); echo "probe: $P, the next message: $M"
    ```
 
-2. Terminal 2: `ask demo-always "check 8"`. Do not tap.
-3. Terminal 3, read the buttons of the message: forward it into the same
-   chat. The answer holds the buttons of the copy:
-
-   ```sh
-   MARKUP=$(tg forwardMessage "{\"chat_id\":$CHAT,\"from_chat_id\":$CHAT,\"message_id\":$M}" | jq -c .result.reply_markup)
-   echo "$MARKUP"
-   ```
-
-   It must show the two buttons of the message, with `callback_data`
-   `o:...` and `d:...`. If it shows `null`, the copy has no buttons:
-   write that down, and read the buttons from the pinned message
-   instead:
+4. Terminal 2: `ask demo-always "check 8"`. Do not tap.
+5. Terminal 3, read the buttons of the message. A forwarded copy cannot
+   help: in the run of 2026-10-15, it had no buttons (`reply_markup` was
+   `null`). So pin the message, read it with `getChat`, and unpin it:
 
    ```sh
    tg pinChatMessage "{\"chat_id\":$CHAT,\"message_id\":$M,\"disable_notification\":true}"
    MARKUP=$(tg getChat "{\"chat_id\":$CHAT}" | jq -c .result.pinned_message.reply_markup)
+   tg unpinChatMessage "{\"chat_id\":$CHAT,\"message_id\":$M}"
    echo "$MARKUP"
    ```
 
-4. If the copy of step 3 has buttons, tap **Approve once** on the copy.
-   Expected: `This button does not count.`, and in the log
-   `cause=wrong_message`. The request still waits.
-5. Terminal 3, change the text, and keep the buttons:
+   It must show the two buttons of the message, with `callback_data`
+   `o:...` and `d:...`.
+6. Terminal 3, change the text, and keep the buttons:
 
    ```sh
    tg editMessageText "{\"chat_id\":$CHAT,\"message_id\":$M,\"text\":\"check 8: a harmless text\",\"reply_markup\":$MARKUP}" | jq -c '.ok, .result.edit_date'
    ```
 
-6. Tap **Approve once** on the changed message, then **Deny**.
+   It prints `true`, then the time of the edit.
+7. Tap **Approve once** on the changed message, then **Deny**.
 
-Expected: the same as in check 7, when the buttons stayed. The broker
-sends at most one alert about a changed message in 10 minutes, so this
-alert may not come again; the line with `cause=edited_message` must be
-in the log anyway. If you pinned the message in step 3, unpin it:
-`tg unpinChatMessage "{\"chat_id\":$CHAT,\"message_id\":$M}"`.
+Expected:
+
+- **Approve once** shows
+  `Someone else changed this message. This tap does not count.`, and
+  terminal 2 still waits. An alert message comes:
+  `⚠️ nodkey: Someone else changed a message of the broker while its
+  request waited for an answer...`. The log has
+  `telegram: ALERT: someone else changed a message of the broker`, and
+  `telegram: refused a button press` with `cause=edited_message`. The
+  buttons were the same as before, so the broker refused the Approve
+  only for the edit (`edit_date`).
+- **Deny** shows `Denied. Someone else changed this message.`, terminal
+  2 prints `nodkey: denied (exit 77)`, and the message gets its own text
+  back, with `⛔ denied by you at HH:MM:SS` and no buttons.
+- The broker sends at most one alert about a changed message in 10
+  minutes. So if you do this check again within 10 minutes, the alert
+  may not come again. The line with `cause=edited_message` must be in
+  the log anyway.
 
 ### Check 9: "message is not modified"
 
@@ -442,9 +464,11 @@ tg editMessageText "{\"chat_id\":$CHAT,\"message_id\":$P,\"text\":\"probe 8\"}"
 
 Use `probe 7` if `$P` is the probe of check 7. Expected:
 `"ok":false,"error_code":400`, and a `description` that holds
-`message is not modified`. The broker looks for exactly these words.
-Write down the whole description. Together with check 5, this shows that
-the broker takes this answer as done, and logs no warning.
+`message is not modified`. The broker looks for exactly these words, and
+takes such an answer as done. Write down the whole description. Check 5
+shows the broker's side only when a second tap reaches the broker; in
+the run of 2026-10-15, none did. The tests with the fake Telegram server
+send this answer, and check that the broker takes it as done.
 
 ### Check 10: A second poller
 
@@ -473,8 +497,10 @@ Expected:
 ### Check 11: A token that Telegram no longer takes (optional)
 
 1. Terminal 1: start the broker again.
-2. In BotFather, send `/revoke`, and choose the test bot. Do not save
-   the new token.
+2. In BotFather, send `/revoke`, and choose the test bot. If BotFather
+   says the bot is invalid, send its user name with the `@`, for example
+   `@my_test_bot`, or use `/mybots`, choose the bot, then **API Token**,
+   then **Revoke current token**. Do not save the new token.
 
 Expected: within about a minute, the log has `Telegram refused
 getUpdates` with `(401)`, and terminal 1 prints
@@ -495,9 +521,9 @@ match`. The list of entries shows each check:
 - `decision` entries with `approve_once`, `approve_window` and `deny`;
 - a `grant_used` entry from check 2;
 - `denied` entries with `approver`, `limit` and `expired`;
-- `foreign_tap` entries with `unknown_request` (checks 5 and 6) and
-  `edited_message` (check 7 or 8). One has `wrong_message`, if you
-  tapped the copy in check 8;
+- `foreign_tap` entries with `unknown_request` (check 6, and check 5 if
+  a second tap reached the broker) and `edited_message` (check 8, or
+  check 7 if its buttons stayed);
 - an `error` entry with `poll_conflict` (check 10).
 
 ### Check 13: The bot token in the logs
@@ -516,7 +542,10 @@ processes. Expected: it prints `0` for both files.
 ## Clean up
 
 1. Terminal 1: stop the broker with Ctrl-C, if it still runs.
-2. In BotFather, send `/deletebot`, and choose the test bot.
+2. In BotFather, send `/deletebot`, and choose the test bot. If
+   BotFather says the bot is invalid, send its user name with the `@`,
+   for example `@my_test_bot`, or use `/mybots`, choose the bot, then
+   **Delete Bot**.
 3. Remove the files of the test, with the token: `rm -rf ~/.config/nodkey-test`.
 4. Delete the chat with the test bot on the phone, if you want.
 
@@ -541,13 +570,11 @@ raw answer of the Bot API, and the lines of the log with `user_id` or
 | 3 | Deny | exit 77; `denied by you`; buttons gone | | |
 | 3 | inside the pause | `denied by a limit of the broker`, exit 77 at once, no message | | |
 | 4 | expiry | exit 77 after 60 s; `expired — denied`; buttons gone | | |
-| 5 | double tap | second tap: `This request has ended.`; the result stays; no warning in the log | | |
+| 5 | double tap | the command runs once; second tap: `This request has ended.` and the result stays, or "not possible in this client" (the buttons were gone) | | |
 | 6 | late tap after a restart | `This request has ended.`; buttons gone; old text stays | | |
-| 7 | edit without `reply_markup` | write down: the buttons stayed, or went away | | |
+| 7 | edit without `reply_markup` | the buttons went away; exit 77 after 60 s; own text back; no alert | | |
 | 7 or 8 | Approve on an edited message (`edit_date`) | refused; alert; `cause=edited_message` | | |
 | 7 or 8 | Deny on an edited message | counts; exit 77; own text back | | |
-| 8 | a forward keeps the buttons | write down: yes or no | | |
-| 8 | Approve on the forwarded copy | `This button does not count.`; `cause=wrong_message` | | |
 | 9 | "message is not modified" | error 400 with these words; the description | | |
 | 10 | second poller | alert; exit code 76; `getUpdates` got: empty list, N updates, or error code | | |
 | 11 | revoked token (optional) | exit code 77; no alert | | |

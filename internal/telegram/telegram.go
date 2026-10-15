@@ -309,7 +309,8 @@ func (a *Approver) Ask(ctx context.Context, p approval.Prompt) (approval.Shown, 
 
 // End updates the message m after its request ended: the same lines, with
 // the result instead of the expiry, and no buttons. It always sends an
-// empty keyboard: leaving the keyboard out would keep the buttons.
+// empty keyboard. An edit without a keyboard removes the buttons too (the
+// manual test of issue #17, 2026-10-15), but End does not depend on that.
 func (a *Approver) End(ctx context.Context, m approval.MessageID, p approval.Prompt, e approval.Ending) error {
 	chatID, msgID, ok := parseMessageID(m)
 	if !ok || chatID != a.userID {
