@@ -59,7 +59,7 @@ func runWithPanicApprover(t *testing.T, e *env) (*panicApprover, chan any) {
 	recovered := make(chan any, 1)
 	go func() {
 		defer func() { recovered <- recover() }() // as nodkey broker might
-		_ = e.svc.Run(ctx, core, nil)
+		_ = e.svc.Run(ctx, core, nil, nil)
 	}()
 	if err := e.approver.WaitRunning(waitLimit); err != nil {
 		t.Fatal(err)

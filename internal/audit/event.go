@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+
+	"github.com/code6x/nodkey/internal/version"
 )
 
 // Event is the content of one audit entry: what happened. The events are
@@ -276,8 +278,6 @@ var (
 	remoteUserPattern = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$`)
 	// hostKeyPattern is an OpenSSH SHA256 fingerprint.
 	hostKeyPattern = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
-	// versionPattern is a version such as "1.2.0", "v1.2.0-rc.1" or "dev".
-	versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$`)
 )
 
 // maxTapData is the most bytes of button data that Telegram allows.
@@ -339,7 +339,7 @@ func (s *Subject) validate(needRequest bool) error {
 }
 
 func (e BrokerStarted) validate() error {
-	if !versionPattern.MatchString(e.Version) {
+	if !version.Valid(e.Version) {
 		return errors.New("version must be a version such as 1.2.0 or dev")
 	}
 	return nil

@@ -198,6 +198,51 @@ func TestBrokerStartsAndStops(t *testing.T) {
 	}
 }
 
+// TestBrokerVersionNotice: a release of nodkey broker sends its version on
+// each answer. A client that sends no version, as nodkey 0.1.0 does, gets
+// one line in the journal and one silent notice, through the Telegram
+// approver, in the chat of the notices: here the approver's. A second
+// request gets neither, and the stop is clean.
+func TestBrokerVersionNotice(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{}, seamReleaseVersion)
+	e.stderr.wait(t, lineListening)
+	c := e.httpClient()
+	for range 2 {
+		a := e.post(c, api.PathKeys, api.KeysRequest{})
+		mustStatus(t, a, http.StatusOK)
+		if got := a.header.Values(api.VersionHeader); !slices.Equal(got, []string{"0.2.0"}) {
+			t.Errorf("the answer has the version %q, want 0.2.0", got)
+		}
+	}
+	var notice struct {
+		ChatID              int64  `json:"chat_id"`
+		Text                string `json:"text"`
+		DisableNotification bool   `json:"disable_notification"`
+		LinkPreviewOptions  struct {
+			IsDisabled bool `json:"is_disabled"`
+		} `json:"link_preview_options"`
+	}
+	if err := json.Unmarshal([]byte(e.tg.waitAlert("sent no version of nodkey")), &notice); err != nil {
+		t.Fatal(err)
+	}
+	want := "ℹ️ nodkey: The client laptop sent no version of nodkey, so it may run an older nodkey. The broker " +
+		"runs nodkey 0.2.0. To update laptop, follow section 13 of docs/setup.md."
+	if notice.ChatID != approverID || !notice.DisableNotification || !notice.LinkPreviewOptions.IsDisabled ||
+		notice.Text != want {
+		t.Errorf("the notice: %+v", notice)
+	}
+	e.stderr.wait(t, "broker: a client sent no version of nodkey")
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK)
+	if n := e.tg.alertCount("sent no version of nodkey"); n != 1 {
+		t.Errorf("%d notices, want 1", n)
+	}
+	if n := e.stderr.count("a client sent no version of nodkey"); n != 1 {
+		t.Errorf("%d lines in the journal, want 1", n)
+	}
+}
+
 // TestBrokerPollConflict: when Telegram reports a polling conflict, the
 // broker sends an alert, writes an error entry with poll_conflict, stops
 // in order, and exits with exitPollConflict, which the example unit lists

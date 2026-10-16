@@ -9,7 +9,9 @@
 // it does, in this order:
 //
 //  1. It takes the client name only from transport.ClientName, and
-//     refuses a request without one.
+//     refuses a request without one. Then it compares the version that
+//     the client claims with its own (version.go). The claim changes
+//     nothing about the request.
 //  2. It routes by the exact method and path: anything else gets 404 or
 //     405, also "OPTIONS *" and "PRI *".
 //  3. It refuses every request while the approver is not running, after
@@ -37,6 +39,9 @@
 //     error denies; every fetched value is cleared on every path. The
 //     answer with values is written by hand into one buffer, which is
 //     cleared too (api.SecretsAnswer.Encode).
+//
+// Every answer, with every status, has the broker's version in the header
+// api.VersionHeader.
 //
 // A panic in a request denies it: the connection drops, and the audit log
 // records the request, also before the core gave it an ID. Requests that a
@@ -68,6 +73,7 @@ import (
 	"github.com/code6x/nodkey/internal/sshauth"
 	"github.com/code6x/nodkey/internal/store"
 	"github.com/code6x/nodkey/internal/telegram"
+	"github.com/code6x/nodkey/internal/version"
 )
 
 // MaxRequestsPerClient is the most requests of one client that the broker
@@ -138,6 +144,13 @@ type AuditLog interface {
 // deadline.
 type AlertFunc func(ctx context.Context, msg string) error
 
+// NoticeFunc sends a silent notice of the broker itself to the notice
+// chat, such as telegram.Approver.Inform. It must not take from the
+// limits of the notices of "never ask" uses. It makes one try; the
+// Service tries again later after an error (version.go). msg is the
+// broker's own text. ctx has a deadline.
+type NoticeFunc func(ctx context.Context, msg string) error
+
 // Parts are the parts that a Service uses. nodkey broker makes them at
 // start: it checks the config files, loads each SSH key with
 // sshauth.NewKey and the hosts of its [key.*] section, opens the audit
@@ -155,6 +168,12 @@ type Parts struct {
 	// Logger gets the broker's log lines, such as from NewLogger. It may
 	// be nil; then nothing is logged.
 	Logger *slog.Logger
+	// Version is the version of this broker, as nodkey version prints it,
+	// such as "1.2.0" or "dev". The broker sends it in the header
+	// api.VersionHeader of every answer, and compares it with the version
+	// that each client sends (version.go). Without a valid version, it
+	// sends none and compares nothing.
+	Version string
 }
 
 // Service answers the requests of the clients. Make it with New, pass it
@@ -168,6 +187,12 @@ type Service struct {
 	keysOf map[string]api.KeysAnswer // the answer of PathKeys, by client
 	log    *slog.Logger
 	random io.Reader // crypto/rand.Reader, for request IDs
+	// version is the broker's own version (Parts.Version), or "" when it
+	// is not valid.
+	version string
+	// now is time.Now, for the tries of the notices about versions; tests
+	// change it. Read it with mu held.
+	now func() time.Time
 
 	// maxPerClient is MaxRequestsPerClient; tests change it.
 	maxPerClient int
@@ -190,8 +215,12 @@ type Service struct {
 	mu       sync.Mutex
 	core     *approval.Core // set by Run
 	alert    AlertFunc      // set by Run
+	notice   NoticeFunc     // set by Run
 	closed   bool
 	inflight map[string]int // requests in progress, by client
+	// versionNotes holds where the broker is with the notice about the
+	// version of each client of the config, in this start (version.go).
+	versionNotes map[string]*versionNote
 
 	coreStopped atomic.Bool // the approval core's Run returned
 	broken      atomic.Bool // an audit write failed
@@ -246,10 +275,16 @@ func New(p Parts) (*Service, error) {
 		stopCtx:        stopCtx,
 		stop:           stop,
 		inflight:       make(map[string]int),
+		versionNotes:   make(map[string]*versionNote, len(cfg.Clients)),
+		now:            time.Now,
 		taps:           make(chan audit.ForeignTap, tapQueue),
 		tapsStop:       make(chan struct{}),
 	}
+	if version.Valid(p.Version) {
+		s.version = p.Version
+	}
 	for name := range cfg.Clients {
+		s.versionNotes[name] = &versionNote{}
 		s.clientBodies[name] = make(chan struct{}, maxBodiesPerClient)
 		s.refusedEntries[name] = newRateLimit(refusedEntriesPerMinute, func(n int) {
 			s.log.Warn("broker: did not write the audit entries of refused requests, to keep the log small",
@@ -329,14 +364,15 @@ func checkKeys(cfg *config.Broker, keys map[string]sshauth.Key) (map[string]api.
 // passes the person's answers to the core, until ctx ends or the approver
 // stops. Requests that come before Run, and after Run returned, are
 // denied. alert sends an alert message, such as when the audit log
-// breaks; it may be nil.
+// breaks; it may be nil. notice sends a notice about a client that runs
+// another version of nodkey (version.go); it may be nil.
 //
 // When the core's Run returns, every request is denied, also one that a
 // grant or a "never ask" rule would allow, and the broker must stop. Run
 // returns why the core stopped. If it was telegram.ErrPollConflict,
 // another program polls with the bot token, so Run first writes an error
 // entry with code poll_conflict.
-func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc) error {
+func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc, notice NoticeFunc) error {
 	if core == nil {
 		return errors.New("broker: Run needs the approval core")
 	}
@@ -349,7 +385,7 @@ func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc)
 		s.mu.Unlock()
 		return errors.New("broker: Run can run only once")
 	}
-	s.core, s.alert = core, alert
+	s.core, s.alert, s.notice = core, alert, notice
 	s.mu.Unlock()
 
 	// Deny every request once the core stops, also when the approver's

@@ -10,7 +10,9 @@
 // code; Post passes on only that code. Only a final 200 whose body passes
 // api.ReadAnswer counts. Every other answer, and every error, is an *Error
 // with a fixed text: it never holds an answer body, a header, a value, or
-// other text that the other side of the connection chose.
+// other text that the other side of the connection chose. Each request
+// has the client's version in a header, and each answer the broker's;
+// when they differ, the client prints one warning (version.go).
 package client
 
 import (
@@ -72,6 +74,9 @@ type Broker struct {
 	addr    string
 	client  *http.Client
 	timeout time.Duration // RequestTimeout; tests make it short
+	// versions sends this client's version, and warns when the broker
+	// runs another (warnVersions).
+	versions versions
 }
 
 // Load reads the client config at path with config.LoadClient, and the
@@ -220,6 +225,10 @@ func (tr *trace) isConnected() bool {
 // redirect; a 200 whose body api.ReadAnswer refuses; more than a few
 // informational answers; no answer within the deadline; and a failed
 // connection.
+//
+// The request has this client's version in its header, and Post compares
+// the version in the header of the final answer with it, whatever its
+// status, before it returns (warnVersions).
 func Post[T any, P interface {
 	*T
 	json.Unmarshaler
@@ -243,12 +252,16 @@ func Post[T any, P interface {
 	req.GetBody = nil
 	req.Close = true
 	req.Header.Set("Content-Type", api.ContentType)
+	b.versions.setVersion(req.Header)
 	defer b.client.CloseIdleConnections()
 	resp, err := b.client.Do(req)
 	if err != nil {
 		return nil, b.requestError(ctx, reqCtx, err, tr.isConnected())
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// Only the pinned broker can send this answer: the TLS handshake
+	// checked its key.
+	b.versions.check(resp.Header)
 	if resp.StatusCode != http.StatusOK {
 		// The body of an error answer is never read: it is not needed, and
 		// it must never be shown.

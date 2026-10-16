@@ -324,6 +324,13 @@ type testBroker struct {
 
 func newTestBroker(t *testing.T) *testBroker {
 	t.Helper()
+	return newTestBrokerWith(t, "")
+}
+
+// newTestBrokerWith is newTestBroker for a broker whose version is
+// version ("" for none).
+func newTestBrokerWith(t *testing.T, version string) *testBroker {
+	t.Helper()
 	tb := &testBroker{
 		key:      newTLSKey(t),
 		laptop:   newTLSKey(t),
@@ -353,14 +360,14 @@ func newTestBroker(t *testing.T) *testBroker {
 		t.Fatal(err)
 	}
 	svc, err := broker.New(broker.Parts{Config: cfg, Audit: tb.audit,
-		Stores: map[string]store.Store{"main": tb.store}})
+		Stores: map[string]store.Store{"main": tb.store}, Version: version})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tb.addr = serve(t, tb.key, cfg.Clients, svc)
 	runCtx, stopRun := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
-	go func() { runErr <- svc.Run(runCtx, core, nil) }()
+	go func() { runErr <- svc.Run(runCtx, core, nil, nil) }()
 	t.Cleanup(func() {
 		stopRun()
 		select {

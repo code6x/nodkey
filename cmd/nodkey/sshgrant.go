@@ -10,5 +10,5 @@ import (
 // logins as one user to a list of hosts, for some minutes (DESIGN.md
 // section 13).
 func runSSHGrant(args []string, stderr io.Writer) int {
-	return client.SSHGrant(args, stderr)
+	return client.SSHGrant(args, stderr, version)
 }

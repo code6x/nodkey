@@ -82,6 +82,9 @@ const (
 	// seamFastAlertTries makes the tries of the alert messages of the
 	// start short: 1.5 seconds each, and 0.1 to 0.4 seconds between them.
 	seamFastAlertTries = "fast-alert-tries"
+	// seamReleaseVersion makes the child the release 0.2.0, as a release
+	// build is with -ldflags "-X main.version=0.2.0".
+	seamReleaseVersion = "release-version"
 )
 
 // telegramHost is the host of the Bot API.
@@ -134,6 +137,8 @@ func TestBrokerChild(t *testing.T) {
 			}
 		case seamFastAlertTries:
 			alertTimeout, alertFirstWait, alertMaxWait = 1500*time.Millisecond, 100*time.Millisecond, 400*time.Millisecond
+		case seamReleaseVersion:
+			version = "0.2.0"
 		case seamNoCoreDumps:
 			if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{}); err != nil {
 				fmt.Fprintln(os.Stderr, "child: cannot set the hard limit of core dumps to 0")
@@ -737,6 +742,7 @@ func (e *brokerEnv) httpClient() *http.Client {
 // brokerAnswer is what a client got.
 type brokerAnswer struct {
 	status int
+	header http.Header
 	body   []byte
 	err    error
 }
@@ -761,7 +767,7 @@ func (e *brokerEnv) post(c *http.Client, path string, body any) brokerAnswer {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, api.MaxAnswer+1))
-	return brokerAnswer{status: resp.StatusCode, body: b, err: err}
+	return brokerAnswer{status: resp.StatusCode, header: resp.Header, body: b, err: err}
 }
 
 // approve sends a request that needs a tap, taps "Approve once" on its

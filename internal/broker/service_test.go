@@ -593,7 +593,7 @@ func TestNotReady(t *testing.T) {
 	e.svc.Close()
 	mustStatus(t, e.post(t.Context(), c, api.PathSecrets, secretsRequest("GH_TOKEN", "github-token")),
 		http.StatusServiceUnavailable)
-	if err := e.svc.Run(t.Context(), e.core, nil); !errors.Is(err, errClosed) {
+	if err := e.svc.Run(t.Context(), e.core, nil, nil); !errors.Is(err, errClosed) {
 		t.Errorf("Run after Close: %v", err)
 	}
 	if n := len(e.audit.all()); n != 0 {
@@ -681,10 +681,10 @@ func TestRunTwice(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if err := e.svc.Run(ctx, e.core, nil); err == nil {
+	if err := e.svc.Run(ctx, e.core, nil, nil); err == nil {
 		t.Error("a second Run: no error")
 	}
-	if err := e.svc.Run(ctx, nil, nil); err == nil {
+	if err := e.svc.Run(ctx, nil, nil, nil); err == nil {
 		t.Error("Run without a core: no error")
 	}
 }

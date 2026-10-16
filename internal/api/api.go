@@ -8,6 +8,8 @@
 // status with {"error": "<status text>"} and nothing more. While a request
 // waits for the approver, the broker first sends an informational answer,
 // 102 Processing, with the short code in the header ShortCodeHeader.
+// Each request has the client's version in the header VersionHeader, and
+// each answer the broker's.
 //
 // The decoding is strict, on both sides: every field must be there, no
 // field may be null, and no other field may be there. Keys must match
@@ -21,6 +23,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/code6x/nodkey/internal/version"
 )
 
 // The paths of the broker. Each takes POST only.
@@ -48,6 +52,26 @@ const ContentType = "application/json"
 // person at the terminal can match it with the message on the phone
 // (DESIGN.md section 5). Read it with ShortCode.
 const ShortCodeHeader = "Nodkey-Short-Code"
+
+// VersionHeader holds the version of nodkey of the side that sends it,
+// such as "1.2.0" or "dev": the client's in each request, and the
+// broker's in each answer, with every status (DESIGN.md section 10). It
+// is a header, not a field of the JSON body, so that versions with other
+// fields can still read it. The client's version is a claim: the broker
+// decides nothing with it. Read it with Version.
+const VersionHeader = "Nodkey-Version"
+
+// Version returns the version in the header VersionHeader of a request or
+// an answer. It returns "" when there is no such header, more than one,
+// or a value that version.Valid refuses. Such a value counts as no
+// version, and is never printed or logged.
+func Version(h http.Header) string {
+	values := h.Values(VersionHeader)
+	if len(values) != 1 || !version.Valid(values[0]) {
+		return ""
+	}
+	return values[0]
+}
 
 // Caps on a request (DESIGN.md section 10). With them, every valid request
 // fits in the 2 MiB that the broker reads (transport.MaxRequestBody); a

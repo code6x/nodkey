@@ -66,7 +66,7 @@ func TestRunWithTheRealFiles(t *testing.T) { // not parallel: it sets HOME
 		}
 	})
 	var stderr strings.Builder
-	code := Run([]string{"--secret", "GH_TOKEN=github-token", "--", self(t)}, &stderr)
+	code := Run([]string{"--secret", "GH_TOKEN=github-token", "--", self(t)}, &stderr, "dev")
 	if d := dumpable(); d != 0 {
 		t.Errorf("after Run asked the broker, the process is dumpable (%d)", d)
 	}
@@ -81,7 +81,7 @@ func TestRunWithTheRealFiles(t *testing.T) { // not parallel: it sets HOME
 		t.Fatal(err)
 	}
 	stderr.Reset()
-	code = Run([]string{"--secret", "GH_TOKEN=github-token", "--", self(t)}, &stderr)
+	code = Run([]string{"--secret", "GH_TOKEN=github-token", "--", self(t)}, &stderr, "dev")
 	if last := lastLine(stderr.String()); code != exitUnavailable || !strings.Contains(last, "tls_key") ||
 		!strings.Contains(last, "group has access") {
 		t.Errorf("with a key file that its group can read: exit code %d, stderr %q", code, safe(stderr.String()))

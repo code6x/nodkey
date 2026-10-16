@@ -154,7 +154,7 @@ func newGrantBrokerWith(t *testing.T, opts grantBrokerOptions) *grantBroker {
 	gb.addr = serve(t, gb.key, cfg.Clients, handler)
 	runCtx, stopRun := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
-	go func() { runErr <- svc.Run(runCtx, core, nil) }()
+	go func() { runErr <- svc.Run(runCtx, core, nil, nil) }()
 	t.Cleanup(func() {
 		stopRun()
 		select {

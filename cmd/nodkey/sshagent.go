@@ -18,5 +18,5 @@ import (
 // machine sent.
 func runSSHAgent(args []string, stderr io.Writer) int {
 	log.SetOutput(io.Discard)
-	return client.SSHAgent(args, stderr)
+	return client.SSHAgent(args, stderr, version)
 }

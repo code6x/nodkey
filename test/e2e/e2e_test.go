@@ -622,9 +622,11 @@ func firstOf(text string, parts []string) string {
 // nodkey: not the broker's journal, not nodkey ssh-agent, and not the
 // lines of nodkey run, nodkey ssh-grant, nodkey keygen and nodkey audit
 // verify. The config of the test has no "never ask" rule, so no notice
-// goes out, and nothing in the test makes an alert: every message must
-// have buttons. It runs after the broker has stopped, when its alerts in
-// the background have gone out too.
+// goes out, and nothing in the test makes an alert. The client and the
+// broker are the same build from the source, so no notice about a version
+// goes out either (DESIGN.md section 10): every message must have
+// buttons. It runs after the broker has stopped, when its alerts in the
+// background have gone out too.
 func (e *env) searchClaimed(t *testing.T) {
 	for _, text := range e.tg.unasked(t) {
 		t.Errorf("a message without buttons went out, an alert or a notice:\n%s", redact(text))

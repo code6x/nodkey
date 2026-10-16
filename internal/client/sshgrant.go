@@ -58,7 +58,8 @@ const grantClock = "15:04"
 
 // SSHGrant runs nodkey ssh-grant with args, the arguments after
 // "ssh-grant", and writes its own messages to stderr (DESIGN.md sections
-// 13 and 15). It returns the exit code. Its last line on stderr is always
+// 13 and 15). version is the version of nodkey, as for Run. It returns
+// the exit code. Its last line on stderr is always
 // "nodkey: <result> (exit <code>)". After an approval, the result names the
 // remote user, the number of hosts, and when the grants end.
 //
@@ -66,8 +67,8 @@ const grantClock = "15:04"
 // comes, it cancels the request: the connection closes, so the broker
 // cancels the request too. Then it prints its last line and ends nodkey
 // with the same signal, so that a shell sees it.
-func SSHGrant(args []string, stderr io.Writer) int {
-	g := granter{load: Load, configPath: ConfigPath, environ: os.Environ, now: time.Now}
+func SSHGrant(args []string, stderr io.Writer, version string) int {
+	g := granter{load: Load, configPath: ConfigPath, environ: os.Environ, now: time.Now, version: version}
 	return g.main(args, stderr)
 }
 
@@ -82,6 +83,8 @@ type granter struct {
 	// now returns the time of this machine's clock, for the end of the
 	// grants in the last line: time.Now.
 	now func() time.Time
+	// version is the version of nodkey (warnVersions); "" sends none.
+	version string
 }
 
 // main is SSHGrant with the parts of g.
@@ -131,6 +134,7 @@ func (g granter) run(ctx context.Context, args []string, w io.Writer) int {
 	if err != nil {
 		return fail(stderr, exitUnavailable, err.Error())
 	}
+	b.warnVersions(g.version, func(text string) { warnLine(stderr, text) })
 	// The broker fixes the end of the grants when the request comes: its
 	// time plus the minutes. This time is taken before the request goes
 	// out, so the end in the last line is not later than the real end,

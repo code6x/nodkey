@@ -62,10 +62,12 @@ const tooLong = "[hidden: too long]"
 const reasonVar = "NODKEY_REASON"
 
 // Run runs nodkey run with args, the arguments after "run", and writes its
-// own messages to stderr. When the person approves, the command replaces
-// nodkey (execve), with the values in its environment, and Run does not
-// return. Otherwise Run returns the exit code of DESIGN.md section 15, and
-// the last line on stderr is "nodkey: <reason> (exit <code>)".
+// own messages to stderr. version is the version of nodkey: it goes to the
+// broker, and Run prints a warning when the broker runs another version.
+// When the person approves, the command replaces nodkey (execve), with the
+// values in its environment, and Run does not return. Otherwise Run
+// returns the exit code of DESIGN.md section 15, and the last line on
+// stderr is "nodkey: <reason> (exit <code>)".
 //
 // Run never ignores SIGPIPE: an ignored signal stays ignored after execve,
 // so the command would run with it ignored. Run catches SIGINT and SIGTERM
@@ -75,9 +77,9 @@ const reasonVar = "NODKEY_REASON"
 // shell sees it, as for a program that does not catch it. Right before the
 // command starts, Run stops catching them, so they end nodkey as they end
 // any Go program.
-func Run(args []string, stderr io.Writer) int {
+func Run(args []string, stderr io.Writer, version string) int {
 	r := runner{load: Load, configPath: ConfigPath, environ: os.Environ, exec: syscall.Exec,
-		notDumpable: notDumpable}
+		notDumpable: notDumpable, version: version}
 	return r.main(args, stderr)
 }
 
@@ -97,6 +99,8 @@ type runner struct {
 	// values: notDumpable. Tests in the test process replace it, so the
 	// test process stays as it is.
 	notDumpable func() error
+	// version is the version of nodkey (warnVersions); "" sends none.
+	version string
 }
 
 // main is Run with the parts of r.
@@ -162,6 +166,7 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 	if err != nil {
 		return fail(stderr, exitUnavailable, err.Error())
 	}
+	b.warnVersions(r.version, func(text string) { warnLine(stderr, text) })
 	// From here on, nodkey may hold values. So it writes no core dump, and
 	// other processes of the user cannot read its memory. execve makes the
 	// command dumpable again (DESIGN.md section 16).
@@ -227,6 +232,12 @@ func requestFailed(ctx context.Context, stderr io.Writer, err error) int {
 func fail(w io.Writer, code int, reason string) int {
 	_, _ = fmt.Fprintf(w, "nodkey: %s (exit %d)\n", oneLine(reason), code)
 	return code
+}
+
+// warnLine writes "nodkey: " and text as one line, such as a warning about
+// the version of the broker. It comes before the last line.
+func warnLine(w io.Writer, text string) {
+	_, _ = io.WriteString(w, "nodkey: "+oneLine(text)+"\n")
 }
 
 // oneLine replaces control characters and line breaks in s with spaces.
