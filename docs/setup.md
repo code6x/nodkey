@@ -100,21 +100,23 @@ section 5, item 8). So:
 ## 2. Get nodkey
 
 Install the same version of nodkey on the broker host and on each agent
-machine, as `/usr/local/bin/nodkey`, owned by root.
+machine, as `/usr/local/bin/nodkey`, owned by root. There are two ways
+to get it: from a release, or from the source. Use a trusted machine for
+both, never an agent machine ([section 1](#where-you-do-the-setup)).
 
-**From a release.** Download the tarball for your machine and
-`SHA256SUMS` from the
-[release page](https://github.com/code6x/nodkey/releases). Check both,
-as [docs/releasing.md](releasing.md#verify-a-download) says. Then:
+**From a release.** This is the easier way. Download the tarball for
+your machine, such as `nodkey_0.1.0_linux_amd64.tar.gz`
+(`nodkey_0.1.0_linux_arm64.tar.gz` on 64-bit ARM), and `SHA256SUMS` from
+the [release page](https://github.com/code6x/nodkey/releases). Check
+both, as [docs/releasing.md](releasing.md#verify-a-download) says. Then
+take the file `nodkey` out of the tarball:
 
 ```sh
 tar -xzf nodkey_0.1.0_linux_amd64.tar.gz nodkey
-install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey
 ```
 
-**From the source.** There is no release yet on 2026-10-15. Build nodkey
-with Go 1.26 or newer, on a trusted machine. Never build it on an agent
-machine: the agent could change the build.
+**From the source.** Build nodkey with Go 1.26 or newer. Never build it
+on an agent machine: the agent could change the build.
 
 ```sh
 git clone https://github.com/code6x/nodkey.git
@@ -125,13 +127,14 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(git rev-parse --sho
 The `-ldflags` part is optional. It puts the commit into
 `nodkey version` and into the `broker_started` entry of the audit log.
 
-Copy the file straight from the build machine to each machine, never
-through an agent machine ([section 1](#where-you-do-the-setup)). On the
-broker host, check that it is the same file: `sha256sum nodkey` must
-print the same SHA-256 as on the build machine. Then install it with the
-`install` command above, and check it:
+**Then, for both ways:** copy the file `nodkey` straight from the
+trusted machine to each machine, never through an agent machine
+([section 1](#where-you-do-the-setup)). On the broker host, check that it
+is the same file: `sha256sum nodkey` must print the same SHA-256 as on
+the trusted machine. Then install it, and check it:
 
 ```sh
+install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey
 nodkey version
 ```
 
@@ -777,6 +780,18 @@ instead.
 Copy the example unit
 [contrib/systemd/nodkey.service](../contrib/systemd/nodkey.service), of
 the same version as your nodkey, to `/etc/systemd/system/nodkey.service`.
+Never copy it through an agent machine: whoever can change the unit can
+run a program as root on the broker host. After a build from the source,
+the unit is in your copy of the repository. The release tarball does not
+hold it. Take it from the tag of your version in the repository, such as
+[v0.1.0](https://github.com/code6x/nodkey/blob/refs/tags/v0.1.0/contrib/systemd/nodkey.service),
+on the broker host or on the trusted machine. For 0.1.0, on the broker
+host:
+
+```sh
+curl -fL -o /etc/systemd/system/nodkey.service https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v0.1.0/contrib/systemd/nodkey.service
+```
+
 Then change it to fit your setup:
 
 - Keep one `LoadCredentialEncrypted=` line for each credential that you
@@ -1181,9 +1196,17 @@ cut shows as an anchor whose entry is missing.
 
 1. Read the release notes.
 2. Get the new version, and check it ([section 2](#2-get-nodkey)).
-3. Compare the example unit of the new version with your unit, and take
+3. Get the example unit of the new version from its tag, as in
+   [section 8](#8-the-systemd-unit), but save it as `nodkey.service`, not
+   over your unit. After a build from the source, use the unit in your
+   copy of the repository instead. Compare it with your unit, and take
    over the changes:
-   `diff -u /etc/systemd/system/nodkey.service contrib/systemd/nodkey.service`.
+
+   ```sh
+   VERSION=0.1.0   # the new version
+   curl -fL -o nodkey.service "https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v$VERSION/contrib/systemd/nodkey.service"
+   diff -u /etc/systemd/system/nodkey.service nodkey.service
+   ```
 4. Install it, and restart the broker:
 
    ```sh
