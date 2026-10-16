@@ -87,8 +87,10 @@ root on the broker host on the agent machine
    **Never log in to this Telegram account on a machine where an agent
    runs:** whoever can use the account can approve.
    Put the secret into Bitwarden Secrets Manager, and make a machine
-   account with an access token that can read it. Install `bws` as
-   `/usr/local/bin/bws`, owned by root
+   account with an access token that can read it. **Do this with a
+   Bitwarden account that is never logged in on a machine where an agent
+   runs:** whoever can use the account can read the secret without
+   nodkey. Install `bws` as `/usr/local/bin/bws`, owned by root
    ([section 5](docs/setup.md#5-stores)).
 3. **On the broker host, as root**, make the user of the broker, its TLS
    key and the encrypted credentials. Use `--with-key=host` instead of
@@ -186,7 +188,7 @@ root on the broker host on the agent machine
 
 Before real use, read
 [docs/setup.md](docs/setup.md): above all the safety of your Telegram
-account and of the broker host
+and Bitwarden accounts and of the broker host
 ([section 9](docs/setup.md#9-account-and-host-safety)), SSH logins
 ([section 11](docs/setup.md#11-a-client-on-the-agent-machine)), and the
 check of the audit log

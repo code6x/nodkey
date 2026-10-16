@@ -74,6 +74,11 @@ together.
 agent runs.** Whoever can use that account can approve
 ([section 9](#the-approvers-telegram-account)).
 
+**On a machine where an agent runs, never log in to a Bitwarden account
+that can read the secrets.** Whoever can use such an account can read
+them without nodkey
+([section 9](#the-bitwarden-accounts-that-can-read-the-secrets)).
+
 ### Where you do the setup
 
 The agent machine is not trusted. The agent may read its clipboard, its
@@ -87,9 +92,11 @@ section 5, item 8). So:
   an agent machine.
 - **Make and copy tokens and passwords only on that trusted computer,
   or on your phone**: the bot token, the `bws` access token, the
-  master password and the API key of a `bw` account. Never let them
-  pass through an agent machine: not its clipboard, not its terminal,
-  not its browser.
+  master password of each Bitwarden account that can read the secrets,
+  and the API key of a `bw` account. Never let them pass through an
+  agent machine: not its clipboard, not its terminal, not its browser.
+  Do not save them in a password manager that is open on an agent
+  machine.
 - **Keep no way to get root on the broker host on an agent machine**:
   no SSH key for the broker host, no SSH agent or `ControlMaster`
   socket that reaches it, no saved password.
@@ -413,8 +420,24 @@ choose the version, and read the release notes before an upgrade.
 
 ### bws: Bitwarden Secrets Manager
 
-In the web app of Secrets Manager, on a trusted computer
-([section 1](#where-you-do-the-setup)):
+**Use a Bitwarden account that is never logged in on an agent machine**:
+no web app in a browser, no browser extension, no desktop app and no CLI
+there. Every owner and admin of the organization can read every secret
+in Secrets Manager, and so can each member that you give access to the
+project ([THREAT-MODEL.md T32](../THREAT-MODEL.md#6-threats-and-answers)).
+If your main Bitwarden account is logged in on an agent machine, make
+the organization for Secrets Manager with a separate account, and do not
+add your main account to it.
+
+Bitwarden offers Secrets Manager for Free, Teams and Enterprise
+organizations. Its Free plan is for up to 2 users, 3 projects and 3
+machine accounts. With a Families plan, Bitwarden says to make a new
+Free organization for Secrets Manager
+([Secrets Manager plans](https://bitwarden.com/help/secrets-manager-plans/),
+seen 2026-10-16).
+
+In the web app of Secrets Manager, with that account, on a trusted
+computer ([section 1](#where-you-do-the-setup)):
 
 1. Make a project for the secrets that nodkey may hand out. Put these
    secrets into it.
@@ -475,6 +498,13 @@ the broker host gets the whole vault
 ([DESIGN.md section 11](../DESIGN.md#11-decision-2-loading-keys-after-a-restart),
 THREAT-MODEL.md T24). So use `bw` only with a **separate Bitwarden
 account** that holds nothing but the items that nodkey may hand out.
+
+**Never log in to this account on an agent machine**: no web app in a
+browser, no browser extension, no desktop app and no CLI there. Whoever
+can use the account can read every item in it, without nodkey
+([THREAT-MODEL.md T32](../THREAT-MODEL.md#6-threats-and-answers)).
+Share its items with no other account, and give no account emergency
+access to it: such an account could read them too.
 
 1. **Make the account**, on a trusted computer
    ([section 1](#where-you-do-the-setup)). Give it a long random master
@@ -863,6 +893,37 @@ Anyone who can use your Telegram account can approve
   phone.
 - Turn on two-step verification (**Settings → Privacy and Security**),
   and a passcode for the app.
+
+### The Bitwarden accounts that can read the secrets
+
+Anyone who can use a Bitwarden account that can read the secrets can
+read them in Bitwarden's own apps, with no tap and no entry in the audit
+log ([THREAT-MODEL.md T32](../THREAT-MODEL.md#6-threats-and-answers)).
+For `bws`, these are at least the owners and admins of the organization,
+and the members with access to the project. For `bw`, it is at least the
+separate account. T32 has the full lists.
+
+- **Never log in to such an account on a machine where an agent runs**:
+  no web app in a browser, no browser extension, no desktop app and no
+  CLI there. The agent could read the secrets itself, or record the
+  master password when you type it. The same holds for a phone that the
+  agent machine can control, such as through `adb` or KDE Connect.
+- Do not save the master password, the API key or the key of the
+  two-step login of these accounts in a password manager that is open on
+  an agent machine, such as your main Bitwarden account. With them, the
+  agent could log in to the account from anywhere.
+- If your main Bitwarden account is logged in on an agent machine, it
+  must not be able to read the secrets. Make the organization for Secrets
+  Manager with a separate account, and do not add your main account to it
+  ([section 5](#bws-bitwarden-secrets-manager)).
+- After each change to the organization, check who is an owner or an
+  admin, and who is on the People tab of the project, its secrets and its
+  machine accounts.
+- Turn on two-step login for these accounts, with an authenticator app or
+  a security key
+  ([Bitwarden's guide](https://bitwarden.com/help/setup-two-step-login/)).
+  A code by email does not help if you read that email on an agent
+  machine.
 
 ### Swap and hibernation
 

@@ -38,6 +38,7 @@ access to another machine and asks a person before each use.
 | the network between client and broker | Not trusted. |
 | target SSH hosts | Trusted to be who their host key says. |
 | the secret stores and the `bws` / `bw` programs | Trusted. Install them from the official source and check what you install. |
+| the Bitwarden accounts that can read the secrets of the stores | Trusted. Anyone who can use such an account can read these secrets in Bitwarden's own apps, with no tap. So these accounts must not be logged in on any agent machine (see T32). |
 
 ## 4. What nodkey promises
 
@@ -91,6 +92,10 @@ Read this part carefully. These are real limits.
    was ever readable on the agent machine, assume the agent may have a
    copy. Make a new key for the broker and remove the old one from the
    target hosts.
+9. **Anyone who can use a Bitwarden account that can read the secrets can
+   read them**, without nodkey and without a tap. That includes a login
+   on the agent machine: the web app in a browser, the browser extension,
+   the desktop app or the CLI (see T32).
 
 ## 6. Threats and answers
 
@@ -722,6 +727,75 @@ the short code of a real request. The person can still match the message
 on the phone by its verified lines: the host, the key and the remote
 user.
 
+**T32. A Bitwarden account that can read the secrets is logged in on an
+agent machine.**
+nodkey keeps the store token and the `bw` master password on the broker
+host, so the agent gets a secret only through the broker. But people can
+also read the secrets with their own Bitwarden accounts, in Bitwarden's
+own apps. Such a read needs no tap, and nodkey's audit log does not show
+it. A common setup keeps the main Bitwarden account logged in on the
+agent machine: in the web app in a browser, the browser extension, the
+desktop app or the CLI. The agent may be root there. It can read what
+these apps show, and it can record the master password when you type it.
+So if that account can read the secrets, the agent can read them too,
+without nodkey. The same holds for a device with such a login that the
+agent machine can control, such as a phone through `adb` or KDE Connect
+(T7).
+These accounts can read the secrets:
+- For `bw`: the separate account (T24), every account that you share its
+  items with, and every account that you give emergency access to it.
+  When an emergency access request is granted, a "View" contact gets
+  "view/read access to all items in your individual vault, including
+  login items' passwords"
+  ([emergency access](https://bitwarden.com/help/emergency-access/), seen
+  2026-10-16).
+- For `bws`, by Bitwarden's documentation and source code (seen
+  2026-10-16):
+  - every owner and admin of the organization. They "automatically have
+    Can read, write access to all secrets, projects, machine accounts,
+    and access tokens"
+    ([member roles](https://bitwarden.com/help/manage-your-secrets-org/));
+  - the member who made the project. Bitwarden gives this member read and
+    write access to it
+    ([source](https://github.com/bitwarden/server/blob/96fe09af893006195e6ecc50e7f6c8b786dea25d/bitwarden_license/src/Commercial.Core/SecretsManager/Commands/Projects/CreateProjectCommand.cs)),
+    and its help page says such a member "can edit these objects once
+    created"
+    ([member roles](https://bitwarden.com/help/manage-your-secrets-org/));
+  - the members and groups that you added to the project. They "will be
+    able to view existing secrets in this project"
+    ([projects](https://bitwarden.com/help/projects/));
+  - the people that you gave access to one of its secrets directly. That
+    lets them "interact with it from the Secrets view"
+    ([secrets](https://bitwarden.com/help/secrets/));
+  - the members and groups that you added to a machine account that can
+    read the project or one of its secrets. They can "generate access
+    tokens for the machine account and interact with all secrets the
+    machine account has access to"
+    ([machine accounts](https://bitwarden.com/help/machine-accounts/)).
+
+What to do:
+- Never log in on an agent machine to a Bitwarden account that can read
+  the secrets: not in the web app, the browser extension, the desktop app
+  or the CLI.
+- Do not save the master password, the API key or the key of the
+  two-step login of these accounts in a password manager that is open on
+  an agent machine, such as your main Bitwarden account. With them, the
+  agent could log in to the account from anywhere.
+- If your main Bitwarden account is logged in on an agent machine, make
+  the organization for Secrets Manager with a separate account, and do
+  not add your main account to it.
+- For `bw`, share the items of the separate account with no other
+  account, and give no account emergency access to it.
+- After each change to the organization, check who is an owner or an
+  admin, and who is on the People tab of the project, its secrets and its
+  machine accounts.
+- Turn on two-step login for these accounts, with an authenticator app or
+  a security key. A code by email does not help if you read that email on
+  an agent machine.
+
+Risk that remains: real. nodkey cannot see a read in Bitwarden's own
+apps, and it cannot check where an account is logged in.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has
@@ -736,6 +810,9 @@ user.
   its SHA-256 is checked there
   ([docs/setup.md section 1](docs/setup.md#where-you-do-the-setup)).
 - The approver's Telegram account is not logged in on any agent machine.
+- No Bitwarden account that can read the secrets of the stores is logged
+  in on any agent machine, and no agent machine can read its master
+  password.
 - The approver reads the verified lines before tapping.
 - The `ssh` program on the agent machine is OpenSSH 8.9 or newer, so it
   sends session-bind. It uses a key exchange with SHA-2, as it does by

@@ -1614,7 +1614,11 @@ anyone who breaks into the broker host gets the whole vault. So nodkey
 supports `bw` only with a separate Bitwarden account that holds nothing but
 the items nodkey may hand out. Bitwarden Secrets Manager (`bws`) does not
 have these problems: its machine-account token can see only the projects
-you give it.
+you give it. For both stores, some Bitwarden accounts can read the same
+secrets in Bitwarden's own apps, without nodkey: for `bw` the separate
+account, and for `bws` at least the owners and admins of the
+organization. These accounts must never be logged in on an agent machine
+(THREAT-MODEL.md T32).
 
 How the broker uses `bw`:
 
