@@ -33,4 +33,7 @@ normal issues.
 
 ## Supported versions
 
-There is no release yet. Until 1.0, only the latest release gets fixes.
+Until 1.0, only the
+[latest release](https://github.com/code6x/nodkey/releases/latest) gets
+fixes. To get a fix, upgrade to the newest release
+([docs/setup.md section 13](docs/setup.md#a-new-version-of-nodkey)).

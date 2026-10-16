@@ -3,10 +3,12 @@
 nodkey lets an AI coding agent use a secret or an SSH key only after a
 person approves that one request on a phone.
 
-**Status:** on 2026-10-15, the code of version 1 is on `main`, and the
-test with a real Telegram bot
-([#17](https://github.com/code6x/nodkey/issues/17)) is done. There is no
-release yet. Try it on a test setup first. See the
+**Status:** on 2026-10-15, the code of version 1 is on `main`, the test
+with a real Telegram bot
+([#17](https://github.com/code6x/nodkey/issues/17)) is done, and the
+first release,
+[0.1.0](https://github.com/code6x/nodkey/releases/tag/v0.1.0), is out.
+Try it on a test setup first. See the
 [v1 milestone](https://github.com/code6x/nodkey/milestone/1).
 
 ## How it works
@@ -48,17 +50,31 @@ clipboard, terminals and browser. Keep no SSH key or other way to get
 root on the broker host on the agent machine
 ([docs/setup.md section 1](docs/setup.md#where-you-do-the-setup)).
 
-1. **Install** `nodkey` on both machines. There is no release yet, so
-   build it from this repository with Go 1.26 or newer, on a trusted
-   machine, never on the agent machine:
+1. **Install** `nodkey` on both machines. Get it on a trusted machine,
+   never on the agent machine. The easy way is the
+   [latest release](https://github.com/code6x/nodkey/releases/latest):
+   download the tarball for the CPU of each machine, such as
+   `nodkey_0.1.0_linux_amd64.tar.gz` or `nodkey_0.1.0_linux_arm64.tar.gz`,
+   and `SHA256SUMS`. Check them as
+   [docs/releasing.md](docs/releasing.md#verify-a-download) says, and
+   take the file `nodkey` out of the tarball:
+
+   ```sh
+   tar -xzf nodkey_0.1.0_linux_amd64.tar.gz nodkey
+   ```
+
+   If the two machines have different CPUs, take each file out in a
+   folder of its own, and copy each to its machine.
+
+   Or build it from this repository with Go 1.26 or newer:
 
    ```sh
    CGO_ENABLED=0 go build -trimpath -o nodkey ./cmd/nodkey
    ```
 
-   Copy the file straight to both machines, not through the agent
-   machine. On the broker host, `sha256sum nodkey` must print the same
-   SHA-256 as on the build machine. Install it as root:
+   Copy the file `nodkey` straight to both machines, not through the
+   agent machine. On the broker host, `sha256sum nodkey` must print the
+   same SHA-256 as on the trusted machine. Install it as root:
 
    ```sh
    install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey
@@ -136,10 +152,20 @@ root on the broker host on the agent machine
    ask = "always"
    ```
 
-   Copy [contrib/systemd/nodkey.service](contrib/systemd/nodkey.service)
-   to `/etc/systemd/system/`. Keep only the `LoadCredentialEncrypted=`
-   lines of `broker-tls-key`, `telegram-token` and `bws-token`. Then
-   start the broker, and read its log:
+   Take the example unit from the tag of your version, such as
+   [v0.1.0](https://github.com/code6x/nodkey/blob/refs/tags/v0.1.0/contrib/systemd/nodkey.service),
+   never through the agent machine
+   ([docs/setup.md section 8](docs/setup.md#8-the-systemd-unit)). After
+   a build from the source, use the unit in your copy of the repository
+   instead. For the release 0.1.0:
+
+   ```sh
+   curl -fL -o /etc/systemd/system/nodkey.service https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v0.1.0/contrib/systemd/nodkey.service
+   ```
+
+   Keep only the `LoadCredentialEncrypted=` lines of `broker-tls-key`,
+   `telegram-token` and `bws-token`. Then start the broker, and read its
+   log:
 
    ```sh
    systemctl daemon-reload
