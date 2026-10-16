@@ -112,9 +112,9 @@ tar -xzf nodkey_0.1.0_linux_amd64.tar.gz nodkey
 install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey
 ```
 
-**From the source.** There is no release yet on 2026-10-15. Build nodkey
-with Go 1.26 or newer, on a trusted machine. Never build it on an agent
-machine: the agent could change the build.
+**From the source.** Build nodkey with Go 1.26 or newer, on a trusted
+machine. Never build it on an agent machine: the agent could change the
+build.
 
 ```sh
 git clone https://github.com/code6x/nodkey.git

@@ -33,4 +33,4 @@ normal issues.
 
 ## Supported versions
 
-There is no release yet. Until 1.0, only the latest release gets fixes.
+Until 1.0, only the latest release (`v0.1.0`) gets fixes.
