@@ -2625,7 +2625,9 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
 - release-please keeps a release pull request open. Merging it tags the
   version and creates the GitHub Release. A job then builds static Linux
   binaries (`CGO_ENABLED=0`, amd64 and arm64, `-trimpath`), a
-  `SHA256SUMS` file, and a build provenance attestation.
+  `SHA256SUMS` file, and a build provenance attestation. The attestation
+  is also a file of the release (`nodkey_<version>.sigstore.json`), so it
+  can be checked with no GitHub login.
 
 ## 19. How the work is done
 

@@ -64,8 +64,11 @@ After every push to `main`, the **Release** workflow runs release-please.
      `nodkey_<version>_linux_<arch>.tar.gz`, and writes `SHA256SUMS`.
    - `publish` gets these files from `build`. It checks them against
      `SHA256SUMS` and checks the tag again. Then it makes a signed build
-     provenance attestation for the tarballs, uploads the files to the draft
-     release and publishes it.
+     provenance attestation for the tarballs. It saves the attestation as
+     one more file, `nodkey_<version>.sigstore.json` (a Sigstore bundle
+     for both tarballs), and checks both tarballs with it, with no login,
+     as in [Verify a download](#verify-a-download). Then it uploads the
+     files to the draft release and publishes it.
 
 The release is never public without its files. Immutable releases are on
 for this repository: after a release is published, nobody can change its
@@ -269,13 +272,41 @@ deleted it can still work for up to one hour.
 
 ## Verify a download
 
-Download the tarball for your machine and `SHA256SUMS` from the release
-page, or use `gh`:
+A release has these files:
+
+- `nodkey_<version>_linux_amd64.tar.gz` and
+  `nodkey_<version>_linux_arm64.tar.gz`: the binary, `LICENSE` and
+  `README.md`;
+- `SHA256SUMS`: the SHA-256 of both tarballs;
+- `nodkey_<version>.sigstore.json`: the build provenance attestation of
+  both tarballs, as a Sigstore bundle. 0.1.0 does not have this file.
+
+Set the version you want, and your machine's arch: `amd64`, or `arm64`
+on 64-bit ARM.
 
 ```sh
-gh release download v0.1.0 --repo code6x/nodkey \
-  --pattern 'nodkey_0.1.0_linux_amd64.tar.gz' --pattern SHA256SUMS
+VERSION=0.1.0
+ARCH=amd64
 ```
+
+Then download the tarball, `SHA256SUMS` and the bundle file, with `curl`
+or with `gh`. 0.1.0 has no bundle file, so skip that download for 0.1.0:
+
+```sh
+U="https://github.com/code6x/nodkey/releases/download/v$VERSION"
+curl -fLO "$U/nodkey_${VERSION}_linux_${ARCH}.tar.gz"
+curl -fLO "$U/SHA256SUMS"
+curl -fLO "$U/nodkey_${VERSION}.sigstore.json"
+```
+
+```sh
+gh release download "v$VERSION" --repo code6x/nodkey \
+  --pattern "nodkey_${VERSION}_linux_${ARCH}.tar.gz" --pattern SHA256SUMS \
+  --pattern "nodkey_${VERSION}.sigstore.json"
+```
+
+`curl` needs no login. For `gh release download`, gh older than 2.96.0
+needs a login (`gh auth login`), even for this public repository.
 
 1. Check the checksum:
 
@@ -283,19 +314,65 @@ gh release download v0.1.0 --repo code6x/nodkey \
    sha256sum -c --ignore-missing SHA256SUMS
    ```
 
-   It must print `nodkey_0.1.0_linux_amd64.tar.gz: OK`. `--ignore-missing`
-   skips the tarballs that you did not download.
+   It must print `nodkey_<version>_linux_<arch>.tar.gz: OK`.
+   `--ignore-missing` skips the tarballs that you did not download.
 
    The checksum alone is not enough. Whoever can publish a release can also
-   publish a matching `SHA256SUMS`. Always do step 2 too.
+   publish a matching `SHA256SUMS`. Always do steps 2 and 3 too.
 
 2. Check the build provenance attestation. It proves that the Release
-   workflow on `main` of `code6x/nodkey` built this exact file, on a runner
-   that GitHub hosts:
+   workflow on `main` of `code6x/nodkey` built this exact file, on a
+   runner that GitHub hosts. With the bundle file of the release, gh needs
+   no login. This is the way for a host that must have no GitHub login,
+   such as the broker host:
 
    ```sh
-   gh attestation verify nodkey_0.1.0_linux_amd64.tar.gz \
+   gh attestation verify "nodkey_${VERSION}_linux_${ARCH}.tar.gz" \
+     --bundle "nodkey_${VERSION}.sigstore.json" \
      --repo code6x/nodkey \
      --cert-identity https://github.com/code6x/nodkey/.github/workflows/release.yml@refs/heads/main \
      --deny-self-hosted-runners
    ```
+
+   Without `--bundle`, gh gets the attestation from GitHub. Then it needs a
+   login, even for this public repository. Use this form for 0.1.0, which
+   has no bundle file:
+
+   ```sh
+   gh attestation verify "nodkey_${VERSION}_linux_${ARCH}.tar.gz" \
+     --repo code6x/nodkey \
+     --cert-identity https://github.com/code6x/nodkey/.github/workflows/release.yml@refs/heads/main \
+     --deny-self-hosted-runners
+   ```
+
+   Both forms check the same thing. Both still go online to get the
+   Sigstore trusted root. Use gh 2.93.0 or newer: older versions have
+   known bugs in `gh attestation verify`
+   ([GHSA-fgw4-v983-mgp8](https://github.com/cli/cli/security/advisories/GHSA-fgw4-v983-mgp8),
+   [GHSA-8xvp-7hj6-mcj9](https://github.com/cli/cli/security/advisories/GHSA-8xvp-7hj6-mcj9)).
+   When no terminal is attached, gh prints nothing on success. Then check
+   its exit code: 0 means the check passed.
+
+3. Check the version. The attestation proves which workflow built the
+   file, but not which version it is: the tarball of an older release
+   passes step 2 under a newer name too. The attestation holds the file
+   names that the workflow gave the tarballs. Run step 2 again with
+   `--format json`, and check that the name of your file is in it. Add
+   the same `--format` and `--jq` lines to the form without `--bundle`
+   for 0.1.0.
+
+   ```sh
+   gh attestation verify "nodkey_${VERSION}_linux_${ARCH}.tar.gz" \
+     --bundle "nodkey_${VERSION}.sigstore.json" \
+     --repo code6x/nodkey \
+     --cert-identity https://github.com/code6x/nodkey/.github/workflows/release.yml@refs/heads/main \
+     --deny-self-hosted-runners \
+     --format json --jq '.[].verificationResult.statement.subject[].name' |
+     grep -Fx "nodkey_${VERSION}_linux_${ARCH}.tar.gz"
+   ```
+
+   It must print the name of your file. If it prints nothing, stop: the
+   file is not the version that its name says. On the machine that the
+   binary is for, `nodkey version` must also print the version, after you
+   take it out of the tarball (`tar -xzf <tarball> nodkey`, then
+   `./nodkey version`).

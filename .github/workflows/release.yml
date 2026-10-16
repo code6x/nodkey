@@ -118,6 +118,7 @@ jobs:
       attestations: write # store the attestation
     env:
       TAG: ${{ needs.release-please.outputs.tag_name }}
+      VERSION: ${{ needs.release-please.outputs.version }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -129,21 +130,49 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum --strict -c SHA256SUMS)
+          # The version names the bundle file. An empty or wrong version
+          # would go out in a release that nobody can change.
+          if [ "$TAG" != "v${VERSION}" ]; then
+            echo "::error::The tag ${TAG} does not match the version ${VERSION}. See docs/releasing.md."
+            exit 1
+          fi
           tagged="$(gh api "repos/${GITHUB_REPOSITORY}/commits/refs/tags/${TAG}" --jq .sha)"
           if [ "$tagged" != "$GITHUB_SHA" ]; then
             echo "::error::The tag ${TAG} points to ${tagged}, not to ${GITHUB_SHA}. See docs/releasing.md."
             exit 1
           fi
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        id: attest
         with:
           subject-path: dist/*.tar.gz
+      # The attestation is also a file of the release. With this file,
+      # gh attestation verify --bundle needs no GitHub login. One bundle
+      # covers both tarballs.
+      - name: Save the attestation bundle
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp -- "$BUNDLE" "dist/nodkey_${VERSION}.sigstore.json"
+      # The same check as in docs/releasing.md, with no login. A bundle that
+      # fails it never goes out: the release stays a draft.
+      - name: Check the tarballs with the bundle
+        run: |
+          set -euo pipefail
+          gh --version
+          for f in dist/*.tar.gz; do
+            gh attestation verify "$f" \
+              --bundle "dist/nodkey_${VERSION}.sigstore.json" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main" \
+              --deny-self-hosted-runners
+            echo "$f: OK"
+          done
       # release-please made a draft release (see release-please-config.json).
       # Add the files first and publish after that, so the release is never
       # public without its files. Immutable releases need this order.
       - name: Upload the files to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS "dist/nodkey_${VERSION}.sigstore.json" --clobber --repo "$GITHUB_REPOSITORY"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
