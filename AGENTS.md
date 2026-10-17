@@ -9,8 +9,14 @@ rules the code must follow.
 
 Planned. Each v1 issue adds its part.
 
+- `install.sh` - the installer: it installs a release on a host, as root,
+  after it checks the release (DESIGN.md section 18). `install.go`
+  (package `nodkey`, at the root of the module) builds it into the
+  binary with `go:embed`, for `nodkey update`. The tests of the script
+  are in `install_linux_test.go`. CI checks it with shellcheck.
 - `cmd/nodkey/` - the one binary. Subcommands: `broker`, `run`,
-  `ssh-agent`, `ssh-grant`, `keygen`, `audit verify`, `version`.
+  `ssh-agent`, `ssh-grant`, `keygen`, `audit verify`, `update`,
+  `version`.
   `nodkey broker` starts the broker's parts in a fixed order, and stops
   them in a fixed order (DESIGN.md section 15). Its tests run it in a
   child process, with a fake Telegram server behind a fake HTTPS proxy.

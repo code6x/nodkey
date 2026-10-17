@@ -39,6 +39,8 @@ Commands:
   ssh-grant ask once for SSH logins to a list of hosts, for some minutes
   audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
             check the hash chain of an audit log, and its anchors
+  update [--version X.Y.Z] [--gh PATH] [--reinstall]
+            install a release in place of this nodkey; run it as root
   version   print the version
   help      print this help
 `
@@ -76,6 +78,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runSSHAgent(rest, stderr)
 	case "ssh-grant":
 		return runSSHGrant(rest, stderr)
+	case "update":
+		return runUpdate(rest, stdout, stderr)
 	case "version":
 		return runVersion(rest, stdout, stderr)
 	case "help":
