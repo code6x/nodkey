@@ -63,6 +63,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: shellcheck install.sh
+        # A fixed release of ShellCheck, checked by its SHA-256. Dependabot
+        # does not update it. Update it by hand: the version and the SHA-256
+        # of shellcheck-VERSION.linux.x86_64.tar.xz together.
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/shellcheck"
+          mkdir -p "$dir"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$dir/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  $dir/shellcheck.tar.xz" | sha256sum --strict -c -
+          tar -xJf "$dir/shellcheck.tar.xz" -C "$dir"
+          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --version
+          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh install.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

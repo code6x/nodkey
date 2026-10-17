@@ -50,35 +50,31 @@ clipboard, terminals and browser. Keep no SSH key or other way to get
 root on the broker host on the agent machine
 ([docs/setup.md section 1](docs/setup.md#where-you-do-the-setup)).
 
-1. **Install** `nodkey` on both machines. Get it on a trusted machine,
-   never on the agent machine. The easy way is the
-   [latest release](https://github.com/code6x/nodkey/releases/latest):
-   download the tarball for the CPU of each machine, such as
-   `nodkey_0.1.0_linux_amd64.tar.gz` or `nodkey_0.1.0_linux_arm64.tar.gz`,
-   and `SHA256SUMS`. Check them as
-   [docs/releasing.md](docs/releasing.md#verify-a-download) says, and
-   take the file `nodkey` out of the tarball:
+1. **Install** `nodkey` on both machines, as root on each machine. Never
+   download, build or copy it as the user of the agent. Get the root
+   shell in a way that does not go through the agent's account: on the
+   broker host, its console or a trusted computer; on the agent machine,
+   its console or SSH as an admin user from a trusted computer, not
+   `sudo` in the terminal where the agent works. (nodkey's promises come
+   from the broker, which trusts nothing from the client: a changed
+   client gets no more than what you approve on the phone.)
+
+   The easy way is the installer. It installs the newest release as
+   `/usr/local/bin/nodkey`. First it checks the SHA-256 and the build
+   attestation of the release, and the version of the new file. Download
+   it as root, read it, and run it as root:
 
    ```sh
-   tar -xzf nodkey_0.1.0_linux_amd64.tar.gz nodkey
+   sudo curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
+   sudo less /root/install.sh
+   sudo sh /root/install.sh
    ```
 
-   If the two machines have different CPUs, take each file out in a
-   folder of its own, and copy each to its machine.
-
-   Or build it from this repository with Go 1.26 or newer:
-
-   ```sh
-   CGO_ENABLED=0 go build -trimpath -o nodkey ./cmd/nodkey
-   ```
-
-   Copy the file `nodkey` straight to both machines, not through the
-   agent machine. On the broker host, `sha256sum nodkey` must print the
-   same SHA-256 as on the trusted machine. Install it as root:
-
-   ```sh
-   install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey
-   ```
+   The installer needs the Sigstore bundle of the attestation in the
+   release, and 0.1.0 has none. For 0.1.0, get nodkey by hand on a
+   trusted machine, check it, and copy it to both machines, as
+   [docs/setup.md section 2](docs/setup.md#2-get-nodkey) says. Later,
+   `nodkey update`, as root, installs a new release.
 
 2. **Make a Telegram bot** with [@BotFather](https://t.me/BotFather)
    (`/newbot`), on your phone or a trusted computer. Open the bot and

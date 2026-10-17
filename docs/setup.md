@@ -25,7 +25,10 @@ The examples use these names. Use your own names instead.
 Run the commands for the broker host as root, for example in a shell
 from `sudo -i`, on its console or from a trusted computer
 ([section 1](#where-you-do-the-setup)). Run the commands for the agent
-machine as the user who runs the agent.
+machine as the user who runs the agent. Only the install of nodkey is
+different: run it as root on each host, also on the agent machines, from
+a root shell that does not come through the agent's account
+([section 2](#2-get-nodkey)).
 
 ## Contents
 
@@ -100,23 +103,101 @@ section 5, item 8). So:
 - **Keep no way to get root on the broker host on an agent machine**:
   no SSH key for the broker host, no SSH agent or `ControlMaster`
   socket that reaches it, no saved password.
-- **Copy the binary straight from the machine that built or downloaded
-  it** to the broker host, not through an agent machine. Then check its
-  SHA-256 on the broker host ([section 2](#2-get-nodkey)).
+- **The user of the agent never downloads, builds or copies the nodkey
+  binary**, on any machine: the agent could change the file before it is
+  installed. Install nodkey as root on each host, with the installer. Or
+  copy it straight from a trusted machine where you built or downloaded
+  it, not through an agent machine, and check its SHA-256 on the broker
+  host ([section 2](#2-get-nodkey)).
 
 ## 2. Get nodkey
 
 Install the same version of nodkey on the broker host and on each agent
-machine, as `/usr/local/bin/nodkey`, owned by root. There are two ways
-to get it: from a release, or from the source. Use a trusted machine for
-both, never an agent machine ([section 1](#where-you-do-the-setup)).
+machine, as `/usr/local/bin/nodkey`, owned by root. **Do it as root on
+each host, never as the user of the agent.** The agent can change what
+its own user downloads, builds or copies
+([section 1](#where-you-do-the-setup)). Get the root shell in a way that
+does not go through the agent's account:
 
-**From a release.** This is the easier way. Download the tarball for
-your machine, such as `nodkey_0.1.0_linux_amd64.tar.gz`
-(`nodkey_0.1.0_linux_arm64.tar.gz` on 64-bit ARM), and `SHA256SUMS` from
-the [release page](https://github.com/code6x/nodkey/releases). Check
-both, as [docs/releasing.md](releasing.md#verify-a-download) says. Then
-take the file `nodkey` out of the tarball:
+- **On the broker host:** on its console, or from a trusted computer, as
+  for the rest of the setup. Never set it up or update it through an
+  agent machine.
+- **On an agent machine:** on its console, or with SSH as an admin user
+  from a trusted computer. If you can, do not type `sudo` in the terminal
+  where the agent works, or in the agent's account. The agent can put its
+  own `sudo` there (a program of that name earlier in `PATH`, an alias or
+  a function), or type into that terminal.
+
+This has a limit. On an agent machine that the agent controls, nodkey
+cannot keep its own client safe. But nodkey's promises come from the
+broker, which trusts nothing from the client: a changed client binary
+gets no more than what you approve on the phone
+([THREAT-MODEL.md T20](../THREAT-MODEL.md)).
+
+There are two ways to install: the installer, or by hand.
+
+### The installer
+
+`install.sh` in the repository installs the newest release, or the
+version of `--version X.Y.Z`. It needs `curl`, `tar`, `gzip`,
+`sha256sum`, `install`, `mktemp`, `stat` and `uname`, and no GitHub
+login. Before it installs anything, it checks the SHA-256 and the build
+attestation of the release, and that the new nodkey says it is the
+version that you want
+([DESIGN.md section 18](../DESIGN.md#18-build-ci-and-releases)). If a
+check fails, it installs nothing. It restarts nothing. As root, it also
+refuses a directory or a file that another user than root can change:
+`/usr/local/bin`, the old `nodkey` in it, and the temporary directory
+(`TMPDIR`, or `/tmp`).
+
+The first time, on each host: download the script as root, read it, and
+run it as root:
+
+```sh
+sudo curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
+sudo less /root/install.sh
+sudo sh /root/install.sh
+nodkey version
+```
+
+On the broker host, where no agent runs, the short form works too. But
+it runs the script before you can read it:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/code6x/nodkey/main/install.sh | sudo sh
+```
+
+To check the attestation, the installer downloads gh 2.102.0, and
+checks it against the SHA-256 in the script. To use a gh that is
+installed already, 2.93.0 or newer, add `--gh /usr/bin/gh`. Only root may
+be able to change that gh and its directories: root runs it. The
+installer needs the Sigstore bundle of the attestation in the release,
+`nodkey_<version>.sigstore.json`. 0.1.0 has none: install 0.1.0 by hand.
+
+When that version is installed already, the installer does nothing. It
+does not check the installed file then. To replace it with a checked
+copy, add `--reinstall`.
+
+Later, `nodkey update` runs the copy of the installer that is built into
+the installed nodkey ([section 13](#a-new-version-of-nodkey)). It takes
+`--version`, `--gh` and `--reinstall` too.
+
+### By hand
+
+Use a trusted machine for this, never an agent machine
+([section 1](#where-you-do-the-setup)). Get nodkey from a release, or
+from the source.
+
+**From a release.** Download the tarball for your machine, such as
+`nodkey_0.1.0_linux_amd64.tar.gz` (`nodkey_0.1.0_linux_arm64.tar.gz` on
+64-bit ARM), `SHA256SUMS`, and the bundle `nodkey_<version>.sigstore.json`
+if the release has one, from the
+[release page](https://github.com/code6x/nodkey/releases). Check it, as
+[docs/releasing.md](releasing.md#verify-a-download) says, with all the
+steps there. From gh 2.96.0 on, `gh release download` needs no GitHub
+login. `gh attestation verify` needs none with `--bundle`, but needs one
+without it, such as for 0.1.0. Then take the file `nodkey` out of the
+tarball:
 
 ```sh
 tar -xzf nodkey_0.1.0_linux_amd64.tar.gz nodkey
@@ -1256,29 +1337,43 @@ cut shows as an anchor whose entry is missing.
 ### A new version of nodkey
 
 1. Read the release notes.
-2. Get the new version, and check it ([section 2](#2-get-nodkey)).
-3. Get the example unit of the new version from its tag, as in
+2. On the broker host, as root, set `VERSION` to the new version, such
+   as `0.2.0`, and install it:
+
+   ```sh
+   VERSION=0.2.0
+   nodkey update --version "$VERSION"
+   ```
+
+   It runs the installer that is built into the installed nodkey, and
+   checks the new release in the same way ([section 2](#2-get-nodkey)).
+   It also takes an older version. nodkey 0.1.0 has no `nodkey update`:
+   update it with the installer of section 2, with
+   `--version "$VERSION"`. Or get the new version by hand, check it, and
+   install it with
+   `install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey`.
+3. Get the example unit of the same version from its tag, as in
    [section 8](#8-the-systemd-unit), but save it as `nodkey.service`, not
    over your unit. After a build from the source, use the unit in your
    copy of the repository instead. Compare it with your unit, and take
    over the changes:
 
    ```sh
-   VERSION=0.1.0   # the new version
    curl -fL -o nodkey.service "https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v$VERSION/contrib/systemd/nodkey.service"
    diff -u /etc/systemd/system/nodkey.service nodkey.service
    ```
-4. Install it, and restart the broker:
+4. Restart the broker:
 
    ```sh
-   install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey
    systemctl daemon-reload
    systemctl restart nodkey
    journalctl -u nodkey -n 30
    ```
 
-5. Install the new version on each agent machine, and restart
-   `nodkey ssh-agent` there.
+5. On each agent machine, in a root shell as in
+   [section 2](#2-get-nodkey), install the same version, such as with
+   `nodkey update --version 0.2.0`. Then restart `nodkey ssh-agent`
+   there.
 
 A restart ends all grants. Rarely, right after a restart, Telegram
 reports a polling conflict, and the broker stops with exit code 76: a
@@ -1354,6 +1449,8 @@ error names the file, the section or the key, never a secret value.
 |---|---|
 | The broker stopped with exit code 76, and an alert says that another program reads the updates of the bot. | Another program polls with the bot token, or a webhook is set. The token may be stolen. Make a new token ([section 13](#a-new-bot-token)), then start the broker. Right after a restart, see [section 13](#a-new-version-of-nodkey). |
 | The broker stopped with exit code 77. | Telegram does not take the bot token, such as after `/revoke`. Make the credential with the new token, then start the broker. |
+| The installer or `nodkey update` ends with `nothing was installed (exit 1)`. | The last line says which step failed. After a network error, try again later. After a failed SHA-256, attestation or version check, do not install that release in another way: someone may have changed it. Report it ([SECURITY.md](../SECURITY.md)). |
+| The installer says that `group or others can write to` a directory or a file, or that a path `is owned by user`. | As root, the installer runs programs from these places, so only root may be able to change them, and each directory above them. Fix the owner or the mode, such as with `chmod go-w /usr/local/bin`, or choose another place with `--bin-dir`, `--gh` or `TMPDIR`. A Debian system that was set up long ago may still have `/usr/local/bin` writable by the group `staff`. |
 | systemd does not start the broker: `systemctl status nodkey` shows `status=243/CREDENTIALS`. | systemd cannot decrypt a credential, so the broker does not run, and nothing is handed out. Check that each file of a `LoadCredentialEncrypted=` line is there, and was made with that name. After a firmware update or a change of the Secure Boot settings, the TPM2 chip may refuse credentials that are bound to PCR 7 ([section 3](#encrypted-credentials)). If you did not update the firmware or change Secure Boot, find out why first: someone may have changed how the machine starts. Then make each credential again, as in [section 13](#13-upgrades-and-key-changes): a new TLS key (and its pin on each client), the bot token, a new `bws` token, the `bw` master password, and new SSH keys. |
 | The journal says that the bot may not send to this chat. | You did not tap **Start** in the chat with the bot, or you blocked it. |
 | `a store could not start` | The broker runs without that store, denies requests for its secrets, and tries again with each request. The error names the store and the step. For bw: check the login ([section 5](#bw-a-separate-bitwarden-account)). |
