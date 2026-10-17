@@ -494,6 +494,50 @@ Risk that remains: low.
 **T20. A dependency or the build is tampered with.**
 Few dependencies. Actions pinned to commit SHAs. `govulncheck` in CI.
 Release binaries come with `SHA256SUMS` and a build provenance attestation.
+The attestation proves which workflow built a file, not which version the
+file is: `gh attestation verify` compares only the SHA-256 of the file. An
+attested build of 0.1.0, renamed as 9.9.9, still passes. So a check must
+also run `nodkey version` of the new file, and compare it with the version
+it wants (step 3 of
+[docs/releasing.md, "Verify a download"](docs/releasing.md#verify-a-download)).
+
+The installer, `install.sh`, and `nodkey update` do all these checks
+before they install anything (DESIGN.md section 18). What they trust:
+- The first install runs `install.sh` from `main`, as GitHub serves it.
+  Whoever can change `main` can change the script. But they can also
+  change the code of the next release, which the release workflow then
+  builds and attests. So the script from `main` is as trusted as a build
+  from `main`. A person can read the script before running it, or install
+  by hand ([docs/setup.md section 2](docs/setup.md#2-get-nodkey)).
+- An update with `nodkey update` runs the copy of the script that is
+  built into the installed nodkey. That build was checked when it was
+  installed. So nothing fresh from the network decides how a new release
+  is checked.
+- Both trust the gh that checks the attestation: gh 2.102.0, downloaded
+  and checked against the SHA-256 in the script (its tarballs passed
+  `gh attestation verify --repo cli/cli` when it was pinned), or the gh of
+  `--gh`. They trust Sigstore: its trusted root, which gh gets online,
+  and its certificate authority. They trust GitHub to say truthfully which
+  workflow, on which branch and on which kind of runner, signed: the
+  identity `.github/workflows/release.yml@refs/heads/main` and
+  `--deny-self-hosted-runners`.
+- Both trust root on the host where they run, and the way the person got
+  root. As root, the script runs only the programs of the system, removes
+  the variables that change what they do (such as `TAR_OPTIONS`), and
+  refuses a bin directory, an old file, a gh of `--gh` or a temporary
+  directory that another user can change. `nodkey update` gives the
+  script a fixed environment. But a root shell that comes through the
+  account of the agent, such as `sudo` in the agent's terminal, trusts
+  that account: the agent can put its own `sudo` first in `PATH`, or type
+  into the terminal. So on an agent machine, get root on the console, or
+  with SSH as an admin user from a trusted computer
+  ([docs/setup.md section 2](docs/setup.md#2-get-nodkey)). Never set up
+  or update the broker host through an agent machine.
+- On an agent machine that the agent controls, nodkey cannot keep its
+  own client safe (section 3: the agent may be root there). The broker
+  trusts nothing from the client, so a changed client gets no more than
+  what the person approves on the phone.
+
 The `bws` and `bw` programs are outside nodkey. They can be attacked too:
 a malicious `@bitwarden/cli` 2026.4.0 was on npm for about 90 minutes on
 2026-04-22
@@ -506,11 +550,26 @@ Risk that remains:
   - They can create a new `v*` tag and publish a release with their own
     files and their own `SHA256SUMS`, with no pull request and no CI. Only
     the build attestation shows that the release workflow did not build
-    these files (`gh attestation verify`, see
+    these files. The installer and `nodkey update` refuse such a release.
+    A check by hand must run `gh attestation verify` (see
     [docs/releasing.md](docs/releasing.md#verify-a-download)).
+  - They can publish a new tag with the attested files of an older
+    release under new names, such as the files and the bundle of 0.2.0
+    as 0.3.0. The checksum and the attestation pass, and an old build,
+    maybe one with a known security bug, would be installed. The
+    installer and `nodkey update` refuse it: the new nodkey does not say
+    that it is the version of the tag. A check by hand must run
+    `nodkey version`.
+  - They can make an older release the newest one on GitHub. Then
+    `nodkey update` installs nothing, as it never installs an older
+    version without `--version`. But a first install gets that older
+    release. The installer prints the version that it installs.
+  - A release that the installer refuses also stops `nodkey update`
+    without `--version`, until a good newer release comes.
   - They can open a pull request, merge it once CI passes (`main` needs no
     human approval), and get it released. Such a release even has a valid
-    attestation.
+    attestation, and the installer installs it. In the same way they can
+    change `install.sh` on `main`, which a first install runs.
 
   The rulesets still stop them from moving or deleting a `v*` tag, and
   immutable releases stop changes to a published release.
@@ -846,10 +905,17 @@ there.
   where no agent runs. Its tokens and passwords are made and copied only
   there or on the phone, never through an agent machine. No agent
   machine holds a way to get root on the broker host, such as an SSH
-  key, an SSH agent or a `ControlMaster` socket. The nodkey binary comes
-  to the broker host straight from where it was built or downloaded, and
-  its SHA-256 is checked there
+  key, an SSH agent or a `ControlMaster` socket.
+- Root installs the nodkey binary on each host, from a root shell that
+  does not come through the account of the agent, and the user of the
+  agent never downloads, builds or copies it. Root runs `install.sh` or
+  `nodkey update` on the host itself, which check the release (T20). Or
+  the binary comes straight from a trusted machine where it was built or
+  downloaded and checked, and its SHA-256 is checked on the broker host
   ([docs/setup.md section 1](docs/setup.md#where-you-do-the-setup)).
+- Only root can change the nodkey binary and its directory, such as
+  `/usr/local/bin`. `nodkey update` runs, as root, the script that is
+  built into that binary.
 - The approver's Telegram account is not logged in on any agent machine.
 - No Bitwarden account that can read the secrets of the stores is logged
   in on any agent machine, and no agent machine can read its master

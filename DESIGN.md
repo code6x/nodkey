@@ -89,6 +89,7 @@ One static Go binary holds all parts. The subcommand picks the role:
 | `nodkey ssh-grant` | agent machine | Ask once for SSH logins to a list of hosts for N minutes (see [decision 4](#13-decision-4-ssh-approval-scope)). |
 | `nodkey keygen` | both | Make a TLS key pair for the broker or a client. Print its pin. |
 | `nodkey audit verify` | trusted machine | Check the hash chain of an audit log. |
+| `nodkey update` | both, as root | Install a release in place of this binary, with the install script that is built into it (section 18). |
 | `nodkey version` | both | Print the version. |
 
 Inside the broker, the approver and the stores sit behind small Go
@@ -2149,6 +2150,7 @@ nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
 nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
+nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]
 nodkey version
 ```
 
@@ -2438,6 +2440,37 @@ text of a line. It exits with:
 | 64 | wrong usage, such as an anchor that is not `SEQ:HASH`, or an anchors file without an anchor |
 | 65 | the log failed: a broken link, a line that is not a valid entry, a torn line without its `log_recovered` entry, an anchor that does not match or whose entry is not in the log, or two anchors for one entry that differ |
 | 66 | the log or the anchors file cannot be opened or read |
+
+`nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]` installs a
+release in place of the file that it runs from: the newest release, or
+`X.Y.Z`, also an older one. It runs only as root. Otherwise it prints
+`nodkey: nodkey update must run as root: run sudo nodkey update (exit 1)`.
+It runs the install script that is built into the binary (`install.sh`,
+section 18) with `/bin/sh`. The script gets `--bin-dir` with the
+directory of the file of nodkey, after links, and the flags that are
+given: `--version`, `--gh` and `--reinstall`. No other value goes into
+its arguments. Its stdin is `/dev/null`, and it writes to the stdout and
+stderr of nodkey. So the code that checks a new release comes from the
+build that is installed and was checked, not fresh from the network. A
+file that is not named `nodkey` is refused: the script would replace
+another file. `--version` must be `X.Y.Z`, such as `0.2.0`, and `--gh`
+an absolute path; each may be given once.
+
+The script gets a fixed environment: `PATH=/usr/sbin:/usr/bin:/sbin:/bin`,
+`LC_ALL=C` and `HOME=/root`, and `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`
+and `no_proxy` if nodkey has them. Nothing else comes from the environment
+of nodkey. With `sudo -E`, or after `su` without `-`, the environment of
+root can come from another user, and variables such as `TAR_OPTIONS`,
+`LD_PRELOAD` or `TMPDIR` would change what the programs of the script do
+as root. Without `TMPDIR`, the script uses `/tmp`.
+
+`install.sh` and `nodkey update` exit with:
+
+| code | meaning |
+|---|---|
+| 0 | the release is installed, or there is nothing to do: that version is installed already, or the installed one is newer and `--version` does not ask for the older one |
+| 1 | any failure; nothing was installed. The last line on stderr is `nodkey: <reason>; nothing was installed (exit 1)` |
+| 64 | wrong usage |
 
 ## 16. Implementation rules
 
@@ -2735,7 +2768,8 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
 ## 18. Build, CI and releases
 
 - CI on every pull request: `go test -race`, `go vet`, `golangci-lint`,
-  `govulncheck`, and the end-to-end job.
+  `govulncheck`, `shellcheck` on `install.sh`, and the end-to-end job.
+  ShellCheck is a fixed release, checked by its SHA-256.
 - GitHub Actions are pinned to a commit SHA.
 - Pull request titles follow Conventional Commits. Pull requests are squash
   merged.
@@ -2745,6 +2779,83 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   `SHA256SUMS` file, and a build provenance attestation. The attestation
   is also a file of the release (`nodkey_<version>.sigstore.json`), so it
   can be checked with no GitHub login.
+- `install.sh`, at the root of the repository, installs a release on the
+  host itself, as root: the broker host or an agent machine. It needs
+  `sh`, `curl`, `tar`, `gzip`, `sha256sum`, `install`, `mktemp`, `stat`
+  and `uname`, and no GitHub login. `nodkey update` runs the copy that is
+  built into nodkey with `go:embed` (section 15). First, the script makes
+  its environment safe. It removes the variables that change what its
+  programs do: `TAR_OPTIONS` (tar can run commands from it), `GZIP`,
+  `POSIXLY_CORRECT`, `CURL_HOME`, `CURL_CA_BUNDLE`, `SSL_CERT_FILE`,
+  `SSL_CERT_DIR`, `SSLKEYLOGFILE`, `OPENSSL_CONF`, `OPENSSL_MODULES`,
+  `OPENSSL_ENGINES` (an OpenSSL config can name a library for curl to
+  load), `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `GCONV_PATH`,
+  `CDPATH` and `IFS`. It sets `LC_ALL=C`. As
+  root, it sets `PATH=/usr/sbin:/usr/bin:/sbin:/bin`. curl always gets
+  `-q`, so it reads no `.curlrc`. Then the script:
+  1. runs only on Linux, on amd64 or arm64;
+  2. checks the places that it runs programs from and writes to, before
+     it downloads anything: the bin directory, the old `nodkey` in it,
+     the gh of `--gh`, and the temporary directory (`TMPDIR`, or `/tmp`).
+     Each of them, and each directory above it up to `/`, must be owned
+     by root, and group and others must not be able to write to it. A
+     directory above them, and `TMPDIR` itself, may let others write only
+     with the sticky bit, as `/tmp` does. Links in the path are resolved
+     once, and the script uses the real path from then on. The old file
+     and the gh must be files, not links. When the script does not run
+     as root, the user who runs it may own these paths too: the tests run
+     it so;
+  3. takes the version of `--version`, or asks the GitHub API for the
+     newest release, with no login; only a tag `vX.Y.Z` counts;
+  4. stops when the installed `nodkey version` says that version already,
+     unless `--reinstall` is given. It says that it did not check the
+     installed file. Without `--version`, it does not install a version
+     older than the installed one. A build from the source (`dev`, or not
+     `X.Y.Z`) has an unknown version, and any release replaces it;
+  5. downloads the tarball for the machine, `SHA256SUMS`, and the
+     Sigstore bundle of the attestation, `nodkey_<version>.sigstore.json`,
+     over HTTPS only, into a new private temporary directory. Each
+     download has a size limit: 64 MiB for the tarballs (of nodkey and of
+     gh), 1 MiB for the other files;
+  6. checks the SHA-256 of the tarball against its own line in
+     `SHA256SUMS`;
+  7. gets `gh`: it downloads gh 2.102.0 and checks it against the SHA-256
+     in the script, one for each CPU, or it takes the gh of `--gh PATH`.
+     That gh must be 2.93.0 or newer: older ones have known bugs in
+     `attestation verify` (GHSA-fgw4-v983-mgp8, GHSA-8xvp-7hj6-mcj9). The
+     first line of `gh --version` must be `gh version X.Y.Z`, so a version
+     such as `2.93.0-rc.1` does not count. Newer advisories
+     (GHSA-mm27-mwq9-fr5g, GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8) are
+     about `--signer-repo`, `--signer-workflow` and `--source-ref`, which
+     the script does not use;
+  8. runs `gh attestation verify --bundle` with the identity of the
+     release workflow on `main` (as in
+     [docs/releasing.md](docs/releasing.md#verify-a-download)) and
+     `--deny-self-hosted-runners`. gh gets no login and an empty config:
+     no `GH_TOKEN`, `GITHUB_TOKEN`, `GH_HOST`, `GH_ENTERPRISE_TOKEN` or
+     `GITHUB_ENTERPRISE_TOKEN`, and `HOME`, `GH_CONFIG_DIR` and the
+     `XDG_*` directories in the temporary directory. Its update notices,
+     prompts and telemetry are off. It still gets the trusted root of
+     Sigstore online;
+  9. takes only `nodkey` out of the tarball, copies it under a new name
+     into the directory of the old file, and checks that its
+     `nodkey version` prints exactly `nodkey <version>`. The attestation
+     proves which workflow built a file, not which version the file is.
+     Without this check, an attested older build under a newer name
+     would pass. The new nodkey runs only after the attestation passed;
+  10. renames the new file over `/usr/local/bin/nodkey` (or `DIR/nodkey`
+      for `--bin-dir DIR`), with mode `0755`, owned by root when the
+      script runs as root. A rename in one directory replaces the old
+      file in one step, never half;
+  11. says what to restart: the broker (`systemctl restart nodkey`, which
+      ends all grants) and each `nodkey ssh-agent`. It restarts nothing
+      itself;
+  12. removes the temporary directory, also after a failure or a signal.
+
+  Any failed step stops the script with a clear last line, and nothing
+  is installed. All the work is in functions, and only the last line
+  starts it, so a download through `curl ... | sh` that stops in the
+  middle runs nothing. THREAT-MODEL.md T20 says what the script trusts.
 
 ## 19. How the work is done
 
