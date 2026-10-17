@@ -48,6 +48,7 @@ type Broker struct {
 	KnownHostsFile string
 	KnownHosts     *KnownHosts
 	Telegram       Telegram
+	Updates        Updates
 	Clients        map[string]Client // by name
 	Stores         map[string]Store  // by name
 	Secrets        map[string]Secret // by name
@@ -61,6 +62,14 @@ type Telegram struct {
 	NoticeChatID int64         // where notices about "never" uses go; the default is UserID
 	Timeout      time.Duration // how long a request for secrets waits; default 120s
 	SSHTimeout   time.Duration // how long an SSH request waits; default 90s
+}
+
+// Updates is the [updates] section. Without it, each key has its
+// default.
+type Updates struct {
+	// Check turns on the broker's check for a newer release of nodkey
+	// (DESIGN.md section 15). The default is true.
+	Check bool
 }
 
 // Client is a [client.NAME] section: a machine that may ask.
@@ -117,6 +126,7 @@ type (
 		AuditLog   string                   `toml:"audit_log"`
 		KnownHosts string                   `toml:"known_hosts"`
 		Telegram   telegramSection          `toml:"telegram"`
+		Updates    updatesSection           `toml:"updates"`
 		Client     map[string]clientSection `toml:"client"`
 		Store      map[string]storeSection  `toml:"store"`
 		Secret     map[string]secretSection `toml:"secret"`
@@ -128,6 +138,9 @@ type (
 		NoticeChatID *int64  `toml:"notice_chat_id"`
 		Timeout      *string `toml:"timeout"`
 		SSHTimeout   *string `toml:"ssh_timeout"`
+	}
+	updatesSection struct {
+		Check *bool `toml:"check"`
 	}
 	clientSection struct {
 		Pin string `toml:"pin"`
@@ -214,6 +227,7 @@ func newBroker(f *brokerFile) (*Broker, error) {
 	if b.Telegram, err = parseTelegram(&f.Telegram); err != nil {
 		return nil, err
 	}
+	b.Updates.Check = f.Updates.Check == nil || *f.Updates.Check
 	if err := b.addClients(f.Client); err != nil {
 		return nil, err
 	}

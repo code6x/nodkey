@@ -85,10 +85,17 @@ const (
 	// seamReleaseVersion makes the child the release 0.2.0, as a release
 	// build is with -ldflags "-X main.version=0.2.0".
 	seamReleaseVersion = "release-version"
+	// seamFastReleaseCheck makes the check for a newer release ask at once,
+	// not 10 minutes after the start.
+	seamFastReleaseCheck = "fast-release-check"
 )
 
-// telegramHost is the host of the Bot API.
-const telegramHost = "api.telegram.org"
+// telegramHost is the host of the Bot API, and githubHost the host of
+// GitHub's API, where the broker's check for a newer release asks.
+const (
+	telegramHost = "api.telegram.org"
+	githubHost   = "api.github.com"
+)
 
 // approverID is the made-up Telegram user ID of the approver.
 const approverID int64 = 7000001
@@ -139,6 +146,8 @@ func TestBrokerChild(t *testing.T) {
 			alertTimeout, alertFirstWait, alertMaxWait = 1500*time.Millisecond, 100*time.Millisecond, 400*time.Millisecond
 		case seamReleaseVersion:
 			version = "0.2.0"
+		case seamFastReleaseCheck:
+			releaseFirstWait = 0
 		case seamNoCoreDumps:
 			if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{}); err != nil {
 				fmt.Fprintln(os.Stderr, "child: cannot set the hard limit of core dumps to 0")
@@ -149,17 +158,20 @@ func TestBrokerChild(t *testing.T) {
 			os.Exit(3)
 		}
 	}
-	// Every call to Telegram must go to the fake, through the proxy of
-	// the test: never to the real Bot API. The Telegram client uses
+	// Every call to Telegram, and to GitHub for the check for a newer
+	// release, must go to the fake, through the proxy of the test: never
+	// to the real Bot API or the real GitHub. Both clients use
 	// http.ProxyFromEnvironment, and Go reads it once per process.
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+telegramHost+"/", nil)
-	if err != nil {
-		os.Exit(3)
-	}
-	proxy, err := http.ProxyFromEnvironment(req)
-	if err != nil || proxy == nil || proxy.Host != os.Getenv(brokerChildProxy) {
-		fmt.Fprintln(os.Stderr, "child: calls to Telegram would not go to the fake proxy; the broker does not start")
-		os.Exit(3)
+	for _, host := range []string{telegramHost, githubHost} {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/", nil)
+		if err != nil {
+			os.Exit(3)
+		}
+		proxy, err := http.ProxyFromEnvironment(req)
+		if err != nil || proxy == nil || proxy.Host != os.Getenv(brokerChildProxy) {
+			fmt.Fprintln(os.Stderr, "child: calls to "+host+" would not go to the fake proxy; the broker does not start")
+			os.Exit(3)
+		}
 	}
 	os.Exit(run([]string{"broker", "--config", path}, os.Stdin, os.Stdout, os.Stderr))
 }
@@ -314,6 +326,11 @@ type brokerOptions struct {
 	// listen is the listen address of the broker; the default is a free
 	// port (freeAddress).
 	listen string
+	// newestRelease is the tag of the newest release at the fake GitHub;
+	// the default is v0.2.0, the version of seamReleaseVersion.
+	newestRelease string
+	// updatesOff adds [updates] check = false to the config.
+	updatesOff bool
 }
 
 // brokerEnv is nodkey broker in a child process, with its files and the
@@ -476,6 +493,9 @@ clients = ["laptop"]
 ask = "always"
 hosts = ["db-1"]
 `
+	}
+	if opts.updatesOff {
+		cfg += "\n[updates]\ncheck = false\n"
 	}
 	writeTestFile(t, e.cfgPath, []byte(cfg), 0o600)
 	return e

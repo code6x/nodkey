@@ -227,6 +227,10 @@ install -o root -g root -m 0755 nodkey /usr/local/bin/nodkey
 nodkey version
 ```
 
+On a terminal, `nodkey version` of a release also asks GitHub whether a
+newer release is out, and says so in one more line. `--offline` skips
+that.
+
 ## 3. The broker host
 
 ### The user and the directories
@@ -766,6 +770,9 @@ notice_chat_id = 123456789          # optional; default: the approver's chat
 timeout = "120s"                    # secrets
 ssh_timeout = "90s"                 # SSH signatures
 
+[updates]
+check = true                        # optional; false: never ask GitHub for a newer release
+
 [client.laptop]
 pin = "sha256:Yf3c...base64..."     # printed by `nodkey keygen`
 
@@ -814,6 +821,19 @@ seconds to 10 minutes, 120 seconds by default. `ssh_timeout` is the same
 for an SSH login: 15 to 110 seconds, 90 seconds by default. sshd drops a
 login that takes longer than its `LoginGraceTime` (120 seconds by
 default).
+
+**`[updates]`.** `check` is optional, `true` by default. Then the broker
+asks GitHub 10 minutes after its start, and then once a day, whether a
+newer release of nodkey is out, and sends you a silent notice when one
+is ([section 13](#a-new-version-of-nodkey)). For this, the broker host
+needs outbound HTTPS to `api.github.com`. The check uses the proxy of
+`HTTPS_PROXY`, as the calls to Telegram do
+([section 8](#8-the-systemd-unit)). GitHub sees the address of the
+broker host, or of its proxy, and the version of nodkey
+([THREAT-MODEL.md T34](../THREAT-MODEL.md#6-threats-and-answers)). If
+the broker host cannot reach GitHub, or GitHub should not see this, set
+`check = false`. Otherwise the journal gets a line about the failed
+check every hour.
 
 **`[client.NAME]`.** One section for each agent machine, with the pin of
 its TLS key. Make that key on the agent machine first
@@ -912,7 +932,9 @@ Then change it to fit your setup:
 - Change the paths if yours are different.
 - If the broker must reach Telegram through a proxy, set it as the
   comments in the unit say. Never use a proxy that inspects TLS: it sees
-  the bot token.
+  the bot token. The check for a newer release
+  ([section 7](#7-the-config-file), `[updates]`) uses the same proxy to
+  reach `api.github.com`.
 
 Check the unit. No output means no problem:
 
@@ -941,7 +963,7 @@ What the settings do:
 | `MemoryMax=1G` | A memory limit for the broker and its store programs. |
 | `MemorySwapMax=0`, `MemoryZSwapMax=0` | The memory of the broker, with keys and tokens, never goes to swap. |
 | `LogRateLimitIntervalSec=0` | journald never drops a line of the broker. The anchors of the audit log are in these lines ([section 12](#12-check-the-audit-log)). The broker limits its own lines. |
-| `Environment=`, `EnvironmentFile=` (as comments) | An optional proxy for Telegram. A proxy with a password goes into a file that only root can read. |
+| `Environment=`, `EnvironmentFile=` (as comments) | An optional proxy for Telegram, and for the check for a newer release at GitHub. A proxy with a password goes into a file that only root can read. |
 | `NoNewPrivileges=yes` and the lines after it | The sandbox: no new privileges or capabilities, a read-only system, no access to `/home`, a private `/tmp`, no devices, kernel settings, other namespaces or raw sockets, and only the system calls of a normal service. |
 | `WantedBy=multi-user.target` | `systemctl enable` starts the broker at boot. |
 
@@ -952,8 +974,8 @@ What the unit leaves out on purpose:
 - `PrivateUsers=yes`: the credentials and the config, owned by root,
   would look owned by `nobody`, and the broker would refuse them.
 - `PrivateNetwork=`, `IPAddressDeny=` and the like: the broker must
-  reach Telegram, and `bws` and `bw` must reach Bitwarden. Do not add
-  them.
+  reach Telegram, and GitHub for the check for a newer release, and
+  `bws` and `bw` must reach Bitwarden. Do not add them.
 
 After `systemctl daemon-reload`, `systemd-analyze security nodkey` shows
 how much the sandbox limits the broker.
@@ -1336,6 +1358,20 @@ cut shows as an anchor whose entry is missing.
 ## 13. Upgrades and key changes
 
 ### A new version of nodkey
+
+The broker tells you when a newer release is out, unless `[updates]`
+says `check = false` ([section 7](#7-the-config-file)). It asks GitHub 10
+minutes after its start, and then once a day. For each newer release, it
+writes a line in its journal, and sends you one silent notice in each
+start:
+
+```text
+ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: sudo nodkey update. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+```
+
+If the check or the notice fails, the journal says why, and the broker
+tries again after 1 hour. On a terminal, `nodkey version` says it too, on
+each machine. A build from the source never asks.
 
 1. Read the release notes.
 2. On the broker host, as root, set `VERSION` to the new version, such

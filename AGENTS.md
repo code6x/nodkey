@@ -28,6 +28,10 @@ Planned. Each v1 issue adds its part.
   - `internal/version/` - versions of nodkey: the rule of a version that
     the other side sends, release versions, and how two compare (DESIGN.md
     section 10).
+  - `internal/release/` - the newest release of nodkey on GitHub: the
+    lookup for `nodkey version`, and the broker's check for a newer
+    release, with its notice (DESIGN.md section 15). Its tests use a fake
+    GitHub server; no test reaches the real GitHub.
   - `internal/broker/` - the broker's service: it answers each request in
     the order of DESIGN.md sections 5 and 6. `nodkey broker` makes its
     parts and runs it.

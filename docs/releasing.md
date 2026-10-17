@@ -375,4 +375,9 @@ needs a login (`gh auth login`), even for this public repository.
    file is not the version that its name says. On the machine that the
    binary is for, `nodkey version` must also print the version, after you
    take it out of the tarball (`tar -xzf <tarball> nodkey`, then
-   `./nodkey version`).
+   `./nodkey version`). Its first line is `nodkey` and the version, such
+   as `nodkey 0.1.0`. On a terminal, a nodkey newer than 0.1.x then asks
+   GitHub for the newest release, from the machine where you check the
+   binary, and prints one more line on stderr. To check it without that
+   call, run `./nodkey version --offline`. nodkey 0.1.x does not know
+   `--offline`, and does not ask GitHub.

@@ -48,6 +48,9 @@ const (
 	lineStoresClosed  = "nodkey broker: the stores are closed"
 	lineAuditClosed   = "nodkey broker: the audit log is closed"
 	lineStopped       = "nodkey broker: stopped"
+	lineCheckRuns     = "nodkey broker: the check for a newer release runs"
+	lineCheckOff      = "nodkey broker: the check for a newer release is off"
+	lineCheckStopped  = "nodkey broker: the check for a newer release stopped"
 )
 
 // secretsRequest returns a request of one variable for the secret name.
@@ -240,6 +243,132 @@ func TestBrokerVersionNotice(t *testing.T) {
 	}
 	if n := e.stderr.count("a client sent no version of nodkey"); n != 1 {
 		t.Errorf("%d lines in the journal, want 1", n)
+	}
+}
+
+// TestBrokerReleaseNotice: a release of nodkey broker starts its check
+// for a newer release after the approver runs. Here its first check comes
+// at once, not 10 minutes after the start (TestBrokerReleaseCheckWaits).
+// It asks GitHub through the proxy of the environment, with its version in
+// the User-Agent. A newer release gives one silent notice in the chat of
+// the notices, made only of the versions, the steps and a link made from
+// the version: no text or link of GitHub's answer. The check stops first,
+// and the stop is clean.
+func TestBrokerReleaseNotice(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{newestRelease: "v0.3.0"}, seamReleaseVersion, seamFastReleaseCheck)
+	e.stderr.wait(t, lineListening)
+	var notice struct {
+		ChatID              int64  `json:"chat_id"`
+		Text                string `json:"text"`
+		ParseMode           string `json:"parse_mode"`
+		DisableNotification bool   `json:"disable_notification"`
+		LinkPreviewOptions  struct {
+			IsDisabled bool `json:"is_disabled"`
+		} `json:"link_preview_options"`
+	}
+	if err := json.Unmarshal([]byte(e.tg.waitAlert("A newer release is out")), &notice); err != nil {
+		t.Fatal(err)
+	}
+	want := "ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, " +
+		"run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends " +
+		"all grants. Update the agent machines too: sudo nodkey update. Release notes: " +
+		"https://github.com/code6x/nodkey/releases/tag/v0.3.0"
+	if notice.ChatID != approverID || notice.Text != want || notice.ParseMode != "HTML" || !notice.DisableNotification ||
+		!notice.LinkPreviewOptions.IsDisabled {
+		t.Errorf("the notice: %+v", notice)
+	}
+	e.stderr.wait(t, "release: the notice about a newer release of nodkey went out")
+	e.stderr.inOrder(t, lineApproverRuns, lineCheckRuns, lineListening)
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK)
+	e.stderr.inOrder(t, lineStopSignal, lineCheckStopped, lineRunStopped, lineSvcStopped, lineStopped+`" exit_code=0`)
+	if n := e.tg.alertCount("A newer release is out"); n != 1 {
+		t.Errorf("%d notices about the newer release, want 1", n)
+	}
+	if n := e.stderr.count("a newer release of nodkey is out"); n != 1 {
+		t.Errorf("%d lines in the journal about the newer release, want 1", n)
+	}
+	calls := e.tg.githubCalls()
+	if len(calls) != 1 {
+		t.Fatalf("%d calls to GitHub, want 1", len(calls))
+	}
+	for name, want := range map[string]string{
+		"User-Agent": "nodkey/0.2.0", "Accept": "application/vnd.github+json", "X-Github-Api-Version": "2022-11-28",
+		"Authorization": "",
+	} {
+		if got := strings.Join(calls[0].Values(name), ","); got != want {
+			t.Errorf("the call to GitHub has %s %q, want %q", name, got, want)
+		}
+	}
+	github := 0
+	for _, p := range e.tg.proxiedBy(e.proxyUser) {
+		switch p {
+		case "CONNECT " + githubHost + ":443":
+			github++
+		case "CONNECT " + telegramHost + ":443":
+		default:
+			t.Errorf("the proxy was asked for %q", p)
+		}
+	}
+	if github != 1 {
+		t.Errorf("the proxy was asked %d times for GitHub, want 1", github)
+	}
+	if strings.Contains(e.tg.bodies()+e.stderr.text(), "not this") {
+		t.Error("text of GitHub's answer reached Telegram or the journal")
+	}
+}
+
+// TestBrokerReleaseCheckWaits: the check of a release waits 10 minutes
+// after the start, so a broker that stops sooner never asks GitHub, and
+// sends no notice. The stop ends that wait first, and is clean.
+func TestBrokerReleaseCheckWaits(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{newestRelease: "v0.3.0"}, seamReleaseVersion)
+	e.stderr.wait(t, lineListening)
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK)
+	e.stderr.inOrder(t, lineApproverRuns, lineCheckRuns+": it asks GitHub 10 minutes after the start", lineListening,
+		lineStopSignal, lineCheckStopped, lineRunStopped, lineStopped+`" exit_code=0`)
+	if n := len(e.tg.githubCalls()); n != 0 || slices.Contains(e.tg.proxied(), "CONNECT "+githubHost+":443") {
+		t.Errorf("%d calls to GitHub before the first check; the proxy was asked for %q", n, e.tg.proxied())
+	}
+	if n := e.tg.alertCount("A newer release is out"); n != 0 {
+		t.Errorf("%d notices about a newer release, want none", n)
+	}
+}
+
+// TestBrokerReleaseCheckOff: with [updates] check = false, and in a build
+// from the source, the broker never asks GitHub. The journal says why.
+func TestBrokerReleaseCheckOff(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		opts  brokerOptions
+		seams []string
+		why   string
+	}{
+		{"check = false", brokerOptions{newestRelease: "v0.3.0", updatesOff: true}, []string{seamReleaseVersion},
+			lineCheckOff + ", as [updates] check = false says"},
+		{"a build from the source", brokerOptions{newestRelease: "v0.3.0"}, nil,
+			lineCheckOff + ": this is a build from the source"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := startListening(t, tt.opts, tt.seams...)
+			e.stderr.wait(t, lineListening)
+			e.signal(syscall.SIGTERM)
+			e.mustExit(exitOK)
+			if !e.stderr.has(tt.why) || e.stderr.has(lineCheckRuns) || e.stderr.has(lineCheckStopped) {
+				t.Errorf("the journal does not say that the check is off; its log:\n%s", e.stderr.text())
+			}
+			if n := len(e.tg.githubCalls()); n != 0 || slices.Contains(e.tg.proxied(), "CONNECT "+githubHost+":443") {
+				t.Errorf("%d calls to GitHub; the proxy was asked for %q", n, e.tg.proxied())
+			}
+			if n := e.tg.alertCount("A newer release is out"); n != 0 {
+				t.Errorf("%d notices about a newer release, want none", n)
+			}
+		})
 	}
 }
 

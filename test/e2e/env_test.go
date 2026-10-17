@@ -429,6 +429,9 @@ const (
 	lineListening = "nodkey broker: listening; the broker is ready"
 	lineProxy     = "telegram: calls to Telegram go through a proxy from the environment"
 	lineStopped   = "nodkey broker: stopped"
+	// lineNoCheck: the broker is a build from the source, so it never asks
+	// GitHub for a newer release (DESIGN.md section 15).
+	lineNoCheck = "nodkey broker: the check for a newer release is off: this is a build from the source"
 )
 
 // startBroker starts nodkey broker, and waits until it is ready. The port
@@ -461,6 +464,10 @@ func (e *env) startBroker(t *testing.T) {
 	}
 	if !e.broker.stderr.has(lineProxy) || !e.broker.stderr.has("proxy_host="+e.tg.proxyAddr) {
 		t.Errorf("the broker does not log that it calls Telegram through the fake proxy; its log:\n%s",
+			redact(e.broker.stderr.text()))
+	}
+	if !e.broker.stderr.has(lineNoCheck) {
+		t.Errorf("the broker does not log that its check for a newer release is off; its log:\n%s",
 			redact(e.broker.stderr.text()))
 	}
 }

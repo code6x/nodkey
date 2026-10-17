@@ -161,6 +161,7 @@ func TestLoadBrokerValid(t *testing.T) {
 	check("Telegram.NoticeChatID (default)", b.Telegram.NoticeChatID, int64(123456789))
 	check("Telegram.Timeout (default)", b.Telegram.Timeout, 120*time.Second)
 	check("Telegram.SSHTimeout (default)", b.Telegram.SSHTimeout, 90*time.Second)
+	check("Updates.Check (default, without [updates])", b.Updates.Check, true)
 
 	check("number of clients", len(b.Clients), 2)
 	check("Clients[laptop]", b.Clients["laptop"], Client{Name: "laptop", Pin: testPin("laptop")})
@@ -241,6 +242,30 @@ func TestLoadBrokerOptionalValues(t *testing.T) {
 	}
 	if got := b.Secrets["backup-token"].Rule.MaxPerDay; got != 1 {
 		t.Errorf("backup-token MaxPerDay = %d, want 1", got)
+	}
+}
+
+// TestLoadBrokerUpdates: the broker's check for a newer release is on by
+// default, without [updates] and without its key; check = false turns it
+// off.
+func TestLoadBrokerUpdates(t *testing.T) {
+	for _, tt := range []struct {
+		section string
+		want    bool
+	}{
+		{"[updates]\n", true},
+		{"[updates]\ncheck = true\n", true},
+		{"[updates]\ncheck = false\n", false},
+		{"[updates] # the check for a newer release\ncheck = false # off\n", false},
+	} {
+		e := newBrokerEnv(t)
+		b, err := LoadBroker(e.write(t, edit{"[client.laptop]", tt.section + "\n[client.laptop]"}))
+		if err != nil {
+			t.Fatalf("%q: %v", tt.section, err)
+		}
+		if b.Updates.Check != tt.want {
+			t.Errorf("%q: Updates.Check = %v, want %v", tt.section, b.Updates.Check, tt.want)
+		}
 	}
 }
 
@@ -435,6 +460,31 @@ func TestLoadBrokerErrors(t *testing.T) {
 			want: "[telegram] ssh_timeout: must be from 15s to 1m50s"},
 		{name: "ssh_timeout too long", edits: []edit{{"user_id = 123456789", "user_id = 123456789\nssh_timeout = \"111s\""}},
 			want: "[telegram] ssh_timeout: must be from 15s to 1m50s"},
+
+		// [updates]
+		{name: "unknown key in [updates]", edits: []edit{{"[client.laptop]", "[updates]\nchek = false\n\n[client.laptop]"}},
+			want: `unknown key "updates.chek"`},
+		{name: "a second key in [updates]", edits: []edit{{"[client.laptop]",
+			"[updates]\ncheck = false\nevery = \"1h\"\n\n[client.laptop]"}},
+			want: `unknown key "updates.every"`},
+		{name: "check in upper case", edits: []edit{{"[client.laptop]", "[updates]\nCHECK = false\n\n[client.laptop]"}},
+			want: "1 unknown key;", notWant: "CHECK"},
+		{name: "check as text", edits: []edit{{"[client.laptop]", "[updates]\ncheck = \"no\"\n\n[client.laptop]"}},
+			want: "line 12: incompatible types: TOML value has type string; destination has type boolean"},
+		{name: "check as a number", edits: []edit{{"[client.laptop]", "[updates]\ncheck = 0\n\n[client.laptop]"}},
+			want: "line 12: incompatible types"},
+		{name: "check as a dotted key at the top", edits: []edit{
+			{`listen = "192.0.2.10:7743"`, "listen = \"192.0.2.10:7743\"\nupdates.check = false"}},
+			want: `key "updates.check": write it as check = ... below its own [updates] header`},
+		{name: "updates not a table", edits: []edit{{`listen = "192.0.2.10:7743"`, "listen = \"192.0.2.10:7743\"\nupdates = false"}},
+			want: "line 3: type mismatch for config.updatesSection: expected table but found bool"},
+		{name: "updates as an inline table", edits: []edit{
+			{`listen = "192.0.2.10:7743"`, "listen = \"192.0.2.10:7743\"\nupdates = { check = false }"}},
+			want: "inline tables ({ ... }) are not allowed"},
+		{name: "a table below [updates]", edits: []edit{{"[client.laptop]", "[updates.github]\ncheck = false\n\n[client.laptop]"}},
+			want: `unknown keys "updates.github", "updates.github.check"`},
+		{name: "[[updates]]", edits: []edit{{"[client.laptop]", "[[updates]]\ncheck = false\n\n[client.laptop]"}},
+			want: "type mismatch for config.updatesSection: expected table but found []map[string]any"},
 
 		// [client.*]
 		// A name that breaks the rule may be pasted text, so the error does

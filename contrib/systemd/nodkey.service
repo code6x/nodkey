@@ -93,12 +93,13 @@ MemoryZSwapMax=0
 # log are in its log. The broker limits its own lines.
 LogRateLimitIntervalSec=0
 
-# A proxy for the calls to Telegram, if you need one. Never use a proxy
-# that inspects TLS: it sees the bot token (DESIGN.md section 7). Every
-# user can read Environment= with systemctl show, so a proxy with a user
-# name and a password belongs in EnvironmentFile=, a file that only root
-# can read (mode 0600). The broker logs the proxy's host at start, and
-# SSL_CERT_FILE and SSL_CERT_DIR if they are set.
+# A proxy for the calls to Telegram, if you need one. The check for a
+# newer release at api.github.com uses it too (DESIGN.md section 15).
+# Never use a proxy that inspects TLS: it sees the bot token (DESIGN.md
+# section 7). Every user can read Environment= with systemctl show, so a
+# proxy with a user name and a password belongs in EnvironmentFile=, a
+# file that only root can read (mode 0600). The broker logs the proxy's
+# host at start, and SSL_CERT_FILE and SSL_CERT_DIR if they are set.
 #Environment=HTTPS_PROXY=http://proxy.example.com:3128
 #EnvironmentFile=/etc/nodkey/proxy.env
 
