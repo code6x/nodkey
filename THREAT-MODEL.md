@@ -39,6 +39,7 @@ access to another machine and asks a person before each use.
 | target SSH hosts | Trusted to be who their host key says. |
 | the secret stores and the `bws` / `bw` programs | Trusted. Install them from the official source and check what you install. |
 | the Bitwarden accounts that can read the secrets of the stores | Trusted. Anyone who can use such an account can read these secrets in Bitwarden's own apps, with no tap. So these accounts must not be logged in on any agent machine (see T32). |
+| GitHub's API (`api.github.com`) | Trusted only to name the newest release. A false answer can only give a wrong notice or hide one; it cannot install anything (see T34). |
 
 ## 4. What nodkey promises
 
@@ -284,7 +285,9 @@ notices of other clients cannot use up the uses of a night; it only
 denies uses while the limit is full. A notice about the version of a
 client (T33) counts toward neither limit. It has its own: at most 3 in
 any 60 seconds, at most one try a minute for each client, and one notice
-for each client in each start of the broker, rarely more than one.
+for each client in each start of the broker, rarely more than one. A
+notice about a newer release (T34) shares that limit of 3, with at most
+one try an hour after a failure.
 Risk that remains: low. Telegram counts all the messages of the notice
 chat. With up to 3 notices about versions in a minute, such as right
 after a start, about 18 notices of "never ask" uses already pass the
@@ -895,6 +898,60 @@ Risk that remains: low. A false claim can only send the person to update
 a machine that is up to date (also the broker host), or hide that a
 client is old. To know what runs on a machine, run `nodkey version`
 there.
+
+**T34. The check for a newer release tells GitHub about the broker, or
+gets a false answer.**
+A release of the broker asks GitHub's API for the newest release of
+nodkey: 10 minutes after its start, and then once a day, unless
+`[updates]` says `check = false` (DESIGN.md section 15). `nodkey version`
+does the same on a terminal. The call has no login and holds no secret.
+GitHub learns the address of the host, or of its proxy, the time of each
+check, and the exact version of nodkey from the User-Agent: so it can
+tell whether the broker misses a security fix. A proxy learns that the
+host talks to GitHub.
+A false answer can come from GitHub itself, from a proxy that inspects
+TLS, or from any CA that the host trusts: one in the system's store, or
+one in `SSL_CERT_FILE` or `SSL_CERT_DIR` (DESIGN.md section 7).
+- It can name a newer release that does not exist, hide one, or make
+  the check fail. The notice and the line of `nodkey version` show only
+  release versions, which are digits and dots, and a link that nodkey
+  makes from the version: never text or a link from the answer. A tag
+  that is not `vX.Y.Z`, a draft, a prerelease, a redirect, or an answer
+  over 1 MiB is an error. Each error gives one line with a fixed text,
+  and no notice.
+- It cannot install anything. The notice only says what to run.
+  `nodkey update` checks the attestation of the release and the version
+  of the new binary before it installs (T20). A release that does not
+  exist, or a file that the release workflow did not build, fails there.
+- The check never touches a request, a secret, the audit log or an
+  approval. Its notices are silent, and share the limit of 3 in any 60
+  seconds with the notices about versions (T9, T33). In each start, each
+  newer release gets one notice, rarely more than one: a try that times
+  out after Telegram took the message sends it again, at the next check
+  1 hour later. The first check of a start comes 10 minutes after it.
+  So a broker that systemd starts again and again sends no notice,
+  unless each start runs for 10 minutes or more; then it sends at most
+  one in each start, about 6 an hour. So it cannot fill the notice chat.
+
+Two cases are worse than a wrong notice:
+- GitHub allows 60 calls an hour without a login from one address. An
+  agent machine behind the same public address as the broker host can
+  use them up, such as with `nodkey version` on a terminal in a loop, or
+  with `curl`. Then each check of the broker gets 403 or 429, and a
+  security release gets no notice. Only the journal shows it: one line for each
+  failed check.
+- A release that the release workflow built from a merged pull request
+  passes the attestation check of `nodkey update` (the risk that T20
+  accepts). Within a day of each release, the notice asks every owner to
+  install it. So such a release reaches more brokers, and sooner.
+
+Risk that remains: low. A false answer, or calls that an agent uses up,
+can hide a security release for a while: also watch the releases of the
+repository on GitHub, and read the release notes before you update. A
+false answer can send the person to run `nodkey update` for no reason,
+which then installs nothing. To keep the address and the version from
+GitHub, set `check = false` in `[updates]`, and use
+`nodkey version --offline`.
 
 ## 7. Assumptions
 

@@ -90,7 +90,7 @@ One static Go binary holds all parts. The subcommand picks the role:
 | `nodkey keygen` | both | Make a TLS key pair for the broker or a client. Print its pin. |
 | `nodkey audit verify` | trusted machine | Check the hash chain of an audit log. |
 | `nodkey update` | both, as root | Install a release in place of this binary, with the install script that is built into it (section 18). |
-| `nodkey version` | both | Print the version. |
+| `nodkey version` | both | Print the version. On a terminal, also say if a newer release is out. |
 
 Inside the broker, the approver and the stores sit behind small Go
 interfaces. Version 1 has one approver (Telegram) and two stores (`bws`,
@@ -580,6 +580,20 @@ client's version as a claim. A client that sends no version runs nodkey
 0.1, which has no `nodkey update`, so that notice points to the update
 steps of [docs/setup.md](docs/setup.md#a-new-version-of-nodkey) instead.
 
+A notice about a newer release of nodkey (section 15) has no buttons
+either. It goes to the notice chat without a sound, once for each newer
+release in each start of the broker, rarely more than once (see
+"Telegram details" below). The first check comes 10 minutes after the
+start, so a broker that ends sooner sends none. The notice:
+
+```
+ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: sudo nodkey update. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+```
+
+Both versions are release versions: digits and dots. The broker makes
+the link from the version, and ends the text with it, so no dot follows
+it. It takes no text and no link from the answer of GitHub.
+
 - The host key shows only `SHA256:` and its first 4 characters. The
   broker has checked the key against its own `known_hosts`, and the host
   name is what the person reads.
@@ -1021,9 +1035,11 @@ Not masked, for example:
   needs a notice is denied as well. A notice about the version of a
   client (below) is different: no new try of it starts, but a try that is
   still being sent goes on until the service stops (section 15). The
-  approval core would still let grants and "never ask" rules with
-  `notify = false` allow requests, but the broker denies every request
-  from then on (503), and `nodkey broker` stops (section 15). On a
+  check for a newer release (section 15) goes on too, until the stop
+  ends it first. The approval core would still let grants and "never
+  ask" rules with `notify = false` allow requests, but the broker denies
+  every request from then on (503), and `nodkey broker` stops (section
+  15). On a
   polling conflict, the broker first writes the `error` entry with code
   `poll_conflict`.
 - Messages about "never ask" uses can go to a second chat
@@ -1052,6 +1068,17 @@ Not masked, for example:
   If the tries of that notice do not get through in time, the use is
   denied, as for any other failure of its notice. This needs about 18
   such uses in one minute, so it is rare.
+- A notice about a newer release (above) goes to the same chat, also
+  silent and with link previews off. It shares the limit of 3 in any 60
+  seconds with the notices about versions, so it takes nothing from the
+  notices of "never ask" uses either. The check for a newer release
+  sends it on its own, so it never delays or denies a request. Each try
+  is one call. A try that fails, also one that the limit stops, is
+  logged, and the next check, 1 hour later, tries again (section 15). A
+  try can fail after Telegram took the message, such as on a time-out;
+  then the next try sends it again. Once a notice went out, that release
+  gets no more. A try that is still being sent when the broker stops is
+  cancelled (section 15, step 1 of the stop).
 - The broker sends a notice about a version in the background, so it
   never delays or denies a request. A client has at most one try at a
   time, and each try is one call. A try that fails, also one that its
@@ -1061,10 +1088,10 @@ Not masked, for example:
   this start. A try can fail after Telegram took the message, such as on
   a time-out; then the next try sends it again. Such a repeated notice
   is rare and does no harm. A try that is still being sent when the
-  service stops is cancelled (section 15, step 2), and a try that fails
-  while the broker stops says that no new try comes. So each client gets
-  one such notice in each start, rarely more than one, and at most one
-  try a minute.
+  service stops is cancelled (section 15, step 3 of the stop), and a try
+  that fails while the broker stops says that no new try comes. So each
+  client gets one such notice in each start, rarely more than one, and
+  at most one try a minute.
 
 ## 8. Rules and grants
 
@@ -1950,6 +1977,9 @@ notice_chat_id = 123456789          # optional; default: the approver's chat
 timeout = "120s"                    # secrets
 ssh_timeout = "90s"                 # SSH signatures
 
+[updates]
+check = true                        # optional; false: never ask GitHub for a newer release
+
 [client.laptop]
 pin = "sha256:Yf3c...base64..."     # printed by `nodkey keygen`
 
@@ -2047,6 +2077,9 @@ More rules:
   `sshd`'s `LoginGraceTime`.
 - `max_per_day`, if present, is 1 or more. For no limit, leave it out.
   So `0` cannot mean "no uses" to a person and "no limit" to the broker.
+- `check` in `[updates]` is `true` or `false`. Without it, and without
+  `[updates]`, it is `true`: a release of the broker asks GitHub for a
+  newer release (section 15). With `false`, the broker never asks.
 - Two secrets with `ask = "never"` must not have the same `id`, also not
   through two `[store.*]` sections. Otherwise two clients could get one
   item without a tap.
@@ -2151,7 +2184,7 @@ nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason 
 nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]
-nodkey version
+nodkey version [--offline]
 ```
 
 `nodkey broker` runs the broker. The default config is
@@ -2201,28 +2234,51 @@ it started before.
    alert is out or the broker stops. Each alert has its own tries. Each
    failed try gets one log line, with the number of the alert, such as
    `alert=2` for the second one that waited.
-10. Only then does it read the connections on the `listen` address and
+10. It starts the check for a newer release, unless `[updates]` says
+    `check = false` (section 14) or the broker is a build from the
+    source. The log says whether it runs. The check runs on its own: it
+    never delays the start or the stop, and never changes a request.
+    - It waits 10 minutes, then asks GitHub, with the lookup of
+      `nodkey version` (below), and then every 24 hours. After a failed
+      lookup, or a notice that did not go out, it asks again after 1 hour
+      instead. A broker that ends within 10 minutes of its start, such as
+      one that systemd starts again and again after a failure, never
+      asks GitHub, and sends no notice in each start.
+    - When the newest release is newer than the broker's own version, it
+      writes one line in the log, and sends one notice (section 7). A
+      notice counts as sent only when Telegram took it. So in each
+      start, each newer release gets one notice, rarely more than one. A
+      release that is not newer than the broker, or than a release that
+      got its notice, gets none: the notice never suggests a downgrade.
+    - Each failed lookup and each failed try of the notice gets one line
+      in the log, with a fixed reason, such as a rate limit of GitHub, a
+      network error or an answer that is not valid. A lookup that fails
+      sends no notice.
+11. Only then does it read the connections on the `listen` address and
     take requests.
 
 It stops on SIGTERM or SIGINT, also during the start, when the polling
 stops for good (section 7), and when its server fails. It stops in this
 order:
 
-1. The polling: the `getUpdates` call that waits is cancelled and its
+1. The check for a newer release: its wait, a lookup or a notice that
+   is still running is cancelled, also the dial of a lookup. After this
+   step, it sends no request and no notice.
+2. The polling: the `getUpdates` call that waits is cancelled and its
    connection closed (section 7). From now on no answer counts: every
    request that waits for the person is denied.
-2. The service: new requests get `503`, and the requests in progress end
+3. The service: new requests get `503`, and the requests in progress end
    and get `503` too (section 10). The broker waits for them, and writes
    the `foreign_tap` entries that still wait. A notice about the version
    of a client that is still being sent is cancelled (section 7).
-3. The server: it closes the `listen` address and every connection.
-4. The alerts of the start: each one gets its first try, also when the
+4. The server: it closes the `listen` address and every connection.
+5. The alerts of the start: each one gets its first try, also when the
    stop began right after the start, but no try again. The tries run at
    the same time, and a try takes at most 30 seconds. So they end at
    most 30 seconds after the stop began, however many alerts wait. An
    alert that did not go out is lost; the journal says so.
-5. The stores: they clear their tokens and session keys.
-6. The `broker_stopped` entry. Then the audit log is closed.
+6. The stores: they clear their tokens and session keys.
+7. The `broker_stopped` entry. Then the audit log is closed.
 
 The stop takes at most 80 seconds. A request may need up to 30 seconds
 to take its answer, and the alert about an audit log that cannot be
@@ -2337,6 +2393,52 @@ Before it, it may print one warning about the version of the broker
 `nodkey keygen` prints the pin on stdout, and nothing else. It exits with
 0, with 64 on wrong usage, and with 1 on any other error. Then its last
 line on stderr is `nodkey: <reason> (exit 1)`.
+
+`nodkey version [--offline]` prints `nodkey <version>` on stdout, such as
+`nodkey 0.2.0`, and nothing else there: scripts and the installer read
+this line. Then, only when stdout is a terminal, the version is a
+release (section 10) and `--offline` is not given, it asks GitHub for the
+newest release, for at most 10 seconds, and prints one line on stderr:
+
+```
+nodkey: a newer release is out: nodkey 0.3.0; to update, run "sudo nodkey update"; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+nodkey: this is the newest release
+nodkey: cannot check for a newer release: cannot reach GitHub: the lookup timed out
+```
+
+A newest release that is older than this nodkey gives "this is the
+newest release" too: nodkey never suggests a downgrade. Only stdout
+decides whether it asks: when stdout is not a terminal, such as a pipe,
+a file or `$(...)` in the installer, it prints no such line and makes no
+call to GitHub. A build from the source never asks either. It exits with
+0, also when the check fails, with 64 on wrong usage, and with 1 when it
+cannot write to stdout.
+
+The lookup, of `nodkey version` and of the broker (step 10 of the start):
+
+- `GET https://api.github.com/repos/code6x/nodkey/releases/latest`,
+  without a login, with the headers `Accept: application/vnd.github+json`,
+  `X-GitHub-Api-Version: 2022-11-28` and `User-Agent: nodkey/<version>`.
+  So GitHub learns the address and the version (THREAT-MODEL.md T34).
+- It uses the proxy from the environment, as the Telegram code does
+  (section 7): `HTTPS_PROXY` or `https_proxy`, except for the hosts in
+  `NO_PROXY` or `no_proxy`. TLS 1.2 or newer, with the system's CA
+  certificates, or those of `SSL_CERT_FILE` and `SSL_CERT_DIR`. HTTP/1.1
+  only. It follows no redirect: a redirect is an error. It keeps no
+  connection open.
+- The TCP connection, the TLS handshake and the headers of the answer
+  each have 10 seconds, and the whole lookup 30 seconds. The answer is
+  at most 1 MiB; a larger one is an error.
+- It reads only `tag_name`, `draft` and `prerelease`, with exactly these
+  names, and ignores the other keys. A draft, a prerelease, a missing
+  key, or a tag that is not `v` and a release version, such as `v0.3.0`,
+  is an error.
+- 403 and 429 mean that GitHub limits the calls without a login from
+  this address for now. Any other status but 200 is an error with only
+  the status.
+- An error has a fixed text, with at most the HTTP status. No text,
+  header or link of the answer is ever shown or logged. The link to the
+  page of the release is made from the version.
 
 `nodkey ssh-agent [--socket PATH]` serves the SSH agent protocol on a
 Unix socket until `SIGINT` or `SIGTERM` (section 6). It holds no SSH key.
@@ -2641,7 +2743,11 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   Deny on it, also after a flood of forged taps, polling conflict, code
   429 and server errors, and a canary bot token that must not appear in
   any error or log line). A child process checks the HTTP client with
-  `GODEBUG=http2debug=2` and a proxy. The SSH checks also use real data:
+  `GODEBUG=http2debug=2` and a proxy. The lookup of a newer release runs
+  against a fake GitHub server: every kind of answer that is not valid,
+  403 and 429, a redirect, a time-out, an answer over 1 MiB, and, in a
+  child process, a proxy. The broker's check runs with a fake lookup, a
+  fake notice and a fake clock. The SSH checks also use real data:
   from an in-process SSH server and client, and from the OpenSSH client
   and, when it is installed, `sshd`.
 - **Fake approver**: a test approver that says yes, no, nothing, or answers
@@ -2657,9 +2763,11 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   programs, and the real Telegram approver. The approver reaches a fake
   Telegram server through a fake HTTPS proxy that answers TLS with a
   certificate of a test CA, so nothing goes to the real Bot API. The
-  tests check the order of the start and the stop, the exit codes, that
-  core dumps are off, a store that does not start, and a canary from the
-  request to the fake Telegram server, end to end.
+  same server answers for GitHub's API, for the check for a newer
+  release, so nothing goes to the real GitHub either. The tests check the
+  order of the start and the stop, the exit codes, that core dumps are
+  off, a store that does not start, the notice about a newer release,
+  and a canary from the request to the fake Telegram server, end to end.
 - **Fake stores**: the test binary of `internal/store` acts like `bws` or
   `bw` when it runs under that name. It records its arguments and its
   environment, so the tests can check that no token, password or session
@@ -2700,8 +2808,9 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
     message goes out. The config has no "never ask" rule, nothing in the
     test makes an alert, and the client and the broker are the same build
     from the source, so no notice about a version goes out either: every
-    message must have buttons. At the
-    end, `nodkey audit verify` checks the whole audit log with every
+    message must have buttons. A build from the source never asks GitHub
+    for a newer release, and the test checks that the broker says so.
+    At the end, `nodkey audit verify` checks the whole audit log with every
     anchor of the broker's journal, and a copy of the log with one changed
     entry fails.
   - The root-only test of `internal/client` runs as root in a container

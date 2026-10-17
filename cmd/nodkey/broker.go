@@ -25,9 +25,11 @@ import (
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/broker"
 	"github.com/code6x/nodkey/internal/config"
+	"github.com/code6x/nodkey/internal/release"
 	"github.com/code6x/nodkey/internal/store"
 	"github.com/code6x/nodkey/internal/telegram"
 	"github.com/code6x/nodkey/internal/transport"
+	nodkeyversion "github.com/code6x/nodkey/internal/version"
 )
 
 // defaultBrokerConfig is the broker config of DESIGN.md section 14.
@@ -83,6 +85,11 @@ var (
 	alertFirstWait = 5 * time.Second
 	alertMaxWait   = 5 * time.Minute
 )
+
+// releaseFirstWait is the wait from the start of the broker to its first
+// check for a newer release (release.FirstWait). It is a variable only so
+// that a test can make it short.
+var releaseFirstWait = release.FirstWait
 
 // newStore makes the store of one [store.*] section. It is a variable
 // only so that a test can run nodkey broker in a child process with a
@@ -233,6 +240,11 @@ type brokerParts struct {
 	// started is true once the broker_started entry is on disk.
 	started bool
 
+	// stopCheck ends the check for a newer release; checkDone is closed
+	// when the check returned. Both are nil when the check is off.
+	stopCheck context.CancelFunc
+	checkDone chan struct{}
+
 	// stopRun ends the service's Run; runDone is closed when Run returned,
 	// and runErr is its error, set before runDone is closed.
 	stopRun context.CancelFunc
@@ -253,9 +265,10 @@ type brokerParts struct {
 // 15): the config and the checks of the files it names, no core dumps,
 // the broker's TLS key, the SSH keys, the audit log, the stores, the
 // service, the Telegram approver and the approval core, the server and
-// its listen address, the broker_started entry, the approver's Run, and
-// only then Serve. On an error it returns at once; stop then ends what
-// start made. It returns context.Canceled when ctx ended during the start.
+// its listen address, the broker_started entry, the approver's Run, the
+// check for a newer release, and only then Serve. On an error it returns
+// at once; stop then ends what start made. It returns context.Canceled
+// when ctx ended during the start.
 func (b *brokerParts) start(ctx context.Context, path string) error {
 	b.log.Info("nodkey broker: starting", slog.String("version", version), slog.String("config", path))
 	cfg, err := config.LoadBroker(path) // it runs CheckFiles
@@ -357,6 +370,7 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 	b.started = true
 	b.startRun(core)
 	b.sendAlerts(tg.Alert)
+	b.startCheck(tg.Inform)
 	b.serve(srv, ln)
 	b.log.Info("nodkey broker: listening; the broker is ready", slog.String("address", ln.Addr().String()))
 	return nil
@@ -451,6 +465,42 @@ func (b *brokerParts) startRun(core *approval.Core) {
 		b.runErr = b.svc.Run(ctx, core, b.tg.Alert, b.tg.Inform)
 	}()
 	b.log.Info("nodkey broker: the approver runs: it polls Telegram for the answers")
+}
+
+// startCheck starts the check for a newer release (DESIGN.md section 15):
+// it asks GitHub 10 minutes after the start, and then every 24 hours, and
+// sends a notice with notice when a newer release is out. A broker that
+// ends sooner, such as one that systemd starts again and again, never
+// asks. The check runs on its own, so it never delays the start, the stop
+// or a request. It is off when [updates] says check = false, and in a
+// build from the source, which has no release to compare. A panic in the
+// check ends only the check.
+func (b *brokerParts) startCheck(notice broker.NoticeFunc) {
+	own, isRelease := nodkeyversion.ParseRelease(version)
+	switch {
+	case !b.cfg.Updates.Check:
+		b.log.Info("nodkey broker: the check for a newer release is off, as [updates] check = false says")
+		return
+	case !isRelease:
+		b.log.Info("nodkey broker: the check for a newer release is off: this is a build from the source")
+		return
+	}
+	check := release.NewCheck(own, releaseFirstWait, release.New(own).Latest, notice, b.log)
+	ctx, cancel := context.WithCancel(context.Background())
+	b.stopCheck = cancel
+	b.checkDone = make(chan struct{})
+	go func() {
+		defer close(b.checkDone)
+		defer func() {
+			if recover() != nil {
+				b.log.Error("nodkey broker: the check for a newer release panicked; the panic value is not logged; " +
+					"the broker goes on without it")
+			}
+		}()
+		check.Run(ctx)
+	}()
+	b.log.Info("nodkey broker: the check for a newer release runs: it asks GitHub 10 minutes after the start, " +
+		"and then every 24 hours")
 }
 
 // sendAlerts sends the alert messages that waited for the approver with
@@ -574,19 +624,27 @@ func errText(err error) string {
 }
 
 // stop ends the parts that start made, in this order (DESIGN.md section
-// 15): the approver's Run, so the polling stops and its connection is
-// closed; the service, which ends the requests in progress and waits for
-// them; the server; the alert messages of the start; the stores; and last
-// the broker_stopped entry and the audit log. It waits at most until
-// deadline: when a part takes longer, it gives up on the rest, and the
-// process ends. It returns the error of Run, and whether the stop was
-// clean: every part ended in time without an error or a panic, and the
-// audit log took its last entry.
+// 15): the check for a newer release; the approver's Run, so the polling
+// stops and its connection is closed; the service, which ends the
+// requests in progress and waits for them; the server; the alert messages
+// of the start; the stores; and last the broker_stopped entry and the
+// audit log. It waits at most until deadline: when a part takes longer,
+// it gives up on the rest, and the process ends. It returns the error of
+// Run, and whether the stop was clean: every part ended in time without
+// an error or a panic, and the audit log took its last entry.
 func (b *brokerParts) stop(deadline time.Time) (runErr error, clean bool) {
-	b.log.Info("nodkey broker: stopping: the approver, the service, the server, the stores, then the audit log")
+	b.log.Info("nodkey broker: stopping: the check for a newer release, the approver, the service, the server, " +
+		"the stores, then the audit log")
 	clean = true
 	if b.alertsStop != nil {
 		close(b.alertsStop) // no more tries again of an alert of the start
+	}
+	if b.stopCheck != nil {
+		b.stopCheck() // the wait, a lookup or a notice that runs now is cancelled
+		if !waitUntil(b.checkDone, deadline) {
+			return nil, b.late("the check for a newer release")
+		}
+		b.log.Info("nodkey broker: the check for a newer release stopped")
 	}
 	if b.stopRun != nil {
 		b.stopRun()

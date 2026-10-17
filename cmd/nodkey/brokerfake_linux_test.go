@@ -27,10 +27,14 @@ import (
 )
 
 // The fake Telegram server of the tests of nodkey broker, and the fake
-// HTTPS proxy in front of it (see brokerenv_linux_test.go).
+// HTTPS proxy in front of it (see brokerenv_linux_test.go). The same
+// server is a fake of GitHub's API too, for the broker's check for a
+// newer release.
 
 // fakeTelegram is a fake Bot API server for the child broker, behind a
-// fake HTTPS proxy. It answers like Telegram, and keeps every call.
+// fake HTTPS proxy. It answers like Telegram, and keeps every call. For
+// the host api.github.com, it answers like GitHub's API with its newest
+// release instead (serveGitHub).
 type fakeTelegram struct {
 	t         *testing.T
 	token     string // the made-up bot token
@@ -51,6 +55,8 @@ type fakeTelegram struct {
 	offline     bool                      // the proxy refuses every new connection, as if Telegram were unreachable
 	connects    []proxyRequest            // what the proxy was asked to connect to, and by which start
 	changed     chan struct{}             // closed and made new on each change
+	newestTag   string                    // the tag of the newest release at the fake GitHub
+	github      []http.Header             // the headers of each call to the fake GitHub
 }
 
 // proxyRequest is one request that the fake proxy got.
@@ -92,6 +98,10 @@ func newFakeTelegram(t *testing.T, opts brokerOptions) *fakeTelegram {
 		markups:     make(map[int64]json.RawMessage),
 		refusePolls: opts.refusePolls,
 		changed:     make(chan struct{}),
+		newestTag:   opts.newestRelease,
+	}
+	if f.newestTag == "" {
+		f.newestTag = "v0.2.0" // the version of seamReleaseVersion
 	}
 	if opts.holdAlerts {
 		f.hold = make(chan struct{})
@@ -134,8 +144,8 @@ func newFakeTelegram(t *testing.T, opts brokerOptions) *fakeTelegram {
 }
 
 // connect handles one connection to the fake proxy: a CONNECT to
-// api.telegram.org, then TLS with the test CA's certificate, and the
-// fake's HTTP server. Anything else is refused.
+// api.telegram.org or api.github.com, then TLS with the test CA's
+// certificate, and the fake's HTTP server. Anything else is refused.
 func (f *fakeTelegram) connect(c net.Conn, cfg *tls.Config, tunnels *chanListener) {
 	_ = c.SetReadDeadline(time.Now().Add(brokerWait))
 	br := bufio.NewReader(c)
@@ -153,7 +163,7 @@ func (f *fakeTelegram) connect(c net.Conn, cfg *tls.Config, tunnels *chanListene
 		_ = c.Close()
 		return
 	}
-	if req.Method != http.MethodConnect || req.Host != telegramHost+":443" {
+	if req.Method != http.MethodConnect || req.Host != telegramHost+":443" && req.Host != githubHost+":443" {
 		_, _ = io.WriteString(c, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
 		_ = c.Close()
 		return
@@ -219,7 +229,7 @@ func (l *chanListener) Close() error {
 func (l *chanListener) Addr() net.Addr { return l.addr }
 
 // newTestCA returns a new CA certificate in PEM, and a certificate for
-// api.telegram.org that it signed, with its key.
+// api.telegram.org and api.github.com that it signed, with its key.
 func newTestCA(t *testing.T) ([]byte, tls.Certificate) {
 	t.Helper()
 	now := time.Now()
@@ -251,7 +261,7 @@ func newTestCA(t *testing.T) ([]byte, tls.Certificate) {
 	leafTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: telegramHost},
-		DNSNames:     []string{telegramHost},
+		DNSNames:     []string{telegramHost, githubHost},
 		NotBefore:    now.Add(-time.Hour),
 		NotAfter:     now.Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -278,6 +288,10 @@ func writeTelegram(w http.ResponseWriter, status int, body string) {
 }
 
 func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Host == githubHost {
+		f.serveGitHub(w, r)
+		return
+	}
 	rest, ok := strings.CutPrefix(r.URL.Path, "/bot")
 	token, method, ok2 := strings.Cut(rest, "/")
 	if !ok || !ok2 || token != f.token {
@@ -339,6 +353,30 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeTelegram(w, http.StatusNotFound, `{"ok":false,"error_code":404,"description":"Not Found"}`)
 	}
+}
+
+// serveGitHub answers like GitHub's API: the newest release of nodkey,
+// with newestTag. The other fields hold text and a link that the broker
+// must never show.
+func (f *fakeTelegram) serveGitHub(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.github = append(f.github, r.Header.Clone())
+	tag := f.newestTag
+	f.notifyLocked()
+	f.mu.Unlock()
+	if r.Method != http.MethodGet || r.URL.Path != "/repos/code6x/nodkey/releases/latest" {
+		writeTelegram(w, http.StatusNotFound, `{"message":"Not Found"}`)
+		return
+	}
+	writeTelegram(w, http.StatusOK, fmt.Sprintf(`{"tag_name":%q,"draft":false,"prerelease":false,`+
+		`"name":"not this name","html_url":"https://example.com/not-this-link","body":"<b>not this text</b>"}`, tag))
+}
+
+// githubCalls returns the headers of each call to the fake GitHub.
+func (f *fakeTelegram) githubCalls() []http.Header {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.github)
 }
 
 // waitHold makes the alert message of r wait until hold is closed, and

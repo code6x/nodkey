@@ -41,7 +41,9 @@ Commands:
             check the hash chain of an audit log, and its anchors
   update [--version X.Y.Z] [--gh PATH] [--reinstall]
             install a release in place of this nodkey; run it as root
-  version   print the version
+  version [--offline]
+            print the version; on a terminal, also say if a newer
+            release is out
   help      print this help
 `
 
@@ -81,7 +83,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "update":
 		return runUpdate(rest, stdout, stderr)
 	case "version":
-		return runVersion(rest, stdout, stderr)
+		return runVersion(rest, version, stdout, stderr, realVersionCheck)
 	case "help":
 		if _, err := io.WriteString(stdout, usageText); err != nil {
 			return exitFailure
@@ -92,23 +94,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return exitUsage
 	}
-}
-
-func runVersion(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("nodkey version", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { _, _ = io.WriteString(stderr, "Usage: nodkey version\n") }
-	if err := fs.Parse(args); err != nil {
-		return parseErrorCode(err)
-	}
-	if fs.NArg() > 0 {
-		fs.Usage()
-		return exitUsage
-	}
-	if _, err := fmt.Fprintf(stdout, "nodkey %s\n", version); err != nil {
-		return exitFailure
-	}
-	return exitOK
 }
 
 // printUsage writes the usage text to w. A failed write to stderr cannot
