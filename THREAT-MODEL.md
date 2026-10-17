@@ -281,8 +281,18 @@ clients fail. The Telegram code also sends at most 20 notices in any 60
 seconds for all clients together. A use over either limit is denied with
 cause `limit`, and it does not count for `max_per_day`. So a burst of
 notices of other clients cannot use up the uses of a night; it only
-denies uses while the limit is full.
-Risk that remains: low.
+denies uses while the limit is full. A notice about the version of a
+client (T33) counts toward neither limit. It has its own: at most 3 in
+any 60 seconds, at most one try a minute for each client, and one notice
+for each client in each start of the broker, rarely more than one.
+Risk that remains: low. Telegram counts all the messages of the notice
+chat. With up to 3 notices about versions in a minute, such as right
+after a start, about 18 notices of "never ask" uses already pass the
+about 20 that Telegram allows. Then Telegram can refuse a notice of a
+"never ask" use with its code 429. If the tries of that notice do not
+get through in time, the use is denied, and it counts for `max_per_day`
+(DESIGN.md section 7). This needs about 18 such uses in one minute, so
+it is rare.
 
 **T10. Someone on the network reads or changes the traffic.**
 TLS 1.3, with both sides' keys pinned. The pin is checked on every
@@ -346,9 +356,11 @@ output.**
 No print command. Values that nodkey fetched are never logged, never in
 errors, never in the audit log, never in Telegram. Store program output is
 never logged. `nodkey run` prints only its own fixed text, the short code
-of the `102 Processing` answer, the HTTP status, and names from its
-arguments and its config. It never prints an answer body or another
-header, and nothing after the command started. A command line can hold
+of the `102 Processing` answer, the HTTP status, names from its
+arguments and its config, and in a warning the broker's version from
+the header `Nodkey-Version`, only when it is a release version: digits
+and dots (DESIGN.md section 10). It never prints an answer body or any
+other header, and nothing after the command started. A command line can hold
 a secret the agent typed in (for example `mysql -pSECRET`), and it would
 go to Telegram and the audit log. So
 the broker masks values that look like secrets in every claimed field, and
@@ -772,8 +784,8 @@ of `golang.org/x/crypto` writes the text of each error to Go's global
 logger, without escaping and without a limit. So `nodkey ssh-agent`
 serves the agent protocol itself, and sends Go's global logger nowhere.
 Its own lines hold fixed text, numbers, the short code, the broker's
-address, the socket's path and errors of the operating system, never text
-that a process sent. A process can also cause many lines with a short
+release version, the broker's address, the socket's path and errors of
+the operating system, never text that a process sent. A process can also cause many lines with a short
 code: the broker sends one for every request that starts to wait, also in
 its queue, and a request that hangs up frees its place. So the agent
 writes at most 60 lines with a short code, and 60 about refused and
@@ -854,6 +866,35 @@ What to do:
 
 Risk that remains: real. nodkey cannot see a read in Bitwarden's own
 apps, and it cannot check where an account is logged in.
+
+**T33. A client claims a false version.**
+Each request has the client's version in a header, and each answer the
+broker's (DESIGN.md section 10). Anyone with the client's key (T11) can
+send any value there. So the broker takes it only as a claim: it changes
+no answer, no check and no audit entry, and the request never waits for
+it. A value that does not match the strict rule of a version counts as
+none, and is never logged or shown. A false claim can cause one wrong
+line in the journal and one wrong notice for that client in each start
+of the broker, rarely more than one notice, however many values the
+client sends.
+A notice that did not go out is tried again, at most once a minute for
+each client, with a journal line for each failed try. The notice is
+silent, shows only the client's name from the config and release
+versions, which are digits and dots, and has its own limit of 3 in a
+minute. So it does not take from the limits of the notices of "never
+ask" uses (T9), and it cannot fill the notice chat. The check is cheap,
+so it adds nothing to T28.
+The other way, the client takes the broker's version only from the
+pinned connection (T10), and shows only release versions from it. So
+every pinned client, also a hostile agent with the client's key (T11),
+learns the exact version of the broker: whether it misses a security
+fix of a newer release. A peer without a pinned key learns nothing: the
+TLS handshake fails before any answer. After a security release, update
+the broker first.
+Risk that remains: low. A false claim can only send the person to update
+a machine that is up to date (also the broker host), or hide that a
+client is old. To know what runs on a machine, run `nodkey version`
+there.
 
 ## 7. Assumptions
 

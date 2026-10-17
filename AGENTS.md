@@ -24,7 +24,10 @@ Planned. Each v1 issue adds its part.
   telegram, store, sshauth, client parts). Packages do not import
   `cmd/`.
   - `internal/api/` - the protocol between the clients and the broker:
-    the paths, the request and answer types, and their caps.
+    the paths, the headers, the request and answer types, and their caps.
+  - `internal/version/` - versions of nodkey: the rule of a version that
+    the other side sends, release versions, and how two compare (DESIGN.md
+    section 10).
   - `internal/broker/` - the broker's service: it answers each request in
     the order of DESIGN.md sections 5 and 6. `nodkey broker` makes its
     parts and runs it.

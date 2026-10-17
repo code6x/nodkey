@@ -309,7 +309,8 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 		return err
 	}
 
-	svc, err := broker.New(broker.Parts{Config: cfg, Audit: l, Stores: b.stores, Keys: keys, Logger: b.log})
+	svc, err := broker.New(broker.Parts{Config: cfg, Audit: l, Stores: b.stores, Keys: keys, Logger: b.log,
+		Version: version})
 	if err != nil {
 		return err
 	}
@@ -447,7 +448,7 @@ func (b *brokerParts) startRun(core *approval.Core) {
 					"every request is denied, and the broker stops")
 			}
 		}()
-		b.runErr = b.svc.Run(ctx, core, b.tg.Alert)
+		b.runErr = b.svc.Run(ctx, core, b.tg.Alert, b.tg.Inform)
 	}()
 	b.log.Info("nodkey broker: the approver runs: it polls Telegram for the answers")
 }

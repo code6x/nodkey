@@ -11,5 +11,5 @@ import (
 // ignore SIGPIPE, as keygen does: an ignored signal stays ignored after
 // execve, so the command would run with it ignored.
 func runRun(args []string, stderr io.Writer) int {
-	return client.Run(args, stderr)
+	return client.Run(args, stderr, version)
 }

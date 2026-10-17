@@ -49,13 +49,19 @@ func route(r *http.Request) (endpoint, int) {
 
 // ServeHTTP answers one request of a client (see the package comment for
 // the steps). Every answer goes through transport.WriteJSON,
-// transport.WriteError or transport.WriteProcessing.
+// transport.WriteError or transport.WriteProcessing, and has the broker's
+// version in its header.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.version != "" {
+		// First, so that every answer has it, whatever its status.
+		w.Header().Set(api.VersionHeader, s.version)
+	}
 	client, ok := transport.ClientName(r.Context())
 	if !ok {
 		transport.WriteError(w, http.StatusForbidden)
 		return
 	}
+	s.checkVersion(client, r.Header)
 	ep, status := route(r)
 	if status != 0 {
 		if status == http.StatusMethodNotAllowed {

@@ -66,6 +66,7 @@ func TestTokenNeverShown(t *testing.T) {
 	addErr("End", a.End(ctx, shown.ID, secretsPrompt(), approval.Ending{Answer: audit.AnswerApproveOnce, At: noon}))
 	addErr("Notify", a.Notify(ctx, noticeOf(secretsPrompt())))
 	addErr("Alert", a.Alert(ctx, "an alert"))
+	addErr("Inform", a.Inform(ctx, "a notice"))
 
 	// Telegram refuses or fails. The description holds the token, as a
 	// broken or hostile server might send it.
@@ -95,6 +96,8 @@ func TestTokenNeverShown(t *testing.T) {
 	}
 	addErr("End with 503", a.End(ctx, shown.ID, secretsPrompt(), approval.Ending{Cause: audit.CauseExpired}))
 	addErr("End with a bad ID", a.End(ctx, "x", secretsPrompt(), approval.Ending{}))
+	f.reply("sendMessage", 500, `{"ok":false,"error_code":500,"description":"Internal Server Error `+token+`"}`)
+	addErr("Inform with 500", a.Inform(ctx, "a notice"))
 
 	// The network fails.
 	release := f.hold("sendMessage")
@@ -128,6 +131,8 @@ func TestTokenNeverShown(t *testing.T) {
 		_, err := a.Ask(ctx, secretsPrompt())
 		addErr("Ask: "+where, err)
 		addErr("Notify: "+where, a.Notify(ctx, noticeOf(secretsPrompt())))
+		a.informs = nil // so that its limit does not stop it
+		addErr("Inform: "+where, a.Inform(ctx, "a notice"))
 	}
 	a.api.base = f.srv.URL
 

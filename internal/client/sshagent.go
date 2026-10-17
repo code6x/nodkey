@@ -125,13 +125,15 @@ be made).
 `
 
 // SSHAgent runs nodkey ssh-agent with args, the arguments after
-// "ssh-agent", and writes its lines to stderr. It serves the agent until
+// "ssh-agent", and writes its lines to stderr. version is the version of
+// nodkey, as for Run; the agent prints one warning for each version of
+// the broker that differs from it. It serves the agent until
 // SIGINT or SIGTERM. Then it removes the socket, writes its last line,
 // such as "nodkey: stopped by SIGTERM (exit 143)", and ends nodkey with
 // the same signal, as nodkey run does. Otherwise it returns the exit code
 // of DESIGN.md section 15, and its last line is "nodkey: <reason> (exit
 // <code>)".
-func SSHAgent(args []string, stderr io.Writer) int {
+func SSHAgent(args []string, stderr io.Writer, version string) int {
 	r := agentRunner{
 		load:       Load,
 		configPath: ConfigPath,
@@ -139,6 +141,7 @@ func SSHAgent(args []string, stderr io.Writer) int {
 		checkDirs:  config.CheckParentDirs,
 		proc:       procFS{root: procDir},
 		peer:       peerCredentials,
+		version:    version,
 	}
 	return r.main(args, stderr)
 }
@@ -163,6 +166,8 @@ type agentRunner struct {
 	// tune, if set, changes the agent before it serves, such as its
 	// limits. Tests use it.
 	tune func(*sshAgent)
+	// version is the version of nodkey (warnVersions); "" sends none.
+	version string
 }
 
 // main is SSHAgent with the parts of r.
@@ -213,6 +218,8 @@ func (r agentRunner) run(ctx context.Context, args []string, w io.Writer) int {
 	if err != nil {
 		return fail(log, exitUnavailable, err.Error())
 	}
+	// At most one line for each version of the broker, so no budget.
+	b.warnVersions(r.version, func(text string) { log.say("%s", text) })
 	self, err := currentUID()
 	if err != nil {
 		return fail(log, exitAgentFailed, err.Error())

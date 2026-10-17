@@ -333,7 +333,7 @@ func TestRunReadsTheClientConfig(t *testing.T) { // not parallel: it sets HOME
 		t.Fatalf("ConfigPath = %q, %v", path, err)
 	}
 	var stderr strings.Builder
-	code := Run([]string{"--secret", "GH_TOKEN=github-token", "--", self(t)}, &stderr)
+	code := Run([]string{"--secret", "GH_TOKEN=github-token", "--", self(t)}, &stderr, "dev")
 	if last := lastLine(stderr.String()); code != exitUnavailable || !strings.HasPrefix(last, "nodkey: config: ") ||
 		!strings.HasSuffix(last, "(exit 69)") {
 		t.Errorf("without a config: exit code %d, stderr %q", code, safe(stderr.String()))

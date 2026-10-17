@@ -113,9 +113,10 @@ section 5, item 8). So:
 ## 2. Get nodkey
 
 Install the same version of nodkey on the broker host and on each agent
-machine, as `/usr/local/bin/nodkey`, owned by root. **Do it as root on
-each host, never as the user of the agent.** The agent can change what
-its own user downloads, builds or copies
+machine, as `/usr/local/bin/nodkey`, owned by root. When the versions
+differ, nodkey says so ([section 13](#a-new-version-of-nodkey)). **Do it
+as root on each host, never as the user of the agent.** The agent can
+change what its own user downloads, builds or copies
 ([section 1](#where-you-do-the-setup)). Get the root shell in a way that
 does not go through the agent's account:
 
@@ -1382,6 +1383,43 @@ poll of the old broker was still on its way
 program uses the token, start the broker again with
 `systemctl start nodkey`.
 
+Until every machine runs the new version, nodkey tells you. Each client
+sends its version to the broker, and the broker sends its own back.
+nodkey 0.1 sends no version.
+
+- On the agent machine, `nodkey run`, `nodkey ssh-grant` and
+  `nodkey ssh-agent` print a warning on stderr. It says which side is
+  older, and what to do there:
+
+  ```text
+  nodkey: warning: the broker runs nodkey 0.2.0, which is older than nodkey 0.3.0 on this machine; to update the broker, run "nodkey update" as root on the broker host
+  ```
+
+  With a broker of nodkey 0.1, the warning says that the broker runs an
+  older nodkey that does not send its version, and points to this
+  section: nodkey 0.1 has no `nodkey update`.
+- The broker writes a line in its journal, once in each start for each
+  client that runs another version, or that sends none. It also sends
+  you one silent notice for such a client:
+
+  ```text
+  ℹ️ nodkey: The client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker. To update it, run there: sudo nodkey update
+  ```
+
+  For a client of nodkey 0.1, the notice points to this section too. If
+  the notice cannot go out, such as while Telegram cannot be reached
+  after a power cut, the journal says so, and the next request of that
+  client a minute later or more tries again. Rarely, the same notice
+  comes more than once.
+
+The steps above make both go away. A machine that still runs another
+version works as before, unless the two versions do not understand each
+other's requests: then the request fails, for example with
+`the answer of the broker is not valid`. The version of a client is only
+what the client says: the broker allows and denies nothing because of
+it. A build from the source, such as one with the version `dev` or a
+commit, gets no warning and no notice.
+
 ### New versions of bws and bw
 
 Install them in the same way as the first time
@@ -1453,6 +1491,8 @@ error names the file, the section or the key, never a secret value.
 | The installer says that `group or others can write to` a directory or a file, or that a path `is owned by user`. | As root, the installer runs programs from these places, so only root may be able to change them, and each directory above them. Fix the owner or the mode, such as with `chmod go-w /usr/local/bin`, or choose another place with `--bin-dir`, `--gh` or `TMPDIR`. A Debian system that was set up long ago may still have `/usr/local/bin` writable by the group `staff`. |
 | systemd does not start the broker: `systemctl status nodkey` shows `status=243/CREDENTIALS`. | systemd cannot decrypt a credential, so the broker does not run, and nothing is handed out. Check that each file of a `LoadCredentialEncrypted=` line is there, and was made with that name. After a firmware update or a change of the Secure Boot settings, the TPM2 chip may refuse credentials that are bound to PCR 7 ([section 3](#encrypted-credentials)). If you did not update the firmware or change Secure Boot, find out why first: someone may have changed how the machine starts. Then make each credential again, as in [section 13](#13-upgrades-and-key-changes): a new TLS key (and its pin on each client), the bot token, a new `bws` token, the `bw` master password, and new SSH keys. |
 | The journal says that the bot may not send to this chat. | You did not tap **Start** in the chat with the bot, or you blocked it. |
+| The client prints `nodkey: warning: ...` with the versions of this machine and the broker. | They run different versions of nodkey. Update the older side, as the line says ([section 13](#a-new-version-of-nodkey)). Requests can fail until then, for example with `the answer of the broker is not valid`. |
+| A silent notice says that a client runs another version of nodkey, or sent no version. | Update nodkey on the older side, as the notice says ([section 13](#a-new-version-of-nodkey)). The broker sends one such notice for each client in each start, rarely more than one, and the journal has a line about it. |
 | `a store could not start` | The broker runs without that store, denies requests for its secrets, and tries again with each request. The error names the store and the step. For bw: check the login ([section 5](#bw-a-separate-bitwarden-account)). |
 | The broker refuses a file: the owner, the mode, or a directory that group or others can write to. | The broker checks every file that it reads, and every directory on the way ([DESIGN.md section 14](../DESIGN.md#14-configuration)). Fix the owner or the mode that the error names. |
 | `cannot listen on ...` | The `listen` address is not on the broker host yet, such as before the VPN is up. systemd tries again every 5 seconds. |

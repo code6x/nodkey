@@ -158,7 +158,7 @@ func newSSHBroker(t *testing.T, hosts map[string]ssh.PublicKey) *sshBroker {
 	sb.addr = serve(t, sb.key, cfg.Clients, svc)
 	runCtx, stopRun := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
-	go func() { runErr <- svc.Run(runCtx, core, nil) }()
+	go func() { runErr <- svc.Run(runCtx, core, nil, nil) }()
 	t.Cleanup(func() {
 		stopRun()
 		select {

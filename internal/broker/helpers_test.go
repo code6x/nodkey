@@ -386,6 +386,7 @@ type env struct {
 	userKeys map[string]ssh.Signer
 	hosts    map[string]ssh.AlgorithmSigner // web-1, web-2, db-1
 	alerts   *syncBuffer
+	notices  *noticeLog // the notices about versions
 	runErr   chan error
 	stopRun  context.CancelFunc
 }
@@ -398,6 +399,11 @@ type envOptions struct {
 	noRun bool
 	// wrap, if set, wraps the Service before it goes to the server.
 	wrap func(http.Handler) http.Handler
+	// version is the broker's version (Parts.Version); "" for none.
+	version string
+	// clients are more clients, each with its own key, and no secret or
+	// key of their own.
+	clients []string
 }
 
 // newEnv starts a broker with this config:
@@ -422,6 +428,7 @@ func newEnv(t *testing.T, opts envOptions) *env {
 		logs:     new(syncBuffer),
 		srvLogs:  new(syncBuffer),
 		alerts:   new(syncBuffer),
+		notices:  &noticeLog{},
 		broker:   newTLSKey(t, ""),
 		clients:  map[string]tlsKey{"laptop": newTLSKey(t, ""), "ci": newTLSKey(t, "")},
 		userKeys: make(map[string]ssh.Signer),
@@ -431,6 +438,9 @@ func newEnv(t *testing.T, opts envOptions) *env {
 			"db-password": madeUp("db"), "backup-token": madeUp("backup"),
 		},
 		runErr: make(chan error, 1),
+	}
+	for _, name := range opts.clients {
+		e.clients[name] = newTLSKey(t, "")
 	}
 	e.main.items[idGitHub] = e.values["github-token"]
 	e.main.items[idNPM] = e.values["npm-token"]
@@ -479,6 +489,9 @@ func newEnv(t *testing.T, opts envOptions) *env {
 		},
 		KnownHosts: known,
 	}
+	for _, name := range opts.clients {
+		e.cfg.Clients[name] = config.Client{Name: name, Pin: e.clients[name].pin}
+	}
 	if opts.config != nil {
 		opts.config(e.cfg)
 	}
@@ -505,11 +518,12 @@ func newEnv(t *testing.T, opts envOptions) *env {
 	}
 	e.core = core
 	svc, err := New(Parts{
-		Config: e.cfg,
-		Audit:  e.audit,
-		Stores: map[string]store.Store{"main": e.main, "vault": e.vault},
-		Keys:   keys,
-		Logger: NewLogger(e.logs),
+		Config:  e.cfg,
+		Audit:   e.audit,
+		Stores:  map[string]store.Store{"main": e.main, "vault": e.vault},
+		Keys:    keys,
+		Logger:  NewLogger(e.logs),
+		Version: opts.version,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -596,6 +610,13 @@ func requestContexts() (func(http.Handler) http.Handler, chan context.Context) {
 	return wrap, ch
 }
 
+// setNow changes the clock of the tries of the notices about versions.
+func (s *Service) setNow(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
 // setMaxPerClient changes the cap of requests in progress per client.
 func (s *Service) setMaxPerClient(n int) {
 	s.mu.Lock()
@@ -609,7 +630,7 @@ func (e *env) startRun(ctx context.Context) {
 		_, err := e.alerts.Write([]byte(msg + "\n"))
 		return err
 	}
-	go func() { e.runErr <- e.svc.Run(ctx, e.core, alert) }()
+	go func() { e.runErr <- e.svc.Run(ctx, e.core, alert, e.notices.send) }()
 	if err := e.approver.WaitRunning(waitLimit); err != nil {
 		e.t.Fatal(err)
 	}
@@ -895,4 +916,89 @@ func (e *env) rawRequest(name, text string) int {
 	}
 	_ = resp.Body.Close()
 	return resp.StatusCode
+}
+
+// noticeLog records the notices of the Service about versions (its
+// NoticeFunc): each try, and the notices that went out. fail, if set,
+// gives the result of each try; gate, if set, holds each try until it is
+// closed, or until the context of the try ends.
+type noticeLog struct {
+	mu       sync.Mutex
+	tries    []string
+	sent     []string
+	fail     func(msg string) error
+	gate     chan struct{}
+	inflight int // the tries that run now
+	most     int // the most tries that ran at the same time
+}
+
+func (n *noticeLog) send(ctx context.Context, msg string) error {
+	n.mu.Lock()
+	n.tries = append(n.tries, msg)
+	n.inflight++
+	n.most = max(n.most, n.inflight)
+	fail, gate := n.fail, n.gate
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		n.inflight--
+		n.mu.Unlock()
+	}()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if fail != nil {
+		if err := fail(msg); err != nil {
+			return err
+		}
+	}
+	n.mu.Lock()
+	n.sent = append(n.sent, msg)
+	n.mu.Unlock()
+	return nil
+}
+
+// set changes the notice log under its lock.
+func (n *noticeLog) set(change func(*noticeLog)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	change(n)
+}
+
+// wentOut returns the notices that went out so far.
+func (n *noticeLog) wentOut() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.sent)
+}
+
+// tried returns every try so far, and the most tries that ran at the same
+// time.
+func (n *noticeLog) tried() (tries []string, most int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.tries), n.most
+}
+
+// waitVersionTry waits until no try of the notice about the version of
+// client runs. A request that starts a try marks it before its answer.
+func (s *Service) waitVersionTry(t testing.TB, client string) {
+	t.Helper()
+	deadline := time.Now().Add(waitLimit)
+	for {
+		s.mu.Lock()
+		busy := s.versionNotes[client].sending
+		s.mu.Unlock()
+		if !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a try of the notice about the version of %s still runs", client)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

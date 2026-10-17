@@ -170,7 +170,8 @@ nodkey run --secret GH_TOKEN=github-token \
    `nodkey: waiting for approval (request 7qd2)` to stderr, so a person at
    the terminal can match it with the message on the phone. It takes the
    code only from that answer, and prints it once, only when it has the
-   form of a short code. It never prints another header.
+   form of a short code. It prints no other header, except the broker's
+   version in one warning, when the two versions differ (section 10).
 6. On approval, the broker first writes the `request` entry and the
    `decision` (or `grant_used`) entry to the audit log; each one is synced
    to disk. Only then do the grants of an "Approve N min" tap start, and
@@ -200,11 +201,12 @@ nodkey run --secret GH_TOKEN=github-token \
 8. On deny, timeout or error, the client prints one line to stderr, without
    any value, and exits: with 77 when the broker denies the request, and
    with 69 when it cannot reach the broker or gets another answer
-   (section 15). It never prints an answer body. If the person stops
-   `nodkey run` with Ctrl-C (`SIGINT`) or with `SIGTERM` while it waits,
-   the client closes the connection, so the broker cancels the request.
-   Then it prints its last line and ends itself with the same signal
-   (section 15).
+   (section 15). Right before that line, it may print one warning about
+   the version of the broker (section 10). It never prints an answer
+   body. If the person stops `nodkey run` with Ctrl-C (`SIGINT`) or with
+   `SIGTERM` while it waits, the client closes the connection, so the
+   broker cancels the request. Then it prints its last line and ends
+   itself with the same signal (section 15).
 
 There is no command that prints a secret. This is on purpose: the agent
 should never see the value in its own output.
@@ -560,6 +562,23 @@ allowed by a "never ask" rule, without a tap
 — claimed by the agent —
 command: restic backup /srv
 ```
+
+A notice about the version of a client (section 10) has no buttons
+either. It goes to the notice chat without a sound, once for each client
+in each start of the broker, rarely more than once (see "Telegram
+details" below), in one of these forms:
+
+```
+ℹ️ nodkey: The client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker. To update it, run there: sudo nodkey update
+ℹ️ nodkey: The client laptop says that it runs nodkey 0.4.0, which is newer than nodkey 0.3.0 on the broker. To update the broker, run as root on the broker host: nodkey update
+ℹ️ nodkey: The client laptop sent no version of nodkey, so it may run an older nodkey. The broker runs nodkey 0.3.0. To update laptop, follow section 13 of docs/setup.md.
+```
+
+The name is the name of the `[client.*]` section, and the versions are
+release versions: digits and dots only. "says that it runs" marks the
+client's version as a claim. A client that sends no version runs nodkey
+0.1, which has no `nodkey update`, so that notice points to the update
+steps of [docs/setup.md](docs/setup.md#a-new-version-of-nodkey) instead.
 
 - The host key shows only `SHA256:` and its first 4 characters. The
   broker has checked the key against its own `known_hosts`, and the host
@@ -999,11 +1018,14 @@ Not masked, for example:
   request that waits for the person is denied at once, and so is every new
   request that needs a message. A message or a notice that is still being
   sent stops too, and no new notice goes out, so a "never ask" use that
-  needs a notice is denied as well. The approval core would still let
-  grants and "never ask" rules with `notify = false` allow requests, but
-  the broker denies every request from then on (503), and `nodkey broker`
-  stops (section 15). On a polling conflict, the broker first writes the
-  `error` entry with code `poll_conflict`.
+  needs a notice is denied as well. A notice about the version of a
+  client (below) is different: no new try of it starts, but a try that is
+  still being sent goes on until the service stops (section 15). The
+  approval core would still let grants and "never ask" rules with
+  `notify = false` allow requests, but the broker denies every request
+  from then on (503), and `nodkey broker` stops (section 15). On a
+  polling conflict, the broker first writes the `error` entry with code
+  `poll_conflict`.
 - Messages about "never ask" uses can go to a second chat
   (`notice_chat_id`), so the approval chat stays for approvals only.
   They are silent (`disable_notification`). At most 20 notices go out in
@@ -1017,6 +1039,32 @@ Not masked, for example:
   `approver_failed`), and the use still counts, because the core cannot
   tell if the notice went out. That holds for Telegram's own code 429
   after the last try too: an earlier try may have sent the notice.
+- A notice about the version of a client (section 10) goes to the same
+  chat, also silent and with link previews off. It does not count toward
+  the 20 notices above, nor toward the 6 of a client in section 8, so a
+  "never ask" use right after it still gets its notice. It has its own
+  limit: at most 3 in any 60 seconds, for all clients together, so it
+  takes little of what Telegram allows in the chat. Telegram counts all
+  the messages of the chat, though. With up to 3 notices about versions
+  in a minute, such as right after a start, about 18 notices of "never
+  ask" uses already pass the about 20 that Telegram allows. Then
+  Telegram can refuse a notice of a "never ask" use with its code 429.
+  If the tries of that notice do not get through in time, the use is
+  denied, as for any other failure of its notice. This needs about 18
+  such uses in one minute, so it is rare.
+- The broker sends a notice about a version in the background, so it
+  never delays or denies a request. A client has at most one try at a
+  time, and each try is one call. A try that fails, also one that its
+  limit of 3 stops, is logged. Then the next request of that client that
+  comes at least 60 seconds after the failure makes a new try; there is
+  no timer. Once a notice went out, that client gets no more tries in
+  this start. A try can fail after Telegram took the message, such as on
+  a time-out; then the next try sends it again. Such a repeated notice
+  is rare and does no harm. A try that is still being sent when the
+  service stops is cancelled (section 15, step 2), and a try that fails
+  while the broker stops says that no new try comes. So each client gets
+  one such notice in each start, rarely more than one, and at most one
+  try a minute.
 
 ## 8. Rules and grants
 
@@ -1098,7 +1146,8 @@ name exactly one client. The config check refuses all of these (section
   way: cause `limit`, and it does not count for `max_per_day`. A notice
   that the Telegram code refused, or could not send, still counts toward
   the 6 of its client, so a client cannot try again and again within the
-  minute.
+  minute. A notice about the version of a client (section 7) counts
+  toward neither of these limits.
 
 ## 9. Audit log
 
@@ -1547,6 +1596,64 @@ a path, a query, `OPTIONS *` or `PRI *` gets 404. The types are in
   for a moment. Another request waits for a place, at most 10 seconds,
   and then gets `429`.
 
+**Versions.** The JSON is strict on both sides, so a client and a broker
+of different versions can fail with only "the answer of the broker is not
+valid", or a `400`. So each side tells the other its version, and says
+when they differ.
+
+- Each request has the header `Nodkey-Version` with the client's version,
+  as `nodkey version` prints it, such as `0.2.0` or `dev`. Each answer of
+  the broker has it with the broker's version: with every status, also
+  errors, `404`, `405` and the `102`. It is a header, not a JSON field,
+  so versions with other fields still read it. Two kinds of answers come
+  before the broker's code, and have no such header: the answers that
+  net/http writes itself to a request that is not valid HTTP, such as
+  headers over the limit, and the `403` for a request without a stored
+  client name (above). The client never causes them.
+- A side takes the other side's value only when it is one header that
+  matches `^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$`, the rule of the `version`
+  of the `broker_started` entry (section 9). Any other value counts as no
+  version, and is never printed or logged. A side whose own version does
+  not match sends none.
+- Only release versions are compared, as numbers: `X.Y.Z`, with numbers
+  from 0 to 999999 and no leading zeros. Any other version, such as
+  `dev`, a commit or `1.2.0-rc.1`, is a build from the source: when either
+  side is one, neither side says anything.
+- The client's version is a claim: anyone with the client's key can send
+  any value (THREAT-MODEL.md T33). It changes no answer, no check and no
+  audit entry, and the request never waits for what the broker does with
+  it.
+- The client compares after each final answer, whatever its status. When
+  the two releases differ, or the client is a release and the broker
+  sends no valid version, it prints one warning on stderr, before its
+  last line or before the command starts. The line says which side is
+  older, and what to do there, for example:
+
+  ```
+  nodkey: warning: the broker runs nodkey 0.2.0, which is older than nodkey 0.3.0 on this machine; to update the broker, run "nodkey update" as root on the broker host
+  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "sudo nodkey update"
+  nodkey: warning: the broker runs an older nodkey that does not send its version, and this machine runs nodkey 0.3.0; to update the broker, follow section 13 of docs/setup.md
+  ```
+
+  Only a side that sends its version has `nodkey update`. A broker that
+  sends none runs nodkey 0.1, so the last line points to the update steps
+  of [docs/setup.md](docs/setup.md#a-new-version-of-nodkey) instead.
+  The line holds only fixed text and release versions. It goes only to
+  stderr, never into the environment or the output of the command.
+  `nodkey run` and `nodkey ssh-grant` send one request, so they print it
+  at most once. `nodkey ssh-agent` prints it once for each version that
+  the broker sends, so an update of the broker gives one more line, and
+  it stops after 16 lines.
+- The broker compares when the TLS key has given the client's name. When
+  the client's release is not the broker's, or the client sends no valid
+  version while the broker is a release, the broker writes one line in
+  the journal, once for each client in each start of the broker, however
+  many versions the client claims. The line names the client, the
+  client's release when it sent one, and the broker's version. It also
+  sends one notice (section 7). A try of the notice that fails is tried
+  again with a later request of the client, at least 60 seconds later,
+  until one goes out. The request waits for neither.
+
 **The broker's log.** Any peer can open a connection, and the log goes to
 the journal next to the audit anchors (section 9). So a log line about a
 connection never holds text that the peer chose, such as its ALPN names,
@@ -1569,7 +1676,9 @@ a field of its certificate, or a line break:
   in its next line, or at the end of the minute when no line comes.
 - The broker's own lines come from slog's text handler: each line starts
   with `time=`, and a value with a line break is quoted and escaped. The
-  broker never logs claimed text, and cuts each value to 1 KiB. So no line
+  broker never logs claimed text, except the version that a client claims
+  when it is a release version, which is only digits and dots (see
+  "Versions" above), and cuts each value to 1 KiB. So no line
   can start with `audit anchor ` (section 9), and none comes near the
   48 KiB at which journald splits a line. It logs at most 20 requests in
   a minute that a check refused, SSH logins (section 6) and variables on
@@ -2104,7 +2213,8 @@ order:
    request that waits for the person is denied.
 2. The service: new requests get `503`, and the requests in progress end
    and get `503` too (section 10). The broker waits for them, and writes
-   the `foreign_tap` entries that still wait.
+   the `foreign_tap` entries that still wait. A notice about the version
+   of a client that is still being sent is cancelled (section 7).
 3. The server: it closes the `listen` address and every connection.
 4. The alerts of the start: each one gets its first try, also when the
    stop began right after the start, but no try again. The tries run at
@@ -2192,7 +2302,8 @@ The command itself may also exit with one of these codes. To tell them
 apart, look at the last line on stderr. Only when nodkey itself exits, its
 last line is `nodkey: <reason> (exit <code>)`, for example
 `nodkey: denied (exit 77)`. When the command runs, nodkey prints nothing
-after it.
+after it. Before its last line, or before the command starts, nodkey may
+print one warning about the version of the broker (section 10).
 
 `nodkey ssh-grant` exits with:
 
@@ -2220,6 +2331,8 @@ nothing: the grants are made, and the last line says so. `-h` and
 on stdout. Its last line on stderr is always
 `nodkey: <result> (exit <code>)`, also after an approval, for example
 `nodkey: SSH logins as deploy to 2 hosts allowed until 14:20 (exit 0)`.
+Before it, it may print one warning about the version of the broker
+(section 10).
 
 `nodkey keygen` prints the pin on stdout, and nothing else. It exits with
 0, with 64 on wrong usage, and with 1 on any other error. Then its last
@@ -2269,8 +2382,10 @@ Unix socket until `SIGINT` or `SIGTERM` (section 6). It holds no SSH key.
   k3f9)`), and one line about each request that it refused or that
   failed, such as `nodkey: no signature (request k3f9): denied`, with the
   same texts as `nodkey run`: `denied` for `403`, and `denied by a limit
-  of the broker` for `429`. A line holds only fixed text, numbers, the
-  short code, the broker's address, the socket's path and errors of the
+  of the broker` for `429`. It also prints a warning about the version of
+  the broker, once for each version that the broker sends (section 10).
+  A line holds only fixed text, numbers, release versions, the short
+  code, the broker's address, the socket's path and errors of the
   operating system, never text that a process on the agent machine sent.
 - Any process of the user can cause both kinds of lines: the broker
   sends a short code for every request that starts to wait, also in its
@@ -2582,8 +2697,10 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
     the logins after it; a denied login, after which the grants of the key
     have ended. Each case also checks what the message shows, what the
     clients print, the entries in the audit log, and that no other
-    message goes out. The config has no "never ask" rule, and nothing in
-    the test makes an alert, so every message must have buttons. At the
+    message goes out. The config has no "never ask" rule, nothing in the
+    test makes an alert, and the client and the broker are the same build
+    from the source, so no notice about a version goes out either: every
+    message must have buttons. At the
     end, `nodkey audit verify` checks the whole audit log with every
     anchor of the broker's journal, and a copy of the log with one changed
     entry fails.

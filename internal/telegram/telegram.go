@@ -47,6 +47,14 @@ import (
 // for each client (approval.MaxNoticesPerMinute).
 const NoticesPerMinute = 20
 
+// InformsPerMinute is the most notices of the broker itself that Inform
+// sends in any 60 seconds, such as a notice about a client that runs
+// another version of nodkey. They have their own count, apart from
+// NoticesPerMinute, so they never take the place of a notice of a "never
+// ask" use. The number is small, so they take little of what Telegram
+// allows in the notice chat.
+const InformsPerMinute = 3
+
 // maxRemembered is the most messages whose state the approver keeps, for
 // taps that come after their request ended.
 const maxRemembered = 1024
@@ -88,6 +96,9 @@ var (
 	// nothing was sent: the core denies the use with cause limit, and the
 	// use does not count for max_per_day.
 	ErrNoticeLimit = fmt.Errorf("telegram: too many notices in the last minute: %w", approval.ErrLimit)
+	// ErrInformLimit: Inform sent InformsPerMinute notices in the last 60
+	// seconds, so it sends no more.
+	ErrInformLimit = errors.New("telegram: too many notices of the broker in the last minute")
 	// ErrTokenRefused: Telegram answered a call with 401 or 404: it does
 	// not accept the bot token, or does not know the bot, such as after
 	// the token was revoked or the bot deleted. Only a new token helps.
@@ -119,8 +130,8 @@ type Options struct {
 }
 
 // Approver is the Telegram approver: an approval.Approver. Make it with
-// New. Ask, End, Notify and Alert are safe for use by many goroutines.
-// Run runs once at a time.
+// New. Ask, End, Notify, Alert and Inform are safe for use by many
+// goroutines. Run runs once at a time.
 type Approver struct {
 	api        *client
 	userID     int64 // the approver; the private chat with the approver has the same ID
@@ -136,8 +147,9 @@ type Approver struct {
 	// first; there are at most maxRemembered.
 	sent  map[approval.MessageID]*sentMessage
 	order []approval.MessageID
-	// notices holds when the newest notices were sent.
-	notices []time.Time
+	// notices holds when the newest notices of Notify were sent, and
+	// informs those of Inform.
+	notices, informs []time.Time
 	// reports counts the reports of refused taps of other users in the
 	// current minute, and ownReports those of the approver's own taps.
 	// Each is a budget of its own, so the taps of others cannot crowd out
@@ -373,6 +385,39 @@ func (a *Approver) Alert(ctx context.Context, msg string) error {
 	}, nil)
 }
 
+// Inform sends msg to the notice chat, without a sound: a notice of the
+// broker itself that needs no answer, such as a client that runs another
+// version of nodkey. msg is the broker's own text, with names from the
+// config and checked values only. It is HTML-escaped and cut to
+// maxAlertUnits.
+//
+// Inform never takes the place of a notice of a "never ask" use: it has
+// its own count. When it sent InformsPerMinute notices in the last 60
+// seconds, it sends nothing and returns ErrInformLimit. Inform makes one
+// try, which takes at most callTimeout, and never tries again itself:
+// the caller logs a notice that did not go out, and decides when to try
+// again.
+func (a *Approver) Inform(ctx context.Context, msg string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !a.take(&a.informs, InformsPerMinute) {
+		return ErrInformLimit
+	}
+	var t text
+	t.write("ℹ️ nodkey: " + cutUnits(strings.ToValidUTF8(msg, "�"), maxAlertUnits))
+	if e := a.api.callOnce(ctx, "sendMessage", sendMessageParams{
+		ChatID:              a.noticeChat,
+		Text:                t.html.String(),
+		ParseMode:           "HTML",
+		LinkPreviewOptions:  noPreview,
+		DisableNotification: true,
+	}, nil, a.api.timeout); e != nil {
+		return e
+	}
+	return nil
+}
+
 // edit replaces the text of a message with html, and removes its buttons.
 func (a *Approver) edit(ctx context.Context, chatID, msgID int64, html string) error {
 	err := a.api.call(ctx, "editMessageText", editMessageTextParams{
@@ -473,15 +518,21 @@ func (a *Approver) takeChangedAlert() bool {
 	return true
 }
 
-// takeNotice reports whether a notice may go out now, and counts it.
-func (a *Approver) takeNotice() bool {
+// takeNotice reports whether a notice of Notify may go out now, and
+// counts it.
+func (a *Approver) takeNotice() bool { return a.take(&a.notices, NoticesPerMinute) }
+
+// take reports whether one more message may go out now, when sent holds
+// when the newest ones went out and at most limit may go out in any 60
+// seconds. If so, it counts the message in sent.
+func (a *Approver) take(sent *[]time.Time, limit int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
-	a.notices = slices.DeleteFunc(a.notices, func(t time.Time) bool { return now.Sub(t) >= time.Minute })
-	if len(a.notices) >= NoticesPerMinute {
+	*sent = slices.DeleteFunc(*sent, func(t time.Time) bool { return now.Sub(t) >= time.Minute })
+	if len(*sent) >= limit {
 		return false
 	}
-	a.notices = append(a.notices, now)
+	*sent = append(*sent, now)
 	return true
 }

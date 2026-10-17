@@ -599,6 +599,36 @@ func TestShortCode(t *testing.T) {
 	}
 }
 
+// TestVersion: the version header counts only as one header with a valid
+// version. Anything else is no version, so it is never passed on.
+func TestVersion(t *testing.T) {
+	h := func(values ...string) http.Header {
+		return http.Header{http.CanonicalHeaderKey(VersionHeader): values}
+	}
+	for _, v := range []string{"0.1.0", "dev", "1a2b3c4", "v1.2.0-rc.1"} {
+		if got := Version(h(v)); got != v {
+			t.Errorf("Version(%q) = %q", v, got)
+		}
+	}
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://broker.example/v1/keys", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("nodkey-version", "0.1.0") // any case of the name
+	if got := Version(r.Header); got != "0.1.0" {
+		t.Errorf("Version of a request = %q", got)
+	}
+	for _, hh := range []http.Header{
+		{}, h(), h(""), h("0.1.0", "0.2.0"), h("0.1.0", "0.1.0"), h("0.1.0, 0.2.0"), h("0.1.0 "),
+		h("<b>0.1.0</b>"), h("0.1.0\r\nX-Note: 1"), h(strings.Repeat("1", 65)),
+		{"Nodkey_version": {"0.1.0"}},
+	} {
+		if got := Version(hh); got != "" {
+			t.Errorf("Version(%q) = %q, want none", hh, got)
+		}
+	}
+}
+
 // TestSecretsAnswerEncode: Encode writes the same bytes as json.Marshal,
 // into a buffer of exactly that size, and ReadAnswer takes them. It
 // refuses a variable name that is not valid, as such a name could need
