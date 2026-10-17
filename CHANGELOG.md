@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0](https://github.com/code6x/nodkey/compare/v0.1.0...v0.2.0) (2026-10-17)
+
+
+### Features
+
+* install script and nodkey update ([#95](https://github.com/code6x/nodkey/issues/95)) ([cee02b8](https://github.com/code6x/nodkey/commit/cee02b80c3b5bf4a5b8c602bd9ec07ddc3cf4bd2))
+* say when a newer release is out ([#96](https://github.com/code6x/nodkey/issues/96)) ([1ceee4d](https://github.com/code6x/nodkey/commit/1ceee4da456b56d41634cd6450d7a69622104e02))
+* warn when the client and the broker run different versions ([#93](https://github.com/code6x/nodkey/issues/93)) ([a79bf9a](https://github.com/code6x/nodkey/commit/a79bf9a78dbe10179e46cc3839b0099989d6448e))
+
+
+### Documentation
+
+* install from the 0.1.0 release, and fetch the unit from its tag ([#85](https://github.com/code6x/nodkey/issues/85)) ([bbbdf59](https://github.com/code6x/nodkey/commit/bbbdf5981211cee09cfca6d50602d45642871ba8))
+* keep the Bitwarden account that can read the secrets off agent machines ([#86](https://github.com/code6x/nodkey/issues/86)) ([24297af](https://github.com/code6x/nodkey/commit/24297afa65048dd2b8c02b047dfb7c3c8081dbf6))
+* name Telegram Web as the client of the real test ([#75](https://github.com/code6x/nodkey/issues/75)) ([a9de078](https://github.com/code6x/nodkey/commit/a9de078fc50287880ac29bea16f062a15c91748a))
+
 ## 0.1.0 (2026-10-15)
 
 
