@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/claim"
@@ -28,6 +29,7 @@ var allTypes = []any{
 	SecretsRequest{}, SecretRef{}, SecretsAnswer{}, SecretValue{},
 	SignRequest{}, SignAnswer{},
 	GrantRequest{}, GrantAnswer{},
+	PreapproveRequest{}, PreapproveAnswer{}, PreapproveCancelRequest{}, PreapproveCancelAnswer{},
 	ErrorAnswer{},
 }
 
@@ -90,6 +92,13 @@ func fullValues() []any {
 		&SignAnswer{Format: "ssh-ed25519", Blob: []byte{5, 6}},
 		&GrantRequest{Key: "deploy", User: "deploy", Hosts: []string{"web-1", "web-2"}, Seconds: 900, Reason: "r"},
 		&GrantAnswer{Minutes: 15},
+		&PreapproveRequest{
+			Secrets: []string{"backup-token"}, Key: "k", User: "u", Hosts: []string{"web-1"},
+			From: "2026-10-28T03:00", Until: "2026-10-28T04:00+02:00", Uses: 2, Reason: "r",
+		},
+		&PreapproveAnswer{ID: "AAAAAAAAAAAAAAAAAAAAAA", From: "2026-10-28T03:00:00+02:00", Until: "2026-10-28T04:00:00+02:00"},
+		&PreapproveCancelRequest{ID: "AAAAAAAAAAAAAAAAAAAAAA"},
+		&PreapproveCancelAnswer{ID: "AAAAAAAAAAAAAAAAAAAAAA"},
 		&ErrorAnswer{Error: "Forbidden"},
 	}
 }
@@ -124,7 +133,7 @@ func TestRoundTrip(t *testing.T) {
 func TestZeroValuesRoundTrip(t *testing.T) {
 	for _, v := range []any{
 		&KeysAnswer{}, &SecretsRequest{}, &SecretsAnswer{Secrets: []SecretValue{{Var: "A", Value: []byte{}}}},
-		&SignRequest{Binds: [][]byte{nil}, Commands: [][]string{nil}}, &SignAnswer{}, &GrantRequest{},
+		&SignRequest{Binds: [][]byte{nil}, Commands: [][]string{nil}}, &SignAnswer{}, &GrantRequest{}, &PreapproveRequest{},
 		&KeysAnswer{Keys: []Key{{Name: "deploy"}}},
 	} {
 		data, err := json.Marshal(v)
@@ -318,6 +327,8 @@ func TestLargestRequestsFit(t *testing.T) {
 		&SecretsRequest{Secrets: refs, Command: worstCommand(), Dir: worstText(MaxText), Reason: worstText(MaxText)},
 		sign,
 		&GrantRequest{Key: name, User: name, Hosts: hosts, Seconds: -1 << 63, Reason: worstText(MaxText)},
+		&PreapproveRequest{Secrets: refNames(refs), Key: name, User: name, Hosts: hosts, From: worstText(MaxTime),
+			Until: worstText(MaxTime), Uses: -1 << 63, Reason: worstText(MaxText)},
 	} {
 		data, err := json.Marshal(r)
 		if err != nil {
@@ -335,6 +346,8 @@ func TestLargestRequestsFit(t *testing.T) {
 		&SecretsRequest{Secrets: refs},
 		&SignRequest{PublicKey: sign.PublicKey, Data: sign.Data, Flags: sign.Flags, Binds: sign.Binds},
 		&GrantRequest{Key: name, User: name, Hosts: hosts, Seconds: -1 << 63},
+		&PreapproveRequest{Secrets: refNames(refs), Key: name, User: name, Hosts: hosts, From: worstText(MaxTime),
+			Until: worstText(MaxTime), Uses: -1 << 63},
 	}
 	for _, r := range others {
 		data, err := json.Marshal(r)
@@ -675,6 +688,91 @@ func TestSecretsAnswerEncode(t *testing.T) {
 	} {
 		if b, err := bad.Encode(); err == nil {
 			t.Errorf("Encode(%.60s): no error", b)
+		}
+	}
+}
+
+// refNames returns the secret names of refs.
+func refNames(refs []SecretRef) []string {
+	names := make([]string, len(refs))
+	for i, r := range refs {
+		names[i] = r.Name
+	}
+	return names
+}
+
+// TestPreapproveCaps: the lists and the texts of a preapprove request are
+// capped, and the decoding is strict.
+func TestPreapproveCaps(t *testing.T) {
+	long := strings.Repeat("a", MaxName+1)
+	for _, tt := range []struct {
+		name string
+		r    *PreapproveRequest
+	}{
+		{"secrets", &PreapproveRequest{Secrets: make([]string, MaxSecrets+1)}},
+		{"hosts", &PreapproveRequest{Hosts: make([]string, MaxGrantHosts+1)}},
+		{"secret name", &PreapproveRequest{Secrets: []string{long}}},
+		{"key", &PreapproveRequest{Key: long}},
+		{"from", &PreapproveRequest{From: strings.Repeat("1", MaxTime+1)}},
+		{"until", &PreapproveRequest{Until: strings.Repeat("1", MaxTime+1)}},
+	} {
+		if tt.r.Check() == nil {
+			t.Errorf("%s: a request over the cap passes Check", tt.name)
+		}
+		data, err := json.Marshal(tt.r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeInto(&PreapproveRequest{}, data); err == nil {
+			t.Errorf("%s: a request over the cap is decoded", tt.name)
+		}
+	}
+	for _, bad := range []string{
+		`{"secrets":[],"key":"","user":"","hosts":[],"from":"","until":"","uses":1}`,
+		`{"secrets":null,"key":"","user":"","hosts":[],"from":"","until":"","uses":1,"reason":""}`,
+		`{"secrets":[],"key":"","user":"","hosts":[],"from":"","until":"","uses":1.5,"reason":""}`,
+		`{"secrets":[],"key":"","user":"","hosts":[],"from":"","until":"","uses":1,"reason":"","x":1}`,
+		`{"Secrets":[],"key":"","user":"","hosts":[],"from":"","until":"","uses":1,"reason":""}`,
+	} {
+		if _, err := decodeInto(&PreapproveRequest{}, []byte(bad)); err == nil {
+			t.Errorf("%s: the request was decoded", bad)
+		}
+	}
+}
+
+// TestParseTime: the forms of a time, the local time zone, and the texts
+// that are refused.
+func TestParseTime(t *testing.T) {
+	plus2 := time.FixedZone("x", 2*3600)
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skip("no time zone data:", err)
+	}
+	for _, tt := range []struct {
+		in   string
+		loc  *time.Location
+		want time.Time
+	}{
+		{"2026-10-28T03:00:00Z", plus2, time.Date(2026, 10, 28, 3, 0, 0, 0, time.UTC)},
+		{"2026-10-28T03:00Z", plus2, time.Date(2026, 10, 28, 3, 0, 0, 0, time.UTC)},
+		{"2026-10-28T03:00:00+02:00", time.UTC, time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)},
+		{"2026-10-28T03:00", plus2, time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)},
+		{"2026-10-28T03:00:30", plus2, time.Date(2026, 10, 28, 1, 0, 30, 0, time.UTC)},
+	} {
+		got, err := ParseTime(tt.in, tt.loc)
+		if err != nil || !got.Equal(tt.want) {
+			t.Errorf("ParseTime(%q) = %v, %v; want %v", tt.in, got, err, tt.want)
+		}
+	}
+	for _, in := range []string{
+		"", "tomorrow", "2026-10-28", "2026-10-28 03:00", "2026-10-28T03:00:00.5Z", "2026-10-28T03:00:00.5",
+		"2026-13-28T03:00", "2026-10-28T25:00", "2026-10-28T03:00:00+0200", " 2026-10-28T03:00",
+		"2026-10-28T03:00 ", strings.Repeat("1", MaxTime+1),
+		"2026-03-29T02:30:00", // skipped by summer time in Berlin
+		"2026-10-25T02:30:00", // shown twice in Berlin
+	} {
+		if got, err := ParseTime(in, berlin); err == nil {
+			t.Errorf("ParseTime(%q) = %v; want it refused", in, got)
 		}
 	}
 }

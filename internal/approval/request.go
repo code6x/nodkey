@@ -37,6 +37,14 @@ type Request struct {
 	// (nodkey ssh-grant --for). The core uses whole minutes.
 	For time.Duration
 
+	// Uses, NotBefore and NotAfter are the number of uses and the span
+	// of a KindPreapprove request, which names its secrets in Secrets, or
+	// its key, remote user and hosts in Key, RemoteUser and Hosts. The
+	// times are whole seconds. The core checks them against the limits of
+	// the config.
+	Uses                int
+	NotBefore, NotAfter time.Time
+
 	// Claim is the claimed text, made safe by the caller (see Claim).
 	Claim Claim
 
@@ -81,13 +89,24 @@ type Result struct {
 	// that passed the checks, and claimed text that is one clean line.
 	Subject audit.Subject
 
+	// GrantID, GrantFrom and GrantUntil describe the scheduled grant of an
+	// approved KindPreapprove request: its ID, and its span in the
+	// broker's local time. They are empty for any other result.
+	GrantID               string
+	GrantFrom, GrantUntil time.Time
+
 	core     *Core
-	at       time.Time   // when the request was decided, on the wall clock
-	vias     []audit.Via // what allowed each secret or key without a tap
-	grants   []grantKey  // the grants of an approve_window answer
+	at       time.Time          // when the request was decided, on the wall clock
+	plan     *grant             // the scheduled grant of an approved KindPreapprove request
+	usedID   string             // the scheduled grant that allowed the request
+	ended    []audit.GrantEnded // entries of grants that this request ended
+	vias     []audit.Via        // what allowed each secret or key without a tap
+	grants   []grantKey         // the grants of an approve_window answer
 	grantEnd moment
 	seq      uint64 // the number of the answer (see Core.decisions)
 	started  bool   // StartGrants ran; under core.mu
+	live     bool   // the scheduled grant started; under core.mu
+	stopped  bool   // the scheduled grant did not start: the core had stopped; under core.mu
 }
 
 // Events returns the audit entries of the request, in order (DESIGN.md
@@ -98,14 +117,28 @@ type Result struct {
 //     was sent;
 //   - if the person answered, a decision entry; after a Deny also a
 //     denied entry with cause approver;
-//   - if a grant or a "never ask" rule allowed it, a grant_used entry for
-//     each of the two that was used, with the secrets it covered;
+//   - if a grant, a "never ask" rule or a scheduled grant allowed it, a
+//     grant_used entry for each of the three that was used, with the
+//     secrets it covered;
 //   - if it was denied without an answer, for cause error an error entry,
 //     then a denied entry.
 //
-// For an allowed request, the broker then writes secret_sent or signed
-// once it has handed out the values or the signature.
+// The grant_ended entries of the scheduled grants that this request ended
+// (the use that took the last use, or the Deny of the person) come last in
+// Events, so they follow the entries above. For an allowed request, the
+// broker writes secret_sent or signed later, once it has handed out the
+// values or the signature: so for the last use, grant_ended comes after
+// grant_used and before secret_sent or signed.
 func (r *Result) Events() []audit.Event {
+	events := r.mainEvents()
+	for _, ev := range r.ended {
+		events = append(events, ev)
+	}
+	return events
+}
+
+// mainEvents returns the entries of Events but the ends of grants.
+func (r *Result) mainEvents() []audit.Event {
 	events := []audit.Event{audit.Request{Subject: r.Subject, Message: r.Message}}
 	switch {
 	case r.Answer != "":
@@ -116,7 +149,7 @@ func (r *Result) Events() []audit.Event {
 			events = append(events, audit.Denied{Subject: r.Subject, Cause: r.Cause})
 		}
 	case r.Allowed:
-		for _, via := range []audit.Via{audit.ViaGrant, audit.ViaNeverRule} {
+		for _, via := range []audit.Via{audit.ViaGrant, audit.ViaNeverRule, audit.ViaScheduled} {
 			used := false
 			var secrets []string
 			for i, v := range r.vias {
@@ -135,6 +168,9 @@ func (r *Result) Events() []audit.Event {
 			if s.Kind == audit.KindSecrets {
 				s.Secrets = secrets
 			}
+			if via == audit.ViaScheduled {
+				s.GrantID = r.usedID
+			}
 			events = append(events, audit.GrantUsed{Subject: s, Via: via})
 		}
 	default:
@@ -146,23 +182,48 @@ func (r *Result) Events() []audit.Event {
 	return events
 }
 
-// StartGrants starts the grants of an "Approve N min" answer, or of an
-// approved SSH grant (DESIGN.md sections 8 and 13). Call it after the
-// decision entry from Events is on disk, and before the broker hands out
-// anything. If that entry cannot be written, do not call it; the grants
-// then never start. So a grant never exists without its record.
+// GrantStopped reports whether StartGrants started no scheduled grant
+// because the core had stopped. Then the request is an error, not a limit.
+func (r *Result) GrantStopped() bool {
+	if r == nil || r.core == nil {
+		return false
+	}
+	r.core.mu.Lock()
+	defer r.core.mu.Unlock()
+	return r.stopped
+}
+
+// GrantStarted reports whether StartGrants started the scheduled grant of
+// an approved KindPreapprove request. It is false before StartGrants, for
+// any other result, and when the grant did not start.
+func (r *Result) GrantStarted() bool {
+	if r == nil || r.core == nil {
+		return false
+	}
+	r.core.mu.Lock()
+	defer r.core.mu.Unlock()
+	return r.live
+}
+
+// StartGrants starts the grants of an "Approve N min" answer, of an
+// approved SSH grant, or of an approved scheduled grant (DESIGN.md
+// sections 8 and 13). Call it after the decision entry from Events is on
+// disk, and before the broker hands out anything. If that entry cannot be
+// written, do not call it; the grants then never start. So a grant never
+// exists without its record.
 //
 // The grants end when the answer said: N minutes after the tap, or at the
-// end shown in the message of an SSH grant, each cut to the start of its
-// second, as a message shows a time. Calling StartGrants later does not
-// make them last longer. For an SSH grant, the broker does not call it
-// when the client hung up after the tap: the grants are all it gives. A
-// grant for a secret or key that the
-// person denied after this tap does not start: a Deny ends the client's
-// grants for it, also those that have not started yet. For any other
-// result, and on a second call, StartGrants does nothing.
+// end shown in the message of an SSH grant or a scheduled grant, each cut
+// to the start of its second, as a message shows a time. Calling
+// StartGrants later does not make them last longer. For an SSH grant and a
+// scheduled grant, the broker does not call it when the client hung up
+// after the tap: the grants are all they give. A grant for a secret or key
+// that the person denied after this tap does not start: a Deny ends the
+// client's grants for it, also those that have not started yet. A
+// scheduled grant also does not start when its client has too many. For
+// any other result, and on a second call, StartGrants does nothing.
 func (r *Result) StartGrants() {
-	if r == nil || r.core == nil || !r.Allowed || len(r.grants) == 0 {
+	if r == nil || r.core == nil || !r.Allowed || (len(r.grants) == 0 && r.plan == nil) {
 		return
 	}
 	c := r.core
@@ -173,6 +234,10 @@ func (r *Result) StartGrants() {
 	}
 	r.started = true
 	now := c.now()
+	if r.plan != nil {
+		c.startScheduled(r, now)
+		return
+	}
 	if !now.before(r.grantEnd) {
 		return
 	}
@@ -182,8 +247,6 @@ func (r *Result) StartGrants() {
 			continue // a Deny came after the tap
 		}
 		// A grant of the same scope from a later tap stays as it is.
-		if end, ok := c.grants[k]; !ok || end.mono.Before(r.grantEnd.mono) {
-			c.grants[k] = r.grantEnd
-		}
+		c.addWindowGrant(k, r.grantEnd)
 	}
 }

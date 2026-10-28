@@ -47,6 +47,12 @@ type Rule struct {
 	// for AskWindow: MinWindow <= Window <= MaxWindow.
 	Window time.Duration
 
+	// Preapprove lets the client ask for a scheduled grant for this secret
+	// or key (nodkey preapprove, DESIGN.md section 8). The default is
+	// false. It is never set with AskNever: a "never" rule asks for
+	// nothing.
+	Preapprove bool
+
 	// The rest is only for AskNever.
 
 	// Notify sends a silent notice for each use. The default is true.
@@ -63,11 +69,12 @@ type Rule struct {
 // ruleKeys holds the rule keys of a [secret.*] or [key.*] section as they
 // are written. A nil pointer means the key is not in the file.
 type ruleKeys struct {
-	Ask       string  `toml:"ask"`
-	Window    *string `toml:"window"`
-	Notify    *bool   `toml:"notify"`
-	MaxPerDay *int    `toml:"max_per_day"`
-	Hours     *string `toml:"hours"`
+	Ask        string  `toml:"ask"`
+	Preapprove *bool   `toml:"preapprove"`
+	Window     *string `toml:"window"`
+	Notify     *bool   `toml:"notify"`
+	MaxPerDay  *int    `toml:"max_per_day"`
+	Hours      *string `toml:"hours"`
 }
 
 // parseRule checks the rule keys of one section. The checks that need the
@@ -76,8 +83,8 @@ type ruleKeys struct {
 func parseRule(section string, k ruleKeys) (Rule, error) {
 	// The keys each kind of rule allows besides ask.
 	allowed := map[Ask]map[string]bool{
-		AskAlways: {},
-		AskWindow: {"window": true},
+		AskAlways: {"preapprove": true},
+		AskWindow: {"window": true, "preapprove": true},
 		AskNever:  {"notify": true, "max_per_day": true, "hours": true},
 	}
 	ask := Ask(k.Ask)
@@ -93,6 +100,7 @@ func parseRule(section string, k ruleKeys) (Rule, error) {
 		set bool
 	}{
 		{"window", k.Window != nil},
+		{"preapprove", k.Preapprove != nil},
 		{"notify", k.Notify != nil},
 		{"max_per_day", k.MaxPerDay != nil},
 		{"hours", k.Hours != nil},
@@ -105,7 +113,7 @@ func parseRule(section string, k ruleKeys) (Rule, error) {
 
 	switch ask {
 	case AskAlways:
-		return Rule{Ask: AskAlways}, nil
+		return Rule{Ask: AskAlways, Preapprove: k.Preapprove != nil && *k.Preapprove}, nil
 	case AskWindow:
 		if k.Window == nil {
 			return Rule{}, fmt.Errorf(`%s: is missing; ask = "window" needs it`, place(section, "window"))
@@ -118,7 +126,7 @@ func parseRule(section string, k ruleKeys) (Rule, error) {
 			return Rule{}, fmt.Errorf("%s: must be at least %s and at most %s",
 				place(section, "window"), formatDuration(MinWindow), formatDuration(MaxWindow))
 		}
-		return Rule{Ask: AskWindow, Window: w}, nil
+		return Rule{Ask: AskWindow, Window: w, Preapprove: k.Preapprove != nil && *k.Preapprove}, nil
 	case AskNever:
 		r := Rule{Ask: AskNever, Notify: true}
 		if k.Notify != nil {

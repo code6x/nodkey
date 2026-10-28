@@ -74,6 +74,20 @@ func grantSubject() Subject {
 	}
 }
 
+func preapproveSubject() Subject {
+	return Subject{
+		RequestID: testRequestID(4),
+		Client:    "laptop",
+		Kind:      KindPreapprove,
+		Secrets:   []string{"backup-token"},
+		Reason:    "job nightly-backup",
+		GrantID:   testRequestID(5),
+		Uses:      1,
+		NotBefore: "2026-10-28T01:00:00Z",
+		NotAfter:  "2026-10-28T02:00:00Z",
+	}
+}
+
 // sampleEvents returns one valid event of each kind, with the fields set.
 func sampleEvents() []Event {
 	return []Event{

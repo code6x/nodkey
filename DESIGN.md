@@ -551,8 +551,15 @@ expires 14:07:00 (120 s)
 [ Approve ] [ Deny ]
 ```
 
+A scheduled grant (`nodkey preapprove`, section 8) shows the secrets, or
+the key, hosts and remote user, the number of uses and the start and the
+end with the date and the zone. It has only "Approve" and "Deny"; the
+message is in section 8.
+
 A notice of a "never ask" use (section 12) has no buttons and no expiry.
-It goes to the notice chat without a sound:
+A notice of a use of a scheduled grant is the same, with the second line
+`allowed by a scheduled grant, without a tap`. It goes to the notice chat
+without a sound:
 
 ```
 🔔 Secrets · request 7qd2
@@ -902,7 +909,9 @@ Not masked, for example:
   (by sending an empty keyboard, not by leaving it out), and the result
   replaces the expiry line: "👍 approved once by you at 14:02:41",
   "👍 approved for 15 min by you at 14:02:41", "👍 approved by you at
-  14:05:12, until 14:20:00" (an SSH grant), "⛔ denied by you at
+  14:05:12, until 14:20:00" (an SSH grant), "👍 approved by you at
+  14:05:12, for 1 use(s) until 2026-10-28 04:00:00 UTC" (a scheduled
+  grant), "⛔ denied by you at
   14:02:41", "⌛ expired — denied", "⛔ cancelled by the client" or
   "⛔ denied: the broker stopped taking answers". An edit without a
   keyboard (`reply_markup`) removes the buttons too: the manual test of
@@ -1103,6 +1112,9 @@ Each secret and each key has a rule:
 | `window` | Ask; the approver may also allow the next N minutes. | Approve once · Approve N min · Deny |
 | `never` | Do not ask. See [decision 3](#12-decision-3-unattended-runs). | none |
 
+A rule may also have `preapprove = true`, for scheduled grants (below). It
+is off by default, and the config check refuses it with `ask = "never"`.
+
 Any other `ask` value, also an empty one, denies the request. So does a
 `never` rule for a key without `hosts`, and a `never` rule that does not
 name exactly one client. The config check refuses all of these (section
@@ -1161,13 +1173,16 @@ name exactly one client. The config check refuses all of these (section
 - Requests covered by a grant or a "never ask" rule do not count, and no
   limit or pause applies to them. A request that is covered only in part
   needs a message, so it counts.
-- One limit applies to them: at most 6 notices of "never ask" uses in any
-  60 seconds, for all secrets and keys of the client together. A use that
+- One limit applies to them: at most 6 notices of "never ask" uses and of
+  scheduled uses (below) in any 60 seconds, for all secrets and keys of
+  the client together. A use that
   would need one more notice is denied, without a notice, and does not
   count for `max_per_day`. Without this limit, one client could fill the
   phone with notices and use up Telegram's limits for the chat, so that
   messages for other clients could not be sent. A "never ask" rule with
-  `notify = false` sends no notice and has no such limit. The Telegram
+  `notify = false` sends no notice and has no such limit. A use of a
+  scheduled grant always sends a notice, and is denied in the same way.
+  The Telegram
   code also sends at most 20 notices in any 60 seconds for all clients
   together (section 7). A use that this limit stops is denied in the same
   way: cause `limit`, and it does not count for `max_per_day`. A notice
@@ -1175,6 +1190,167 @@ name exactly one client. The config check refuses all of these (section
   the 6 of its client, so a client cannot try again and again within the
   minute. A notice about the version of a client (section 7) counts
   toward neither of these limits.
+
+### Scheduled grants
+
+A job that runs later, such as a timer at night, cannot tap a button. A
+scheduled grant lets the person approve it ahead, while awake: **this
+client may use these secrets, or this key, in this time, N times.** It is
+not a "never ask" rule: it needs a tap, it starts and ends at fixed times,
+and its uses are counted. It hands out nothing by itself.
+
+**The request.** `nodkey preapprove` (section 15) sends `POST
+/v1/preapprove` (section 10), with the kind `preapprove` in the audit
+log. It names secrets (`--secret`, up to 32), or a key with a remote user
+and hosts (`--key`, `--user`, `--host`, checked as for `nodkey
+ssh-grant`, section 13), the first moment (`--from`), the end (`--until`),
+the number of uses (`--uses`) and a claimed reason. A time is RFC 3339
+with a UTC offset (`2026-10-28T03:00:00+02:00`), or without an offset
+(`2026-10-28T03:00`), which the broker reads as its local time. The
+seconds may be left out; a part of a second is refused. A local time that
+the clock skips or shows twice on a day of a change to summer time is
+refused too: give an offset. Times are absolute, so summer time does not
+move a grant.
+
+**What the broker checks, before any message.** It denies the request
+(cause `not_allowed`, or `limit` for the last item) unless all of this is
+true:
+
+- Each secret, or the key, is in the config, allowed for the client, and
+  its rule has `preapprove = true`. The rule is `always` or `window`; a
+  `never` rule cannot have it. For a key, the user is valid and each host
+  is in `known_hosts` and in the key's `hosts`, if it has them.
+- The `window` of the rule does not cap a scheduled grant. Only the
+  limits below do.
+- `--from` is before `--until`, the end is in the future, and the start is
+  at most `max_ahead` from now (a start in the past is fine).
+- The grant is open at most `max_open`, from its start to its end.
+- The uses are 1 to `max_uses`.
+- The client has fewer than `max_grants` scheduled grants: those that are
+  approved and not ended, plus the requests that wait for a tap.
+
+These limits are in `[preapprove]` (section 14). They have safe defaults:
+`max_ahead` 7 days, `max_open` 8 hours, `max_uses` 10 and `max_grants` 5.
+A config made without them allows no scheduled grant.
+
+**The message** has the buttons **Approve** and **Deny** (section 7). It
+shows the secrets, or the key, hosts and remote user, the uses, and the
+start and the end in the broker's local time, with the date and the zone.
+The reason is claimed:
+
+```
+🗓 Pre-approval · request m4k2
+✅ machine: laptop
+✅ secrets: backup-token
+✅ uses: 1
+✅ from: 2026-10-28 03:00:00 UTC
+✅ until: 2026-10-28 04:00:00 UTC
+— claimed by the agent —
+reason: job nightly-backup
+expires 14:07:00 (120 s)
+[ Approve ] [ Deny ]
+```
+
+The request waits like any other, but never past the end of the grant.
+The decision is `approve_once` or `deny` in the audit log. A tap at any
+time before the end is good.
+
+**What the broker keeps.** After **Approve**, one record in memory: an ID
+(16 random bytes, as a request ID), the client, the scope, the start, the
+end, the uses left, and the request it came from. The scope is a set of
+secrets, or one key with the host keys of the listed hosts and one remote
+user. The grant starts only after its `decision` entry is on disk, and not
+if the client hung up, as for `nodkey ssh-grant`. The client gets the ID,
+and the start and the end. A client has no way to read the grants.
+
+**A grant that nobody can hold.** The broker looks once more at the
+client after the grant started. If the client has hung up, or the answer
+cannot be written or flushed, the broker cancels the grant at once and
+writes `grant_ended` with cause `cancelled`. In the audit log this looks
+the same as a `--cancel` of the client. If the approver stopped after the
+tap and before the grant started, no grant starts, and the request ends
+with an `error` entry (code `approver_failed`) and a `denied` entry with
+cause `error`, answer 503. One window remains, as for `nodkey
+ssh-grant` (section 13): the broker has started the grant and written the
+answer, but the client does not read it, because a signal came, the
+connection broke after the flush, or the wait ran out. Then the client has
+no ID. After the short code was printed, it says for any such failure
+(not for a final answer other than 200, such as a Deny; but also for a
+200 whose answer cannot be read or is not valid) that a grant may have
+started, and names the short code. The ID is in the audit log, in
+the `grant_id` of the entries of the request whose message shows that
+code. The person cancels the grant with
+`nodkey preapprove --cancel ID`. If the whole answer was read before the
+signal, and its ID is valid, the client cancels the grant itself. The flush of the answer is
+done with `http.ResponseController`; a server that cannot flush is taken
+as having written it.
+
+**Use.** A request of the same client, inside `[start, end)`, takes one
+use without a tap when one grant covers it fully:
+
+- For secrets, every secret of the request is in the scope. A run with
+  some of the secrets takes one use. One tap makes one grant for all the
+  listed secrets, with one counter. A run that asks for any secret
+  outside that grant is not covered by it at all: the whole request gets
+  the normal approval. A scheduled grant is never mixed with a grant of
+  "Approve N min" or a "never ask" rule in one request.
+- For a key, each SSH login (each signature) takes one use, for a listed
+  host (any of its host keys) and the remote user. `ssh` opens one
+  connection for each login, unless it shares one (`ControlPersist`), so a
+  tool with many connections needs more uses.
+- Each use writes `grant_used` with `via` = `scheduled` and sends the
+  silent notice, as a "never ask" use does (section 12). These notices
+  count toward the limits of 6 for a client and 20 in all, in any 60
+  seconds. If the notice cannot be sent, the use is denied. A use that a
+  limit stops is not taken, as for a "never ask" rule. Any other failure
+  of the notice keeps the use counted.
+- The start is read on the wall clock. The end has come when either clock
+  reaches it, as for other grants (section 8, above): a wall clock that
+  is set back cannot make a grant last longer, and a host that slept
+  cannot either. A grant is never used at or after its end.
+- The uses already made still count when the wall clock is set back. The
+  count is a plain counter; nothing resets it.
+
+**End.** A grant ends when its uses reach 0, when its end time comes, when
+the client cancels it, when a later Deny covers it, or when the broker
+stops. Each end writes one `grant_ended` entry with the cause (`used_up`,
+`ended`, `cancelled`, `denied` or `stopped`) and the uses left. A timer
+ends a grant at its end time; a request never finds a grant that is past
+its end.
+
+- **Cancel by the client.** `nodkey preapprove --cancel ID` ends a grant
+  at once, without a tap, because a cancel only takes a right away. Only
+  the client that holds the grant may cancel it. An unknown ID, an ended
+  grant and the ID of another client all get the same answer (403), so a
+  client cannot test for the grants of others.
+- **A later Deny.** A Deny for the same client and any secret or key of a
+  grant ends it, also before its start (as the Deny of a grant of "Approve
+  N min" does, above). A Deny that comes after the tap but before the
+  grant starts stops it from starting.
+- **A restart** drops all grants, as for every other grant. At a stop,
+  the broker writes `grant_ended` with cause `stopped` for each grant that
+  is open.
+
+**Answers to the open questions of issue 108.**
+
+1. A broker restart drops the scheduled grants, so a job asks as usual.
+   One notice that lists the dropped grants is planned (issue 111).
+2. Several secrets in one run: one tap makes one grant for all of them,
+   as above. A run that asks for a secret outside it is not covered.
+3. Cancel by the client: yes, as above.
+4. The clock set back: the uses already made still count.
+5. A later Deny cancels a scheduled grant. The Deny message will say so
+   (a later change).
+6. The `window` of a rule does not cap a scheduled grant. Only the
+   limits of `[preapprove]` do.
+
+**The honest limit.** With the client as the only identity, anything on
+that client can use the grant inside its time. This is decision 3 B
+(section 12) again, but smaller: it needs a tap and not a config edit, it
+ends by itself, and its uses are counted. If something else uses it up,
+the real job fails, and that is a visible sign. The reason is claimed:
+the person cannot check that "job nightly-backup" exists. A tap means
+"this client may use this secret in this time", nothing more.
 
 ## 9. Audit log
 
@@ -1198,7 +1374,7 @@ name exactly one client. The config check refuses all of these (section
 - A line is at most 64 KiB. The broker refuses a longer entry, so the
   request is denied.
 - Events: `broker_started`, `request`, `decision`, `grant_used`,
-  `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
+  `grant_ended`, `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
   `log_recovered`, `broker_stopped`. Each event about a request holds the
   request ID, the client, the names, the verified host if any, and the
   claimed command and reason (masked as in section 7).
@@ -1238,7 +1414,8 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `broker_stopped` | none |
 | `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
 | `decision` | the request fields; `user_id`: the Telegram user that answered; `answer`: `approve_once`, `approve_window` or `deny`; `window_minutes` for `approve_window` |
-| `grant_used` | the request fields; `via`: `grant` or `never_rule` |
+| `grant_used` | the request fields; `via`: `grant`, `never_rule` or `scheduled` (then `grant_id` is in the request fields) |
+| `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied` or `stopped`; `uses_left` |
 | `secret_sent`, `signed` | the request fields |
 | `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
 | `foreign_tap` | `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7). An entry with cause `edited_message` can belong to a Deny that counted: its `data` is `d:` and the request ID, and that request has a `decision` entry with `deny` |
@@ -1246,9 +1423,11 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
 
 The request fields are `request_id`, `client`, `kind` (`secrets`,
-`ssh_login` or `ssh_grant`), `secrets`, `key`, `hosts`, `host_key` (a
-SHA256 fingerprint), `remote_user`, and the claimed `command` and
-`reason`.
+`ssh_login`, `ssh_grant` or `preapprove`), `secrets`, `key`, `hosts`,
+`host_key` (a SHA256 fingerprint), `remote_user`, and the claimed
+`command` and `reason`. A `preapprove` request that was approved also has
+`grant_id`, `uses`, `not_before` and `not_after` (UTC, RFC 3339); the
+entries of a use and of an end have `grant_id`.
 
 The broker writes `broker_started` when it has passed every check of its
 start, just before it starts to poll Telegram and to take requests
@@ -1271,7 +1450,19 @@ out nothing, so it ends with its `decision`, unless its client hung up
 before the grants started: then a `denied` entry with cause `cancelled`
 follows, and no grant starts (section 13). When grants and a "never ask"
 rule allow one request together, it gets two `grant_used` entries, one for
-each, and each lists the secrets it covered.
+each, and each lists the secrets it covered. A scheduled grant (section 8)
+never joins them. An approved `preapprove` request hands out nothing, so it ends with its
+`decision`, unless the broker cancels the grant it started because the
+client hung up or the answer failed: then `grant_ended` with cause
+`cancelled` follows. It can also end with `denied` and cause `cancelled`
+(the client hung up before the grant started) or `limit` (the end came,
+a Deny came, or the client has too many grants), or, if the approver
+stopped, with `error` and `denied` with cause `error`. The `grant_ended` entry of a
+grant comes when the grant ends. If a request ended it (the last use, or
+a Deny), the entry comes after the entries of that request that the
+approval writes (`request`, `decision`, `grant_used`, `denied`), and
+before `secret_sent` or `signed`, which the broker writes later. It names
+the request that made the grant, not the request that ended it.
 
 A request that the broker denies before the approval core sees it gets a
 request ID from the broker, in the same form, and the entries `request`
@@ -1584,6 +1775,8 @@ a path, a query, `OPTIONS *` or `PRI *` gets 404. The types are in
 | `/v1/secrets` | `run` | `secrets` (each with `var` and `name`), `command`, `dir`, `reason` | `secrets`: each with `var` and `value`, in the order of the request |
 | `/v1/sign` | `ssh-agent` | `public_key`, `data`, `flags`, `binds`, `commands`, `reason` | `format` and `blob` of the signature |
 | `/v1/ssh-grant` | `ssh-grant` | `key`, `user`, `hosts`, `seconds` (`--for`), `reason` | `minutes`: how long the grants last |
+| `/v1/preapprove` | `preapprove` | `secrets`, `key`, `user`, `hosts`, `from`, `until` (texts, read by the broker), `uses`, `reason` | `id` of the grant, `from` and `until` in RFC 3339, in the broker's local time |
+| `/v1/preapprove/cancel` | `preapprove --cancel` | `id` | `id`; 403 for an ID that the client does not have |
 
 - Each field must be there, none may be `null`, and no other field may be
   there, on both sides. Bytes, such as a key or a value, are in base64. A
@@ -1980,6 +2173,12 @@ ssh_timeout = "90s"                 # SSH signatures
 [updates]
 check = true                        # optional; false: never ask GitHub for a newer release
 
+[preapprove]                        # optional; the limits of scheduled grants (section 8)
+max_ahead = "168h"                  # how far ahead a grant may start; default 7 days
+max_open = "8h"                     # the longest time from start to end
+max_uses = 10                       # the most uses of one grant
+max_grants = 5                      # the most per client: approved, not ended, plus waiting
+
 [client.laptop]
 pin = "sha256:Yf3c...base64..."     # printed by `nodkey keygen`
 
@@ -2004,6 +2203,7 @@ id = "00000000-0000-0000-0000-000000000000"
 clients = ["laptop"]
 ask = "window"
 window = "15m"
+preapprove = true                   # optional; default false: `nodkey preapprove` may ask for it
 
 [key.deploy]
 file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
@@ -2075,6 +2275,10 @@ More rules:
   A `window` is 1 minute to 8 hours.
   `timeout` is 15 s to 10 min. `ssh_timeout` is 15 s to 110 s, below
   `sshd`'s `LoginGraceTime`.
+- `preapprove` is `true` or `false`, and is not allowed with `ask =
+  "never"`. In `[preapprove]`, `max_ahead` is 1 minute to 31 days,
+  `max_open` is 1 minute to 24 hours, `max_uses` is 1 to 1000 and
+  `max_grants` is 1 to 100. Each has the default of section 8.
 - `max_per_day`, if present, is 1 or more. For no limit, leave it out.
   So `0` cannot mean "no uses" to a person and "no limit" to the broker.
 - `check` in `[updates]` is `true` or `false`. Without it, and without
@@ -2181,6 +2385,8 @@ nodkey broker [--config FILE]
 nodkey run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
+nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --from TIME --until TIME --uses N [--reason TEXT]
+nodkey preapprove --cancel ID
 nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]
@@ -2389,6 +2595,30 @@ on stdout. Its last line on stderr is always
 `nodkey: SSH logins as deploy to 2 hosts allowed until 14:20 (exit 0)`.
 Before it, it may print one warning about the version of the broker
 (section 10).
+
+`nodkey preapprove` asks for a scheduled grant (section 8) and waits for
+the tap, as `nodkey ssh-grant` does. The times are read as section 8
+says; the client only checks their form. After an approval it prints the
+ID of the grant alone on stdout, so a script can keep it for `--cancel`,
+and its last line on stderr is `nodkey: grant ID: 2 uses from
+2026-10-28T03:00:00+02:00 until 2026-10-28T04:00:00+02:00 (exit 0)`, with
+the times in the broker's local time. `--cancel ID` ends a grant of this
+machine without a tap; its last line is `nodkey: grant ID cancelled (exit
+0)`. Its exit codes and its handling of answers, `SIGINT` and `SIGTERM`
+are those of `nodkey ssh-grant`: 0, 64, 69 and 77. In one case it does
+more: when a signal comes as the answer with the ID is read, it sends a
+cancel for that grant (for at most 30 seconds), then says `cancelled`;
+if the cancel fails, it first prints `nodkey: grant ID may be active;
+cancel it with: nodkey preapprove --cancel ID`. When a request fails
+after the short code was printed, without a final answer other than 200
+(a signal, a broken connection, a timeout, or a 200 whose answer cannot be
+read or is not valid), it prints `nodkey: a grant
+may have started; its ID is in the audit log, in the grant_id of the
+entries of the request whose message shows CODE; cancel it with: nodkey
+preapprove --cancel ID`. These lines come before the last line, and the
+exit code is the one of the failure (that of the signal, or 69). A cancel of a grant
+that this machine does not have is 77. A job should ask when it is
+planned, not when it runs.
 
 `nodkey keygen` prints the pin on stdout, and nothing else. It exits with
 0, with 64 on wrong usage, and with 1 on any other error. Then its last

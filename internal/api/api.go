@@ -18,11 +18,13 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/textproto"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/code6x/nodkey/internal/version"
 )
@@ -41,6 +43,13 @@ const (
 	// PathSSHGrant asks for SSH grants for a list of hosts (GrantRequest,
 	// GrantAnswer). nodkey ssh-grant asks it.
 	PathSSHGrant = "/v1/ssh-grant"
+	// PathPreapprove asks for a scheduled grant (PreapproveRequest,
+	// PreapproveAnswer). nodkey preapprove asks it.
+	PathPreapprove = "/v1/preapprove"
+	// PathPreapproveCancel cancels a scheduled grant of the same client
+	// (PreapproveCancelRequest, PreapproveCancelAnswer). nodkey preapprove
+	// --cancel asks it.
+	PathPreapproveCancel = "/v1/preapprove/cancel"
 )
 
 // ContentType is the content type of every request and answer body.
@@ -111,6 +120,9 @@ const (
 	// (approval.MaxGrantHosts). A host that is listed twice counts twice
 	// here.
 	MaxGrantHosts = 20
+	// MaxTime is the most bytes of a time in a PreapproveRequest. Valid
+	// times are shorter.
+	MaxTime = 64
 	// MaxKeys is the most keys that one client may use, so that a
 	// KeysAnswer stays small. The broker refuses to start with more.
 	MaxKeys = 256
@@ -238,4 +250,50 @@ func ShortCode(status int, h textproto.MIMEHeader) (code string, ok bool) {
 		return "", false
 	}
 	return values[0], true
+}
+
+// The forms of a time in a PreapproveRequest (DESIGN.md section 15): RFC
+// 3339 with a UTC offset, or the same without an offset, which is read as
+// the broker's local time. The seconds may be left out.
+var (
+	zonedLayouts = []string{"2006-01-02T15:04:05Z07:00", "2006-01-02T15:04Z07:00"}
+	localLayouts = []string{"2006-01-02T15:04:05", "2006-01-02T15:04"}
+)
+
+// ErrBadTime says that a text is not a time of the forms above.
+var ErrBadTime = errors.New("api: the time is not in RFC 3339 form")
+
+// ParseTime reads a time of the forms above. A text without an offset is
+// read in loc. It refuses a part of a second, and a local time that does
+// not exist in loc (the hour that summer time skips) or that exists twice
+// (the hour that comes back): for these, give an offset. The error never
+// holds the text.
+func ParseTime(s string, loc *time.Location) (time.Time, error) {
+	if len(s) > MaxTime {
+		return time.Time{}, ErrBadTime
+	}
+	for _, layout := range zonedLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			if t.Nanosecond() != 0 {
+				return time.Time{}, ErrBadTime
+			}
+			return t, nil
+		}
+	}
+	for _, layout := range localLayouts {
+		t, err := time.ParseInLocation(layout, s, loc)
+		if err != nil {
+			continue
+		}
+		if t.Format(layout) != s {
+			return time.Time{}, ErrBadTime // the clock skips this time
+		}
+		for _, d := range []time.Duration{-time.Hour, -30 * time.Minute, 30 * time.Minute, time.Hour} {
+			if t.Add(d).Format(layout) == s {
+				return time.Time{}, ErrBadTime // the clock shows this time twice: give an offset
+			}
+		}
+		return t, nil
+	}
+	return time.Time{}, ErrBadTime
 }

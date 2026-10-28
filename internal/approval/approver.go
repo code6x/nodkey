@@ -130,6 +130,14 @@ type Prompt struct {
 	// GrantEnds is when the grants of an SSH grant end, if the person
 	// approves it (DESIGN.md section 13).
 	GrantEnds time.Time
+	// Uses, From and Until are the number of uses and the span of a
+	// KindPreapprove request, in the broker's local time. Hosts, Key and
+	// RemoteUser or Secrets say what it covers.
+	Uses        int
+	From, Until time.Time
+	// Via is set in a notice of a use that a scheduled grant allowed
+	// (audit.ViaScheduled). It is empty in a notice of a "never ask" use.
+	Via audit.Via
 
 	// Claim is the claimed part.
 	Claim Claim
@@ -142,7 +150,8 @@ type Prompt struct {
 
 	// The buttons. "Deny" is always there, except in a notice.
 
-	// Once says that the message has "Approve once".
+	// Once says that the message has "Approve once". For a KindPreapprove
+	// request it is the one "Approve" button.
 	Once bool
 	// WindowMinutes is N in the "Approve N min" button. 0 means the
 	// message has no such button. For an SSH grant, this button makes the

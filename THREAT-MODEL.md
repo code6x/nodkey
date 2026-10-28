@@ -953,6 +953,58 @@ which then installs nothing. To keep the address and the version from
 GitHub, set `check = false` in `[updates]`, and use
 `nodkey version --offline`.
 
+**T35. A planned grant is used by something else on the same client, or
+is asked for with a false reason.**
+A scheduled grant (DESIGN.md section 8) lets a client use named secrets,
+or a key at listed hosts, inside a time span, a number of times, without
+a tap. The broker knows the client only by its TLS key. So anything on
+that client can use the grant inside its time: the agent, another
+program, or the job that was meant to. This is the risk of a "never ask"
+rule (DESIGN.md section 12, decision 3 B) again, but smaller.
+- The agent can ask for a scheduled grant at any time, with any reason,
+  such as "job nightly-backup". The reason is claimed, as all text of the
+  client (T2, T3). The person cannot check that such a job exists, so a tap
+  must be read as "this client may use these secrets in this time", and
+  nothing more. The message shows the secrets, the uses and the span as
+  verified lines, and the reason below the claimed line.
+- It needs a tap, which a "never ask" rule does not. It ends by itself.
+  Its uses are counted. If something else uses up the grant, the real
+  job fails, and that is a visible sign. Each use sends a silent notice
+  (T9), and a use whose notice cannot be sent is denied.
+- It is off unless the rule of the secret or key says `preapprove = true`.
+  The limits of `[preapprove]` bound it: how far ahead it starts, how long
+  it is open, how many uses, and how many grants a client holds. The
+  `window` of the rule does not cap it, so a rule with a short window
+  does not mean a short grant: the owner who sets `preapprove = true`
+  accepts the limits of `[preapprove]`.
+- A grant covers a request only as a whole, and is not mixed with other
+  grants or rules. A run that asks for one more secret needs a tap.
+- A Deny of the same client for a secret of the grant ends it, also before
+  its start. The client can cancel its own grant, which only takes a right
+  away. Another client's ID and an unknown ID get the same answer, so a
+  client cannot learn which grants others hold.
+- The agent can fill the phone with requests for grants. They count as
+  other requests toward the limits per client (DESIGN.md section 8), and
+  `max_grants` bounds the grants that wait or stand.
+- Time: the start is read on the wall clock; the end has come when either
+  clock reaches it. A wall clock that someone sets forward on the broker
+  host can start a grant early (T16 covers that host). One that is set
+  back cannot make a grant last longer, and cannot give more uses.
+- Grants live in memory. A broker restart drops them.
+- A grant must not outlive the client that asked for it. If the client
+  hangs up, or its answer cannot be written, after the grant started, the
+  broker cancels the grant and writes `grant_ended` (`cancelled`), as for
+  a cancel of the client. An answer that the client does not
+  read (a signal, a connection that breaks after the flush, a timeout)
+  leaves a live grant whose ID the client does not have (a small window,
+  as for `nodkey ssh-grant`, DESIGN.md section 13). The client says so,
+  and the ID is in the `grant_id` of the audit entries of the request. The grant is bounded by its
+  limits, and the person can cancel it.
+Risk that remains: for the time of a grant, anything on the client can
+use up to N uses of what it names. After a use, the secret stays on the
+agent machine (section 5, item 1). Choose short spans, few uses and
+narrow secrets, as for a "never ask" rule.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

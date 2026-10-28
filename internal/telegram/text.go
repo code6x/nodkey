@@ -44,13 +44,20 @@ const (
 	maxAlertUnits = 3000
 	// clockFormat shows a time of day in the broker's local time.
 	clockFormat = "15:04:05"
+	// dateTimeFormat shows a date and a time of day in the broker's local
+	// time, with the zone, for a scheduled grant.
+	dateTimeFormat = "2006-01-02 15:04:05 MST"
 )
 
 // claimedHead is the line before the claimed lines.
 const claimedHead = "— claimed by the agent —"
 
-// noticeLine is the second line of a notice of a "never ask" use.
-const noticeLine = `allowed by a "never ask" rule, without a tap`
+// The second line of a notice of a "never ask" use, and of a use of a
+// scheduled grant.
+const (
+	noticeLine          = `allowed by a "never ask" rule, without a tap`
+	scheduledNoticeLine = `allowed by a scheduled grant, without a tap`
+)
 
 // maxWindowMinutes is the longest "Approve N min" (DESIGN.md section 8).
 const maxWindowMinutes = int(config.MaxWindow / time.Minute)
@@ -228,6 +235,13 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	case !namePattern.MatchString(p.Client):
 		return bad("the client name")
 	}
+	if p.Kind != audit.KindPreapprove && (p.Uses != 0 || !p.From.IsZero() || !p.Until.IsZero()) {
+		return bad("a span of uses outside a scheduled grant")
+	}
+	switch {
+	case notice && p.Via != "" && p.Via != audit.ViaScheduled, !notice && p.Via != "":
+		return bad("the via")
+	}
 	switch p.Kind {
 	case audit.KindSecrets:
 		if len(p.Secrets) == 0 || !allNames(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 || p.HostKey != "" ||
@@ -244,6 +258,14 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 			len(p.Hosts) > approval.MaxGrantHosts || !allNames(p.Hosts) || p.HostKey != "" ||
 			!remoteUserPattern.MatchString(p.RemoteUser) || p.GrantEnds.IsZero() || p.Once || p.WindowMinutes < 1 {
 			return bad("the fields of an SSH grant")
+		}
+	case audit.KindPreapprove:
+		named := len(p.Secrets) > 0 && allNames(p.Secrets) && p.Key == "" && len(p.Hosts) == 0 && p.RemoteUser == ""
+		keyed := len(p.Secrets) == 0 && namePattern.MatchString(p.Key) && len(p.Hosts) > 0 &&
+			len(p.Hosts) <= approval.MaxGrantHosts && allNames(p.Hosts) && remoteUserPattern.MatchString(p.RemoteUser)
+		if notice || (!named && !keyed) || p.HostKey != "" || !p.GrantEnds.IsZero() || !p.Once || p.WindowMinutes != 0 ||
+			p.Uses < 1 || p.From.IsZero() || !p.From.Before(p.Until) {
+			return bad("the fields of a scheduled grant")
 		}
 	default:
 		return bad("the kind")
@@ -280,6 +302,8 @@ func title(p approval.Prompt, notice bool) string {
 		icon, name = "🔐", "SSH login"
 	case audit.KindSSHGrant:
 		icon, name = "🔐", "SSH grant"
+	case audit.KindPreapprove:
+		icon, name = "🗓", "Pre-approval"
 	}
 	if notice {
 		icon = "🔔"
@@ -323,7 +347,11 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 	t := &text{}
 	t.write(title(p, notice))
 	if notice {
-		t.write("\n" + noticeLine)
+		if p.Via == audit.ViaScheduled {
+			t.write("\n" + scheduledNoticeLine)
+		} else {
+			t.write("\n" + noticeLine)
+		}
 	}
 	verified := func(label, value string) { t.write("\n✅ " + label + ": " + value) }
 	verified("machine", p.Client)
@@ -339,6 +367,17 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		verified("hosts", strings.Join(p.Hosts, ", "))
 		verified("remote user", p.RemoteUser)
 		verified("grants end", p.GrantEnds.Format(clockFormat)+" ("+strconv.Itoa(p.WindowMinutes)+" min)")
+	case audit.KindPreapprove:
+		if len(p.Secrets) > 0 {
+			verified("secrets", strings.Join(p.Secrets, ", "))
+		} else {
+			verified("key", p.Key)
+			verified("hosts", strings.Join(p.Hosts, ", "))
+			verified("remote user", p.RemoteUser)
+		}
+		verified("uses", strconv.Itoa(p.Uses))
+		verified("from", p.From.Format(dateTimeFormat))
+		verified("until", p.Until.Format(dateTimeFormat))
 	}
 	fields := []struct {
 		label, value string
@@ -384,7 +423,11 @@ func fitBody(p approval.Prompt, notice bool, limit int) (*text, error) {
 func keyboard(p approval.Prompt) inlineKeyboard {
 	var row []inlineButton
 	if p.Once {
-		row = append(row, inlineButton{Text: "Approve once", CallbackData: dataOnce + p.RequestID})
+		label := "Approve once"
+		if p.Kind == audit.KindPreapprove {
+			label = "Approve"
+		}
+		row = append(row, inlineButton{Text: label, CallbackData: dataOnce + p.RequestID})
 	}
 	if p.WindowMinutes > 0 {
 		label := "Approve " + strconv.Itoa(p.WindowMinutes) + " min"
@@ -450,6 +493,10 @@ func resultLine(p approval.Prompt, e approval.Ending) string {
 	at := e.At.Format(clockFormat)
 	switch e.Answer {
 	case audit.AnswerApproveOnce:
+		if p.Kind == audit.KindPreapprove {
+			return "👍 approved by you at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) until " +
+				p.Until.Format(dateTimeFormat)
+		}
 		return "👍 approved once by you at " + at
 	case audit.AnswerApproveWindow:
 		if p.Kind == audit.KindSSHGrant {

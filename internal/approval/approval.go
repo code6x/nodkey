@@ -15,8 +15,8 @@
 //     within the limits per client, and takes the first valid answer, until
 //     the request expires or the client hangs up.
 //
-// Grants, the pauses after a Deny and the uses of "never ask" rules live
-// only in memory, so a restart ends them. Time limits use the monotonic
+// Grants (also scheduled ones), the pauses after a Deny and the uses of
+// "never ask" rules live only in memory, so a restart ends them. Time limits use the monotonic
 // clock; requests and grants also end on the wall clock, so a host that
 // slept does not make them longer (see Clock).
 //
@@ -65,6 +65,10 @@ const (
 	MaxNoticesPerMinute = 6
 )
 
+// MaxPreapproveSecrets is the most secrets in one scheduled grant (the most
+// variables of one run, DESIGN.md section 5).
+const MaxPreapproveSecrets = 32
+
 // MaxGrantHosts is the most hosts in one SSH grant (nodkey ssh-grant,
 // DESIGN.md section 13).
 const MaxGrantHosts = 20
@@ -97,16 +101,21 @@ type Core struct {
 	stopCtx  context.Context
 	stopRuns context.CancelFunc
 
-	mu        sync.Mutex
-	ids       map[string]*pending     // the requests in Decide, by ID
-	codes     map[string]bool         // the short codes of the requests in Decide
-	waiting   map[string]*pending     // the requests whose message waits for an answer, by ID
-	clients   map[string]*clientState // by client name
-	grants    map[grantKey]moment     // when each grant ends
-	uses      map[useKey]dayUses      // uses of "never ask" rules
-	decisions uint64                  // counts the answers that counted
-	running   bool                    // Run has started
-	stopped   bool                    // Run has returned: no answer can come any more
+	mu      sync.Mutex
+	ids     map[string]*pending     // the requests in Decide, by ID
+	codes   map[string]bool         // the short codes of the requests in Decide
+	waiting map[string]*pending     // the requests whose message waits for an answer, by ID
+	clients map[string]*clientState // by client name
+	grants  []*grant                // the grants that have not ended
+	uses    map[useKey]dayUses      // uses of "never ask" rules
+	// endedQueue holds the entries of scheduled grants that ended, until
+	// watchGrants hands them to onEnded.
+	endedQueue []audit.GrantEnded
+	onEnded    func(audit.GrantEnded)
+	grantWake  chan struct{} // wakes watchGrants; it has room for one
+	decisions  uint64        // counts the answers that counted
+	running    bool          // Run has started
+	stopped    bool          // Run has returned: no answer can come any more
 }
 
 // New returns a core that decides requests by the rules of cfg and asks
@@ -126,19 +135,19 @@ func New(cfg *config.Broker, a Approver, opts Options) (*Core, error) {
 	}
 	stopCtx, stopRuns := context.WithCancel(context.Background())
 	c := &Core{
-		cfg:      cfg,
-		approver: a,
-		clock:    opts.Clock,
-		logger:   opts.Logger,
-		random:   rand.Reader,
-		stopCtx:  stopCtx,
-		stopRuns: stopRuns,
-		ids:      make(map[string]*pending),
-		codes:    make(map[string]bool),
-		waiting:  make(map[string]*pending),
-		clients:  make(map[string]*clientState),
-		grants:   make(map[grantKey]moment),
-		uses:     make(map[useKey]dayUses),
+		cfg:       cfg,
+		approver:  a,
+		clock:     opts.Clock,
+		logger:    opts.Logger,
+		random:    rand.Reader,
+		stopCtx:   stopCtx,
+		stopRuns:  stopRuns,
+		ids:       make(map[string]*pending),
+		codes:     make(map[string]bool),
+		waiting:   make(map[string]*pending),
+		clients:   make(map[string]*clientState),
+		grantWake: make(chan struct{}, 1),
+		uses:      make(map[useKey]dayUses),
 	}
 	if c.clock == nil {
 		c.clock = realClock{}
@@ -163,7 +172,16 @@ func (c *Core) Run(ctx context.Context) error {
 	if !c.start() {
 		return errors.New("approval: Run can run only once")
 	}
-	defer c.stopAll()
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		c.watchGrants(ctx)
+	}()
+	defer func() {
+		c.stopAll()
+		<-watched
+		c.dropScheduled()
+	}()
 	if err := c.approver.Run(ctx, c.Answer); err != nil {
 		return err
 	}

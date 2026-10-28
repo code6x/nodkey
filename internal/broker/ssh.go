@@ -184,11 +184,18 @@ func (s *Service) checkGrant(client string, req *api.GrantRequest) (audit.Subjec
 	} else {
 		ok = false
 	}
-	if len(req.Hosts) == 0 || len(req.Hosts) > api.MaxGrantHosts {
-		ok = false
-	}
-	seen := make(map[string]bool, len(req.Hosts))
-	for _, h := range req.Hosts {
+	ok = s.checkHosts(k, known, req.Hosts, &sub) && ok
+	return sub, ok
+}
+
+// checkHosts checks the host names of an SSH grant or a scheduled grant:
+// 1 to api.MaxGrantHosts, each in the broker's known_hosts, and in the
+// hosts of the key k when it has a list, if known says that k is a key of
+// the client. It adds each host that passed to sub, once.
+func (s *Service) checkHosts(k config.Key, known bool, names []string, sub *audit.Subject) bool {
+	ok := len(names) > 0 && len(names) <= api.MaxGrantHosts
+	seen := make(map[string]bool, len(names))
+	for _, h := range names {
 		if seen[h] {
 			continue // a host that is listed twice counts once
 		}
@@ -199,5 +206,5 @@ func (s *Service) checkGrant(client string, req *api.GrantRequest) (audit.Subjec
 		}
 		sub.Hosts = append(sub.Hosts, h)
 	}
-	return sub, ok
+	return ok
 }
