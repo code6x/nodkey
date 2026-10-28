@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"time"
 
 	"github.com/code6x/nodkey/internal/version"
 )
@@ -34,6 +35,9 @@ const (
 	KindSecrets  Kind = "secrets"   // nodkey run: secrets for one command
 	KindSSHLogin Kind = "ssh_login" // nodkey ssh-agent: one SSH signature
 	KindSSHGrant Kind = "ssh_grant" // nodkey ssh-grant: a pre-approval for listed hosts
+	// KindPreapprove is nodkey preapprove: a scheduled grant for later
+	// (DESIGN.md section 8).
+	KindPreapprove Kind = "preapprove"
 )
 
 // Answer is the button the approver pressed.
@@ -53,6 +57,7 @@ type Via string
 const (
 	ViaGrant     Via = "grant"      // a grant from an "Approve N min" tap or from nodkey ssh-grant
 	ViaNeverRule Via = "never_rule" // a rule with ask = "never"
+	ViaScheduled Via = "scheduled"  // a scheduled grant from nodkey preapprove
 )
 
 // Cause says why a request was denied.
@@ -66,6 +71,18 @@ const (
 	CauseNotAllowed Cause = "not_allowed" // a check failed: an unknown name, a name this client may not use, bad input
 	CauseLimit      Cause = "limit"       // a limit per client, the queue, the pause after a Deny, or a limit of the approver itself (DESIGN.md section 8)
 	CauseError      Cause = "error"       // a failure; an error entry says which
+)
+
+// EndCause says why a scheduled grant ended (DESIGN.md section 8).
+type EndCause string
+
+// The causes of a grant_ended entry.
+const (
+	EndUsedUp    EndCause = "used_up"   // the last use was taken
+	EndEnded     EndCause = "ended"     // the end time came
+	EndCancelled EndCause = "cancelled" // the client cancelled it
+	EndDenied    EndCause = "denied"    // the person denied a later request for it
+	EndStopped   EndCause = "stopped"   // the broker stopped
 )
 
 // TapCause says why a button press did not count (DESIGN.md section 7).
@@ -137,6 +154,17 @@ type Subject struct {
 	// Reason is the claimed reason, cleaned and masked as in DESIGN.md
 	// section 7. The client writes it; it is not checked.
 	Reason string `json:"reason,omitempty"`
+	// GrantID is the ID of a scheduled grant: in the entries of a
+	// preapprove request that was approved, in grant_used for a use of it
+	// and in grant_ended. The broker makes it: 16 random bytes in base64url
+	// without padding.
+	GrantID string `json:"grant_id,omitempty"`
+	// Uses, NotBefore and NotAfter are the number of uses and the time
+	// span that a KindPreapprove request asks for. The times are in UTC,
+	// in RFC 3339 form, such as "2026-10-28T01:00:00Z".
+	Uses      int    `json:"uses,omitempty"`
+	NotBefore string `json:"not_before,omitempty"`
+	NotAfter  string `json:"not_after,omitempty"`
 }
 
 // BrokerStarted is the first entry of each broker run.
@@ -179,6 +207,17 @@ type GrantUsed struct {
 	Subject
 	// Via says what allowed it.
 	Via Via `json:"via"`
+}
+
+// GrantEnded records the end of a scheduled grant. Subject is that of the
+// preapprove request that made the grant, with its GrantID. A grant that
+// was never used and ran out has UsesLeft as it asked.
+type GrantEnded struct {
+	Subject
+	// Cause says why it ended.
+	Cause EndCause `json:"cause"`
+	// UsesLeft is how many uses were left.
+	UsesLeft int `json:"uses_left"`
 }
 
 // SecretSent records that the broker sent the values of the secrets
@@ -246,6 +285,7 @@ const (
 	eventRequest       = "request"
 	eventDecision      = "decision"
 	eventGrantUsed     = "grant_used"
+	eventGrantEnded    = "grant_ended"
 	eventSecretSent    = "secret_sent"
 	eventSigned        = "signed"
 	eventDenied        = "denied"
@@ -259,6 +299,7 @@ func (BrokerStopped) eventName() string { return eventBrokerStopped }
 func (Request) eventName() string       { return eventRequest }
 func (Decision) eventName() string      { return eventDecision }
 func (GrantUsed) eventName() string     { return eventGrantUsed }
+func (GrantEnded) eventName() string    { return eventGrantEnded }
 func (SecretSent) eventName() string    { return eventSecretSent }
 func (Signed) eventName() string        { return eventSigned }
 func (Denied) eventName() string        { return eventDenied }
@@ -313,8 +354,29 @@ func (s *Subject) validate(needRequest bool) error {
 		if len(s.Secrets) > 0 || s.HostKey != "" {
 			return errors.New("an SSH grant has no secret names and no single host key")
 		}
+	case KindPreapprove:
+		if s.HostKey != "" || (len(s.Secrets) > 0 && s.Key != "") {
+			return errors.New("a preapprove request names secrets or one key, not both, and has no single host key")
+		}
 	default:
 		return errors.New("kind is not known")
+	}
+	if s.Kind != KindPreapprove && (s.Uses != 0 || s.NotBefore != "" || s.NotAfter != "") {
+		return errors.New("only a preapprove request has uses and a time span")
+	}
+	if s.GrantID != "" && !requestIDPattern.MatchString(s.GrantID) {
+		return errors.New("grant_id must be 16 bytes in base64url without padding")
+	}
+	for _, t := range []string{s.NotBefore, s.NotAfter} {
+		if t == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, t); err != nil {
+			return errors.New("not_before and not_after must be times in RFC 3339 form")
+		}
+	}
+	if s.Uses < 0 {
+		return errors.New("uses must not be negative")
 	}
 	for _, name := range s.Secrets {
 		if !namePattern.MatchString(name) {
@@ -378,10 +440,24 @@ func (e GrantUsed) validate() error {
 		return err
 	}
 	switch e.Via {
-	case ViaGrant, ViaNeverRule:
+	case ViaGrant, ViaNeverRule, ViaScheduled:
 		return nil
 	}
 	return errors.New("via is not known")
+}
+
+func (e GrantEnded) validate() error {
+	if err := e.Subject.validate(true); err != nil {
+		return err
+	}
+	if e.Kind != KindPreapprove || e.GrantID == "" || e.UsesLeft < 0 {
+		return errors.New("it needs a preapprove request, a grant_id and a number of uses left")
+	}
+	switch e.Cause {
+	case EndUsedUp, EndEnded, EndCancelled, EndDenied, EndStopped:
+		return nil
+	}
+	return errors.New("cause is not known")
 }
 
 func (e Denied) validate() error {
@@ -434,7 +510,7 @@ func encodeEvent(ev Event) (string, []byte, error) {
 	// pointer has the methods as well, and a nil pointer would panic in
 	// them.
 	switch ev.(type) {
-	case BrokerStarted, BrokerStopped, Request, Decision, GrantUsed, SecretSent, Signed, Denied, ForeignTap, Failure,
+	case BrokerStarted, BrokerStopped, Request, Decision, GrantUsed, GrantEnded, SecretSent, Signed, Denied, ForeignTap, Failure,
 		logRecovered:
 	default:
 		return "", nil, errors.New("not an event of the audit package; pass an event such as audit.Signed{...} as a value")

@@ -160,6 +160,9 @@ type clientState struct {
 	// paused holds when the pause after a Deny ends, for each secret or
 	// key, on the monotonic clock.
 	paused map[ref]time.Time
+	// preapproving counts the preapprove requests that wait for a tap or
+	// are being decided.
+	preapproving int
 	// denied holds the number of the newest Deny for each secret or key
 	// (see Core.decisions). A grant from an earlier tap does not start.
 	denied map[ref]uint64
@@ -258,7 +261,7 @@ func (c *Core) dispatch(cs *clientState, now moment) {
 // of p, ends the client's grants for them, and denies the client's queued
 // requests for them. seq is the number of this decision. Core.mu must be
 // held.
-func (c *Core) deny(cs *clientState, p *pending, now moment, seq uint64) {
+func (c *Core) deny(cs *clientState, p *pending, res *Result, now moment, seq uint64) {
 	for _, it := range p.items {
 		cs.paused[it.ref] = now.mono.Add(DenyPause)
 		cs.denied[it.ref] = seq
@@ -266,11 +269,14 @@ func (c *Core) deny(cs *clientState, p *pending, now moment, seq uint64) {
 	// A Deny says that something looks wrong, so it ends the grants of
 	// this client for these secrets and keys: for a key, at every host key
 	// and for every remote user, as wide as the pause.
-	for k := range c.grants {
-		if k.client == p.client && slices.ContainsFunc(p.items, func(it item) bool { return it.ref == k.ref }) {
-			delete(c.grants, k)
+	// A scheduled grant ends too, also one that has not started yet; its
+	// entry follows the entries of res.
+	res.ended = append(res.ended, c.endWhere(func(g *grant) audit.EndCause {
+		if g.client == p.client && g.touches(p.items) {
+			return audit.EndDenied
 		}
-	}
+		return ""
+	})...)
 	// The queued requests for them came before the Deny, but their
 	// messages would come after it.
 	cs.queue = slices.DeleteFunc(cs.queue, func(q *pending) bool {
@@ -281,28 +287,6 @@ func (c *Core) deny(cs *clientState, p *pending, now moment, seq uint64) {
 		close(q.ready)
 		return true
 	})
-}
-
-// granted reports whether a grant with the scope k is valid now.
-func (c *Core) granted(k grantKey, now moment) bool {
-	end, ok := c.grants[k]
-	if !ok {
-		return false
-	}
-	if now.before(end) {
-		return true
-	}
-	delete(c.grants, k)
-	return false
-}
-
-// sweepGrants removes the grants that have ended.
-func (c *Core) sweepGrants(now moment) {
-	for k, end := range c.grants {
-		if !now.before(end) {
-			delete(c.grants, k)
-		}
-	}
 }
 
 // neverApplies reports whether the "never ask" rule of it allows a use
@@ -322,10 +306,11 @@ func (c *Core) neverApplies(client string, it item, now moment) bool {
 }
 
 // covered reports whether grants and "never ask" rules allow every item
-// of p now, and what allowed each. A request for an SSH grant is never
-// covered: it asks for new grants.
+// of p now, and what allowed each. A request for an SSH grant or a
+// scheduled grant is never covered: it asks for new grants. A scheduled
+// grant is not looked at here (findScheduled).
 func (c *Core) covered(p *pending, now moment) ([]audit.Via, bool) {
-	if p.kind == audit.KindSSHGrant || len(p.items) == 0 {
+	if p.kind == audit.KindSSHGrant || p.kind == audit.KindPreapprove || len(p.items) == 0 {
 		return nil, false
 	}
 	vias := make([]audit.Via, len(p.items))

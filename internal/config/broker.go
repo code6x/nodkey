@@ -49,6 +49,7 @@ type Broker struct {
 	KnownHosts     *KnownHosts
 	Telegram       Telegram
 	Updates        Updates
+	Preapprove     PreapproveLimits
 	Clients        map[string]Client // by name
 	Stores         map[string]Store  // by name
 	Secrets        map[string]Secret // by name
@@ -70,6 +71,42 @@ type Updates struct {
 	// Check turns on the broker's check for a newer release of nodkey
 	// (DESIGN.md section 15). The default is true.
 	Check bool
+}
+
+// PreapproveLimits is the [preapprove] section: the limits of scheduled
+// grants (DESIGN.md section 8). Without the section, each key has its
+// default. Code that makes a Broker by hand must set them: the zero
+// value allows no scheduled grant at all.
+type PreapproveLimits struct {
+	// MaxAhead is how far in the future a grant may start.
+	MaxAhead time.Duration
+	// MaxOpen is the longest time from the start to the end of a grant.
+	MaxOpen time.Duration
+	// MaxUses is the most uses of one grant.
+	MaxUses int
+	// MaxGrants is the most scheduled grants of one client: those that
+	// are approved and not ended, and the requests that wait for a tap.
+	MaxGrants int
+}
+
+// The defaults and the bounds of the [preapprove] section.
+const (
+	defaultMaxAhead  = 7 * 24 * time.Hour
+	defaultMaxOpen   = 8 * time.Hour
+	defaultMaxUses   = 10
+	defaultMaxGrants = 5
+	maxMaxAhead      = 31 * 24 * time.Hour
+	maxMaxOpen       = 24 * time.Hour
+	maxMaxUses       = 1000
+	maxMaxGrants     = 100
+)
+
+// DefaultPreapprove returns the limits that apply without a [preapprove]
+// section.
+func DefaultPreapprove() PreapproveLimits {
+	return PreapproveLimits{
+		MaxAhead: defaultMaxAhead, MaxOpen: defaultMaxOpen, MaxUses: defaultMaxUses, MaxGrants: defaultMaxGrants,
+	}
 }
 
 // Client is a [client.NAME] section: a machine that may ask.
@@ -127,6 +164,7 @@ type (
 		KnownHosts string                   `toml:"known_hosts"`
 		Telegram   telegramSection          `toml:"telegram"`
 		Updates    updatesSection           `toml:"updates"`
+		Preapprove preapproveSection        `toml:"preapprove"`
 		Client     map[string]clientSection `toml:"client"`
 		Store      map[string]storeSection  `toml:"store"`
 		Secret     map[string]secretSection `toml:"secret"`
@@ -141,6 +179,12 @@ type (
 	}
 	updatesSection struct {
 		Check *bool `toml:"check"`
+	}
+	preapproveSection struct {
+		MaxAhead  *string `toml:"max_ahead"`
+		MaxOpen   *string `toml:"max_open"`
+		MaxUses   *int    `toml:"max_uses"`
+		MaxGrants *int    `toml:"max_grants"`
 	}
 	clientSection struct {
 		Pin string `toml:"pin"`
@@ -228,6 +272,9 @@ func newBroker(f *brokerFile) (*Broker, error) {
 		return nil, err
 	}
 	b.Updates.Check = f.Updates.Check == nil || *f.Updates.Check
+	if b.Preapprove, err = parsePreapprove(&f.Preapprove); err != nil {
+		return nil, err
+	}
 	if err := b.addClients(f.Client); err != nil {
 		return nil, err
 	}
@@ -338,6 +385,48 @@ func parseTelegram(s *telegramSection) (Telegram, error) {
 		return Telegram{}, err
 	}
 	return t, nil
+}
+
+// parsePreapprove checks the [preapprove] section and fills in the
+// defaults.
+func parsePreapprove(s *preapproveSection) (PreapproveLimits, error) {
+	const sec = "[preapprove]"
+	l := DefaultPreapprove()
+	span := func(key string, v *string, most time.Duration, into *time.Duration) error {
+		if v == nil {
+			return nil
+		}
+		d, err := parseDuration(sec, key, *v)
+		if err != nil {
+			return err
+		}
+		if d < time.Minute || d > most {
+			return fmt.Errorf("%s: must be from %s to %s", place(sec, key), formatDuration(time.Minute), formatDuration(most))
+		}
+		*into = d
+		return nil
+	}
+	count := func(key string, v *int, most int, into *int) error {
+		if v == nil {
+			return nil
+		}
+		if *v < 1 || *v > most {
+			return fmt.Errorf("%s: must be from 1 to %d", place(sec, key), most)
+		}
+		*into = *v
+		return nil
+	}
+	for _, err := range []error{
+		span("max_ahead", s.MaxAhead, maxMaxAhead, &l.MaxAhead),
+		span("max_open", s.MaxOpen, maxMaxOpen, &l.MaxOpen),
+		count("max_uses", s.MaxUses, maxMaxUses, &l.MaxUses),
+		count("max_grants", s.MaxGrants, maxMaxGrants, &l.MaxGrants),
+	} {
+		if err != nil {
+			return PreapproveLimits{}, err
+		}
+	}
+	return l, nil
 }
 
 // parseTimeout parses an optional timeout from minTimeout to most.

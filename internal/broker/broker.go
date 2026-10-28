@@ -194,6 +194,11 @@ type Service struct {
 	// change it. Read it with mu held.
 	now func() time.Time
 
+	// startHook, if set, runs in a request for a scheduled grant right
+	// before ("before") and after ("after") the core starts the grant.
+	// Only tests set it.
+	startHook func(point string)
+
 	// maxPerClient is MaxRequestsPerClient; tests change it.
 	maxPerClient int
 
@@ -391,6 +396,13 @@ func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc,
 	// Deny every request once the core stops, also when the approver's
 	// Run panics and the caller recovers the panic.
 	defer s.coreStopped.Store(true)
+	// A scheduled grant that ends by itself has no request to carry its
+	// entry (DESIGN.md section 8).
+	core.OnGrantEnded(func(ev audit.GrantEnded) {
+		if _, err := s.append(ev); err != nil {
+			s.log.Warn("broker: cannot write the grant_ended entry of a scheduled grant")
+		}
+	})
 	err := core.Run(ctx)
 	s.coreStopped.Store(true) // first: deny every request from now on
 	switch {

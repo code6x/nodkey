@@ -15,7 +15,7 @@ Planned. Each v1 issue adds its part.
   binary with `go:embed`, for `nodkey update`. The tests of the script
   are in `install_linux_test.go`. CI checks it with shellcheck.
 - `cmd/nodkey/` - the one binary. Subcommands: `broker`, `run`,
-  `ssh-agent`, `ssh-grant`, `keygen`, `audit verify`, `update`,
+  `ssh-agent`, `ssh-grant`, `preapprove`, `keygen`, `audit verify`, `update`,
   `version`.
   `nodkey broker` starts the broker's parts in a fixed order, and stops
   them in a fixed order (DESIGN.md section 15). Its tests run it in a
@@ -38,7 +38,8 @@ Planned. Each v1 issue adds its part.
   - `internal/client/` - the client side: the requests to the broker
     (config, TLS key, deadline, short code, strict answer),
     `nodkey run` (DESIGN.md sections 5 and 15), `nodkey ssh-agent`
-    (sections 6 and 15) and `nodkey ssh-grant` (sections 13 and 15).
+    (sections 6 and 15), `nodkey ssh-grant` (sections 13 and 15) and
+    `nodkey preapprove` (sections 8 and 15).
 - `contrib/systemd/` - the example systemd unit of the broker, with
   encrypted credentials and a sandbox (DESIGN.md section 16).
 - `docs/` - the guides for people:

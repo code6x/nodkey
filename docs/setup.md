@@ -773,6 +773,12 @@ ssh_timeout = "90s"                 # SSH signatures
 [updates]
 check = true                        # optional; false: never ask GitHub for a newer release
 
+[preapprove]                        # optional; the limits of scheduled grants
+max_ahead = "168h"                  # how far ahead a grant may start; default 7 days
+max_open = "8h"                     # the longest time from start to end
+max_uses = 10                       # the most uses of one grant
+max_grants = 5                      # the most per client: approved, not ended, plus waiting
+
 [client.laptop]
 pin = "sha256:Yf3c...base64..."     # printed by `nodkey keygen`
 
@@ -797,6 +803,7 @@ id = "00000000-0000-0000-0000-000000000000"
 clients = ["laptop"]
 ask = "window"
 window = "15m"
+preapprove = true                   # optional; default false: allows `nodkey preapprove`
 
 [key.deploy]
 file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
@@ -821,6 +828,13 @@ seconds to 10 minutes, 120 seconds by default. `ssh_timeout` is the same
 for an SSH login: 15 to 110 seconds, 90 seconds by default. sshd drops a
 login that takes longer than its `LoginGraceTime` (120 seconds by
 default).
+
+**`[preapprove]` and `preapprove`.** A secret or key with
+`preapprove = true` lets a client ask for a scheduled grant with
+`nodkey preapprove` ([section 11](#a-job-that-runs-later-nodkey-preapprove)).
+It is off by default, and it is an error with `ask = "never"`. The four
+limits are optional. Their defaults are in the example above. They are
+safe, so leave them unless you need more.
 
 **`[updates]`.** `check` is optional, `true` by default. Then the broker
 asks GitHub 10 minutes after its start, and then once a day, whether a
@@ -1316,6 +1330,62 @@ The message lists the key, the remote user, each host and the end of
 the grants. After **Approve**, logins as `deploy` to these hosts need no
 tap until that time. Other hosts and users still ask. A **Deny** for
 the key ends its grants at once.
+
+### A job that runs later: nodkey preapprove
+
+A timer or a job runner cannot tap a button at 03:00. Ask for the grant
+when the job is planned, while you are awake. Then the job gets what it
+needs without a tap, inside the time you approved, and the grant ends by
+itself. First turn it on for the secret or key, in `broker.toml`. It is
+off by default:
+
+```toml
+[secret.backup-token]
+# ...
+ask = "always"
+preapprove = true
+```
+
+Then, when the job is planned (for example in the script that sets up
+tomorrow's job):
+
+```sh
+nodkey preapprove --secret backup-token \
+  --from 2026-10-28T03:00 --until 2026-10-28T04:00 --uses 1 \
+  --reason "job nightly-backup"
+```
+
+The message shows the secret, the uses and the time, in the broker's
+local time. After **Approve**, the command prints the ID of the grant and
+ends. At 03:00 the job runs `nodkey run` as usual, and gets the secret
+without a tap. Each use sends a silent notice to the notice chat. When
+the uses are gone, or at 04:00, the grant is gone. To end it earlier,
+for example when the job is removed:
+
+```sh
+nodkey preapprove --cancel ID
+```
+
+Things to know:
+
+- Anything on that machine can use the grant inside its time, not only
+  the job. Keep the span short and the uses few. If something else uses
+  the grant up, the real job fails, and that shows it.
+- For a key, use `--key`, `--user` and `--host` as for `nodkey ssh-grant`.
+  **Each SSH connection takes one use.** A tool that opens many
+  connections, such as Ansible, needs more uses, or `ControlPersist` in
+  the ssh config so that the connections are shared.
+- A time without an offset is read in the broker's local time. Near the
+  change to summer time, write the offset
+  (`2026-10-28T03:00:00+02:00`). The broker refuses a local time that the
+  clock skips or shows twice.
+- The `window` of the rule does not cap a grant. The limits are in
+  `[preapprove]`: how far ahead it may start (`max_ahead`, 7 days), how
+  long it is open (`max_open`, 8 hours), how many uses (`max_uses`, 10)
+  and how many grants a machine holds (`max_grants`, 5).
+- A broker restart drops all grants. The job then asks as usual. A
+  **Deny** for the same secret or key ends the grant, also before its
+  start.
 
 ## 12. Check the audit log
 

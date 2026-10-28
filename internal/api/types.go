@@ -493,6 +493,139 @@ func (a *GrantAnswer) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// PreapproveRequest asks for a scheduled grant: nodkey preapprove
+// (DESIGN.md section 8). It names secrets, or a key with a remote user and
+// hosts, as nodkey ssh-grant does.
+type PreapproveRequest struct {
+	// Secrets are secret names: at most MaxSecrets. Empty for a key.
+	Secrets []string `json:"secrets"`
+	// Key is the name of a [key.*] section. Empty for secrets.
+	Key string `json:"key"`
+	// User is the remote user name, for a key.
+	User string `json:"user"`
+	// Hosts are names in the broker's known_hosts, for a key: at most
+	// MaxGrantHosts.
+	Hosts []string `json:"hosts"`
+	// From and Until are the first moment and the end of the grant, as
+	// the person typed them (ParseTime). The broker reads them.
+	From  string `json:"from"`
+	Until string `json:"until"`
+	// Uses is how many uses the grant has.
+	Uses int64 `json:"uses"`
+	// Reason is the reason from --reason, or "". It is claimed.
+	Reason string `json:"reason"`
+}
+
+// Check checks the caps of the request.
+func (r *PreapproveRequest) Check() error {
+	if len(r.Secrets) > MaxSecrets || len(r.Hosts) > MaxGrantHosts {
+		return errTooMany
+	}
+	if len(r.Key) > MaxName || len(r.User) > MaxName || len(r.From) > MaxTime || len(r.Until) > MaxTime {
+		return errTooLong
+	}
+	for _, s := range append(append([]string(nil), r.Secrets...), r.Hosts...) {
+		if len(s) > MaxName {
+			return errTooLong
+		}
+	}
+	return nil
+}
+
+// MarshalJSON writes a nil list as [].
+func (r PreapproveRequest) MarshalJSON() ([]byte, error) {
+	type plain PreapproveRequest
+	p := plain(r)
+	p.Secrets, p.Hosts = orEmpty(p.Secrets), orEmpty(p.Hosts)
+	return json.Marshal(p)
+}
+
+// UnmarshalJSON decodes strictly, and checks the caps.
+func (r *PreapproveRequest) UnmarshalJSON(data []byte) error {
+	var v PreapproveRequest
+	err := decodeObject(data, map[string]field{
+		"secrets": textList(&v.Secrets, MaxSecrets),
+		"key":     text(&v.Key),
+		"user":    text(&v.User),
+		"hosts":   textList(&v.Hosts, MaxGrantHosts),
+		"from":    text(&v.From),
+		"until":   text(&v.Until),
+		"uses":    integer(&v.Uses),
+		"reason":  text(&v.Reason),
+	})
+	if err != nil {
+		return err
+	}
+	if err := v.Check(); err != nil {
+		return err
+	}
+	*r = v
+	return nil
+}
+
+// PreapproveAnswer says that the scheduled grant was approved.
+type PreapproveAnswer struct {
+	// ID is the grant ID: 22 characters of base64url. A cancel names it.
+	ID string `json:"id"`
+	// From and Until are the span of the grant in RFC 3339 form, in the
+	// broker's local time.
+	From  string `json:"from"`
+	Until string `json:"until"`
+}
+
+// UnmarshalJSON decodes strictly.
+func (a *PreapproveAnswer) UnmarshalJSON(data []byte) error {
+	var v PreapproveAnswer
+	err := decodeObject(data, map[string]field{"id": text(&v.ID), "from": text(&v.From), "until": text(&v.Until)})
+	if err != nil {
+		return err
+	}
+	if len(v.ID) > MaxName || len(v.From) > MaxTime || len(v.Until) > MaxTime {
+		return errTooLong
+	}
+	*a = v
+	return nil
+}
+
+// PreapproveCancelRequest cancels a scheduled grant that the same client
+// has. The broker answers the same for an ID that it does not know and for
+// the ID of another client.
+type PreapproveCancelRequest struct {
+	ID string `json:"id"`
+}
+
+// UnmarshalJSON decodes strictly, and checks the caps.
+func (r *PreapproveCancelRequest) UnmarshalJSON(data []byte) error {
+	var v PreapproveCancelRequest
+	if err := decodeObject(data, map[string]field{"id": text(&v.ID)}); err != nil {
+		return err
+	}
+	if len(v.ID) > MaxName {
+		return errTooLong
+	}
+	*r = v
+	return nil
+}
+
+// PreapproveCancelAnswer says that the grant was cancelled. ID is the ID
+// of the request.
+type PreapproveCancelAnswer struct {
+	ID string `json:"id"`
+}
+
+// UnmarshalJSON decodes strictly.
+func (a *PreapproveCancelAnswer) UnmarshalJSON(data []byte) error {
+	var v PreapproveCancelAnswer
+	if err := decodeObject(data, map[string]field{"id": text(&v.ID)}); err != nil {
+		return err
+	}
+	if len(v.ID) > MaxName {
+		return errTooLong
+	}
+	*a = v
+	return nil
+}
+
 // ErrorAnswer is the body of every answer that is not 200: the status
 // text, such as {"error":"Forbidden"}, and nothing else.
 type ErrorAnswer struct {

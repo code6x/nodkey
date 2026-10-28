@@ -1394,3 +1394,68 @@ func TestCheckFilesWithoutLoad(t *testing.T) {
 	b = &Broker{Stores: map[string]Store{"x": {Name: "x", Type: "other"}}}
 	checkError(t, b.CheckFiles(), "unknown store type", "")
 }
+
+// TestLoadBrokerPreapprove: preapprove is off by default, it is allowed
+// for "always" and "window" rules, and it is refused on a "never" rule.
+func TestLoadBrokerPreapprove(t *testing.T) {
+	e := newBrokerEnv(t)
+	b, err := LoadBroker(e.write(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, s := range b.Secrets {
+		if s.Rule.Preapprove {
+			t.Errorf("secret %s: Preapprove is on by default", name)
+		}
+	}
+	for name, k := range b.Keys {
+		if k.Rule.Preapprove {
+			t.Errorf("key %s: Preapprove is on by default", name)
+		}
+	}
+	b, err = LoadBroker(e.write(t,
+		edit{"ask = \"window\"\nwindow = \"15m\"\n", "ask = \"window\"\nwindow = \"15m\"\npreapprove = true\n"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.Secrets["github-token"].Rule.Preapprove {
+		t.Error("github-token: preapprove = true is not read")
+	}
+	_, err = LoadBroker(e.write(t,
+		edit{"ask = \"never\"", "ask = \"never\"\npreapprove = true"}))
+	if err == nil || !strings.Contains(err.Error(), `is not allowed with ask = "never"`) {
+		t.Errorf("preapprove on a never rule: error %v, want it refused", err)
+	}
+}
+
+// TestLoadBrokerPreapproveLimits: the section has safe defaults, each key
+// is read, and a value out of its bounds is refused.
+func TestLoadBrokerPreapproveLimits(t *testing.T) {
+	e := newBrokerEnv(t)
+	b, err := LoadBroker(e.write(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PreapproveLimits{MaxAhead: 7 * 24 * time.Hour, MaxOpen: 8 * time.Hour, MaxUses: 10, MaxGrants: 5}
+	if b.Preapprove != want || DefaultPreapprove() != want {
+		t.Errorf("defaults = %+v, want %+v", b.Preapprove, want)
+	}
+	b, err = LoadBroker(e.write(t, edit{"[client.laptop]",
+		"[preapprove]\nmax_ahead = \"48h\"\nmax_open = \"2h\"\nmax_uses = 3\nmax_grants = 2\n\n[client.laptop]"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = PreapproveLimits{MaxAhead: 48 * time.Hour, MaxOpen: 2 * time.Hour, MaxUses: 3, MaxGrants: 2}
+	if b.Preapprove != want {
+		t.Errorf("limits = %+v, want %+v", b.Preapprove, want)
+	}
+	for _, line := range []string{
+		"max_ahead = \"0s\"", "max_ahead = \"800h\"", "max_ahead = \"soon\"", "max_open = \"25h\"",
+		"max_open = \"-1h\"", "max_uses = 0", "max_uses = 1001", "max_grants = 0", "max_grants = 101", "max_uses = \"3\"",
+		"extra = 1",
+	} {
+		if _, err := LoadBroker(e.write(t, edit{"[client.laptop]", "[preapprove]\n" + line + "\n\n[client.laptop]"})); err == nil {
+			t.Errorf("%q: the config was accepted", line)
+		}
+	}
+}

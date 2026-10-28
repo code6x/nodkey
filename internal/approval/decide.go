@@ -45,11 +45,17 @@ type pending struct {
 	user          string   // KindSSHLogin, KindSSHGrant: the remote user
 	grantHostKeys []string // KindSSHGrant: the host keys of the hosts, in SSH wire form
 	grantEnds     moment   // KindSSHGrant: when its grants end
+	plan          *grant   // KindPreapprove: the grant that an approval starts
 
 	start, deadline moment
 	once            bool // the message has "Approve once"
 	windowMinutes   int  // the message has "Approve N min" with this N; 0: no
 	notify          bool // a "never ask" rule with notify allowed it
+
+	// used is the scheduled grant that allowed p, and whose use p took.
+	// preCounted says that p counts in clientState.preapproving.
+	used       *grant
+	preCounted bool
 
 	// counted holds the uses of "never ask" rules that begin counted for
 	// p, so that notify can take them back. Under Core.mu.
@@ -110,6 +116,10 @@ func (p *pending) prompt(now moment) Prompt {
 	if p.kind == audit.KindSSHGrant {
 		pr.GrantEnds = p.grantEnds.wall
 	}
+	if p.kind == audit.KindPreapprove {
+		loc := now.wall.Location()
+		pr.Uses, pr.From, pr.Until = p.plan.uses, p.plan.start.In(loc), p.plan.end.wall.In(loc)
+	}
 	return pr
 }
 
@@ -117,6 +127,9 @@ func (p *pending) prompt(now moment) Prompt {
 func (p *pending) notice(now moment) Prompt {
 	pr := p.prompt(now)
 	pr.Expires, pr.TimeLeft, pr.Once, pr.WindowMinutes = time.Time{}, 0, false, 0
+	if p.used != nil {
+		pr.Via = audit.ViaScheduled
+	}
 	return pr
 }
 
@@ -147,6 +160,17 @@ func (c *Core) Decide(ctx context.Context, r *Request) *Result {
 		// grant nothing, so the request ends then too.
 		p.deadline = earlier(p.deadline, p.grantEnds)
 	}
+	if p.kind == audit.KindPreapprove {
+		// Its grant ends at a fixed time, as an SSH grant's do: after it,
+		// an approval would grant nothing.
+		end := p.plan.end.wall
+		p.deadline = earlier(p.deadline, moment{mono: p.start.mono.Add(end.Sub(p.start.wall)), wall: end})
+		if err := c.makeGrantID(p); err != nil {
+			res := c.denied(p, audit.CauseError)
+			res.Err = err
+			return res
+		}
+	}
 	if ctx.Err() != nil {
 		return c.denied(p, audit.CauseCancelled)
 	}
@@ -174,6 +198,9 @@ func (c *Core) leave(p *pending) {
 	defer c.mu.Unlock()
 	delete(c.ids, p.id)
 	delete(c.codes, p.code)
+	if p.preCounted {
+		c.client(p.client).preapproving--
+	}
 	switch p.state {
 	case stateQueued:
 		c.client(p.client).remove(p)
@@ -197,7 +224,17 @@ func (c *Core) begin(p *pending) *Result {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
+	c.sweepGrants(now)
 	cs := c.client(p.client)
+	if p.kind == audit.KindPreapprove {
+		// The grants that are approved and not ended, and the requests
+		// that wait for a tap (StartGrants checks the first again).
+		if c.scheduledCount(p.client)+cs.preapproving >= c.cfg.Preapprove.MaxGrants {
+			return c.denied(p, audit.CauseLimit)
+		}
+		cs.preapproving++
+		p.preCounted = true
+	}
 	if vias, ok := c.covered(p, now); ok {
 		notify := false
 		for i, it := range p.items {
@@ -225,6 +262,25 @@ func (c *Core) begin(p *pending) *Result {
 		res := c.newResult(p)
 		res.Allowed = true
 		res.vias = vias
+		return res
+	}
+	if g := c.findScheduled(p, now); g != nil {
+		// Each use of a scheduled grant sends a notice, as a use of a
+		// "never ask" rule does, and counts toward the same limit. A use
+		// that the limit stops is not taken.
+		if cs.notices.recent(now.mono) >= MaxNoticesPerMinute {
+			return c.denied(p, audit.CauseLimit)
+		}
+		cs.notices = cs.notices.add(now.mono, MaxNoticesPerMinute)
+		g.uses--
+		p.used, p.notify = g, true
+		res := c.newResult(p)
+		res.Allowed = true
+		res.usedID = g.id
+		res.vias = make([]audit.Via, len(p.items))
+		for i := range res.vias {
+			res.vias[i] = audit.ViaScheduled
+		}
 		return res
 	}
 	if c.stopped {
@@ -487,6 +543,9 @@ func (c *Core) Answer(a Answer) error {
 			return ErrNotAllowed
 		}
 		res.Allowed = true
+		if p.kind == audit.KindPreapprove {
+			c.approvePlan(p, res)
+		}
 	case audit.AnswerApproveWindow:
 		if p.windowMinutes < 1 {
 			return ErrNotAllowed
@@ -515,7 +574,7 @@ func (c *Core) Answer(a Answer) error {
 	cs.release()
 	c.finish(p, res)
 	if a.Action == audit.AnswerDeny {
-		c.deny(cs, p, now, res.seq)
+		c.deny(cs, p, res, now, res.seq)
 	}
 	c.dispatch(cs, now)
 	close(p.done)
@@ -535,7 +594,8 @@ func (c *Core) end(ctx context.Context, p *pending, prompt Prompt, res *Result) 
 	}
 }
 
-// notify sends the notice of a use of a "never ask" rule. If the notice
+// notify sends the notice of a use of a "never ask" rule or a scheduled
+// grant. If the notice
 // cannot be sent, the request is denied: notify = true promises that no
 // use goes unseen (DESIGN.md section 12).
 //
@@ -550,16 +610,42 @@ func (c *Core) notify(ctx context.Context, p *pending, res *Result) *Result {
 	nctx, cancel := c.callContext(ctx, now.until(p.deadline))
 	err := c.approver.Notify(nctx, p.notice(now))
 	cancel()
+	out := res
 	switch {
 	case errors.Is(err, ErrLimit):
 		c.uncount(p)
 		return c.denied(p, audit.CauseLimit)
 	case ctx.Err() != nil:
-		return c.denied(p, audit.CauseCancelled)
+		out = c.denied(p, audit.CauseCancelled)
 	case err != nil:
-		return c.failed(p, err)
+		out = c.failed(p, err)
 	}
-	return res
+	// The use counts, also in a deny. If it was the last, the grant ends.
+	c.settle(p, out)
+	return out
+}
+
+// makeGrantID gives the scheduled grant of p its ID.
+func (c *Core) makeGrantID(p *pending) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id, err := newID(c.random)
+	p.plan.id = id
+	return err
+}
+
+// approvePlan makes the grant that an approval of p starts (StartGrants),
+// and tells res about it. Core.mu must be held.
+func (c *Core) approvePlan(p *pending, res *Result) {
+	res.Subject.GrantID = p.plan.id
+	g := *p.plan
+	g.origin = res.Subject
+	g.origin.Secrets = slices.Clone(res.Subject.Secrets)
+	g.origin.Hosts = slices.Clone(res.Subject.Hosts)
+	res.plan = &g
+	res.GrantID = g.id
+	loc := c.clock.Wall().Location()
+	res.GrantFrom, res.GrantUntil = g.start.In(loc), g.end.wall.In(loc)
 }
 
 // uncount takes back the uses of "never ask" rules that begin counted for
@@ -571,6 +657,10 @@ func (c *Core) uncount(p *pending) {
 		c.uses[u.key] = c.uses[u.key].remove(u.day)
 	}
 	p.counted = nil
+	if g := p.used; g != nil && slices.Contains(c.grants, g) {
+		g.uses++ // the use did not happen
+	}
+	p.used = nil
 }
 
 // newResult returns the result of p, not yet decided.

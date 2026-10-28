@@ -238,6 +238,8 @@ func eventName(ev audit.Event) string {
 		return "decision:" + string(e.Answer)
 	case audit.GrantUsed:
 		return "grant_used:" + string(e.Via)
+	case audit.GrantEnded:
+		return "grant_ended:" + string(e.Cause)
 	case audit.SecretSent:
 		return "secret_sent"
 	case audit.Signed:
@@ -269,6 +271,8 @@ func subjectOf(ev audit.Event) audit.Subject {
 	case audit.Decision:
 		return e.Subject
 	case audit.GrantUsed:
+		return e.Subject
+	case audit.GrantEnded:
 		return e.Subject
 	case audit.SecretSent:
 		return e.Subject

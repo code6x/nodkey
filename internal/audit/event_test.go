@@ -10,10 +10,10 @@ import (
 
 // TestEventNames: the events are the ones in DESIGN.md section 9.
 func TestEventNames(t *testing.T) {
-	want := []string{"broker_started", "request", "decision", "grant_used", "secret_sent", "signed", "denied",
+	want := []string{"broker_started", "request", "decision", "grant_used", "grant_ended", "secret_sent", "signed", "denied",
 		"foreign_tap", "error", "log_recovered", "broker_stopped"}
 	var got []string
-	for _, ev := range append(sampleEvents(), logRecovered{}) {
+	for _, ev := range append(sampleEvents(), logRecovered{}, GrantEnded{}) {
 		if name := ev.eventName(); !slices.Contains(got, name) {
 			got = append(got, name)
 		}
@@ -145,4 +145,44 @@ func TestEncodeEventAllowsWhatABrokerKnows(t *testing.T) {
 			t.Errorf("encodeEvent(%+v): %v", ev, err)
 		}
 	}
+}
+
+// TestPreapproveEvents: the fields of a scheduled grant are checked, and
+// only a preapprove request may hold uses and a time span.
+func TestPreapproveEvents(t *testing.T) {
+	bad := func(name string, ev Event) {
+		t.Helper()
+		if _, _, err := encodeEvent(ev); err == nil {
+			t.Errorf("%s: the event was accepted", name)
+		}
+	}
+	ok := preapproveSubject()
+	if _, _, err := encodeEvent(GrantEnded{Subject: ok, Cause: EndEnded, UsesLeft: 1}); err != nil {
+		t.Fatalf("a valid grant_ended: %v", err)
+	}
+	bad("unknown cause", GrantEnded{Subject: ok, Cause: "gone"})
+	bad("no cause", GrantEnded{Subject: ok})
+	bad("negative uses left", GrantEnded{Subject: ok, Cause: EndEnded, UsesLeft: -1})
+	noID := ok
+	noID.GrantID = ""
+	bad("no grant_id", GrantEnded{Subject: noID, Cause: EndEnded})
+	other := secretsSubject()
+	other.GrantID = testRequestID(5)
+	bad("grant_ended of another kind", GrantEnded{Subject: other, Cause: EndEnded})
+	uses := secretsSubject()
+	uses.Uses = 2
+	bad("uses in a secrets request", Request{Subject: uses})
+	span := secretsSubject()
+	span.NotAfter = "2026-10-28T02:00:00Z"
+	bad("a time span in a secrets request", Request{Subject: span})
+	badTime := ok
+	badTime.NotBefore = "tomorrow"
+	bad("a time that is not RFC 3339", Request{Subject: badTime})
+	badID := ok
+	badID.GrantID = "short"
+	bad("a grant_id that is not an ID", Request{Subject: badID})
+	both := ok
+	both.Key = "deploy"
+	bad("secrets and a key", Request{Subject: both})
+	bad("via that is not known", GrantUsed{Subject: secretsSubject(), Via: "scheduled2"})
 }

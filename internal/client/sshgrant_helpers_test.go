@@ -118,6 +118,14 @@ func newGrantBrokerWith(t *testing.T, opts grantBrokerOptions) *grantBroker {
 				Hosts: []string{"web-1"}},
 		},
 		KnownHosts: known,
+		Preapprove: config.DefaultPreapprove(),
+	}
+	// Scheduled grants (nodkey preapprove) are on for the keys deploy and
+	// web only.
+	for _, name := range []string{"deploy", "web"} {
+		k := cfg.Keys[name]
+		k.Rule.Preapprove = true
+		cfg.Keys[name] = k
 	}
 	keys := make(map[string]sshauth.Key)
 	for name, k := range cfg.Keys {
@@ -344,6 +352,8 @@ func grantSubjectOf(ev audit.Event) audit.Subject {
 		return e.Subject
 	case audit.GrantUsed:
 		return e.Subject
+	case audit.GrantEnded:
+		return e.Subject
 	case audit.SecretSent:
 		return e.Subject
 	case audit.Signed:
@@ -379,6 +389,8 @@ func grantEventNames(events []audit.Event) string {
 			names[i] = "decision:" + string(e.Answer)
 		case audit.GrantUsed:
 			names[i] = "grant_used:" + string(e.Via)
+		case audit.GrantEnded:
+			names[i] = "grant_ended:" + string(e.Cause)
 		case audit.Signed:
 			names[i] = "signed"
 		case audit.Denied:

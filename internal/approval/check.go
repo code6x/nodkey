@@ -42,7 +42,7 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = false
 	}
 	switch r.Kind {
-	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant:
+	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant, audit.KindPreapprove:
 		p.kind = r.Kind
 		p.subject.Kind = r.Kind
 	default:
@@ -56,6 +56,8 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = c.checkLogin(r, p) && ok
 	case audit.KindSSHGrant:
 		ok = c.checkGrant(r, p) && ok
+	case audit.KindPreapprove:
+		ok = c.checkPreapprove(r, p) && ok
 	}
 	return ok
 }
@@ -152,33 +154,11 @@ func (c *Core) checkGrant(r *Request, p *pending) bool {
 	ok = keyOK && ok
 	ok = c.checkUser(r.RemoteUser, p) && ok
 
-	var hosts []string
-	seen := make(map[string]bool)
-	for _, h := range r.Hosts {
-		if seen[h] {
-			continue
-		}
-		seen[h] = true
-		if hosts = append(hosts, h); len(hosts) > MaxGrantHosts {
-			break
-		}
-	}
-	if len(hosts) == 0 || len(hosts) > MaxGrantHosts {
+	hosts, valid := c.addGrantHosts(r.Hosts, k, keyOK, p)
+	if !valid {
 		return false // the hosts are left out of the subject
 	}
-	for _, h := range hosts {
-		keys := c.cfg.KnownHosts.KeysFor(h)
-		if len(keys) == 0 || !keyOK || (len(k.Hosts) > 0 && !slices.Contains(k.Hosts, h)) {
-			ok = false
-			continue
-		}
-		p.subject.Hosts = append(p.subject.Hosts, h)
-		// One tap makes a grant for each host key of each host (a host
-		// can have one host key of each key type).
-		for _, hk := range keys {
-			p.grantHostKeys = append(p.grantHostKeys, string(hk.Marshal()))
-		}
-	}
+	ok = hosts && ok
 
 	// The grants last whole minutes: at least 1, and at most the key's
 	// window.
@@ -193,6 +173,117 @@ func (c *Core) checkGrant(r *Request, p *pending) bool {
 	// The message shows the end to the second. The grants end at the
 	// start of that second, not later.
 	p.grantEnds = p.start.add(time.Duration(minutes) * time.Minute).wholeSecond()
+	return true
+}
+
+// addGrantHosts checks the host names of an SSH grant or a scheduled
+// grant for the key k, which passed its own checks if keyOK. It adds each
+// host that passed to the subject of p, and its host keys to
+// p.grantHostKeys. ok is false when a host did not pass. valid is false
+// when the list has no host or more than MaxGrantHosts; then nothing is
+// added.
+func (c *Core) addGrantHosts(names []string, k config.Key, keyOK bool, p *pending) (ok, valid bool) {
+	ok = true
+	var hosts []string
+	seen := make(map[string]bool)
+	for _, h := range names {
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		if hosts = append(hosts, h); len(hosts) > MaxGrantHosts {
+			break
+		}
+	}
+	if len(hosts) == 0 || len(hosts) > MaxGrantHosts {
+		return false, false
+	}
+	for _, h := range hosts {
+		keys := c.cfg.KnownHosts.KeysFor(h)
+		if len(keys) == 0 || !keyOK || (len(k.Hosts) > 0 && !slices.Contains(k.Hosts, h)) {
+			ok = false
+			continue
+		}
+		p.subject.Hosts = append(p.subject.Hosts, h)
+		// One tap makes a grant for each host key of each host (a host
+		// can have one host key of each key type).
+		for _, hk := range keys {
+			p.grantHostKeys = append(p.grantHostKeys, string(hk.Marshal()))
+		}
+	}
+	return ok, true
+}
+
+// checkPreapprove checks a request for a scheduled grant (DESIGN.md
+// section 8). It names secrets, or a key with a remote user and hosts. Each
+// secret or key must have preapprove = true in its rule, which a "never"
+// rule cannot have. The number of uses and the span must be inside the
+// limits of [preapprove]; a limit that is not set (0) allows nothing.
+func (c *Core) checkPreapprove(r *Request, p *pending) bool {
+	lim := c.cfg.Preapprove
+	ok := r.HostKey == nil && r.For == 0
+	allowed := func(rule config.Rule, clients []string) bool {
+		return rule.Preapprove && rule.Ask != config.AskNever && validRule(rule, clients)
+	}
+	var refs []ref
+	var hostKeys []string
+	if len(r.Secrets) > 0 {
+		ok = ok && r.Key == "" && r.RemoteUser == "" && len(r.Hosts) == 0
+		seen := make(map[string]bool)
+		for _, name := range r.Secrets {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			s, known := c.cfg.Secrets[name]
+			if !known || p.client == "" || !slices.Contains(s.Clients, p.client) || !allowed(s.Rule, s.Clients) {
+				ok = false
+				continue
+			}
+			p.items = append(p.items, item{ref: ref{name: name}, rule: s.Rule})
+			p.subject.Secrets = append(p.subject.Secrets, name)
+			refs = append(refs, ref{name: name})
+		}
+		if len(refs) > MaxPreapproveSecrets {
+			ok = false
+		}
+	} else {
+		k, keyOK := c.checkKey(r.Key, p)
+		if keyOK && !allowed(k.Rule, k.Clients) {
+			keyOK = false
+		}
+		ok = keyOK && ok
+		ok = c.checkUser(r.RemoteUser, p) && ok
+		hostsOK, valid := c.addGrantHosts(r.Hosts, k, keyOK, p)
+		if !valid {
+			return false
+		}
+		ok = hostsOK && ok
+		if keyOK {
+			refs = []ref{p.items[0].ref}
+		}
+		hostKeys = p.grantHostKeys
+	}
+	// The times are whole seconds, so a message shows exactly what is
+	// granted. The span is in the limits, and has not ended.
+	span := r.NotAfter.Sub(r.NotBefore)
+	if r.Uses < 1 || r.Uses > lim.MaxUses || r.NotBefore.IsZero() || r.NotAfter.IsZero() ||
+		r.NotBefore.Nanosecond() != 0 || r.NotAfter.Nanosecond() != 0 ||
+		span <= 0 || span > lim.MaxOpen ||
+		!p.start.wall.Before(r.NotAfter) || r.NotBefore.Sub(p.start.wall) > lim.MaxAhead {
+		ok = false
+	}
+	if !ok || len(refs) == 0 {
+		return false
+	}
+	p.once = true // the one "Approve" button
+	p.subject.Uses = r.Uses
+	p.subject.NotBefore = r.NotBefore.UTC().Format(time.RFC3339)
+	p.subject.NotAfter = r.NotAfter.UTC().Format(time.RFC3339)
+	p.plan = &grant{
+		client: p.client, refs: refs, hostKeys: hostKeys, user: p.user,
+		start: r.NotBefore, end: moment{wall: r.NotAfter}, uses: r.Uses,
+	}
 	return true
 }
 
