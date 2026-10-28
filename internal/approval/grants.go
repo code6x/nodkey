@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -43,7 +44,42 @@ type grant struct {
 	// origin is the subject of the request that made a scheduled grant,
 	// for its audit entries.
 	origin audit.Subject
+	// reqID is the ID of the request that made a scheduled grant. The
+	// Revoke button carries it.
+	reqID string
+	// msg is the message of that request and prompt is the prompt of it.
+	// They are set when the grant starts, and are "" for a grant whose
+	// message the core does not know.
+	msg    MessageID
+	prompt Prompt
+	// approved is when the person approved it.
+	approved time.Time
 }
+
+// msgUpdate is a call to the approver about the message of a scheduled
+// grant: End, and for a grant that ended with uses left also Notify. The
+// calls wait in Core.msgQueue, so they run one after the other, in the
+// order of the events.
+type msgUpdate struct {
+	msg    MessageID
+	prompt Prompt
+	ending Ending
+	// notice says that the approver also gets a notice that the grant
+	// ended with uses left. grantID is the grant's ID for it.
+	notice  bool
+	grantID string
+	// tries counts the failed tries of an update that adds a Revoke button.
+	tries int
+}
+
+// The tries of the update that adds a Revoke button: it can fail, such as
+// by a timeout, and the grant may live for days. After a failed try, the
+// next one comes after holdFirstWait, then twice as long, at most
+// holdTries in all, and only while the grant lives (staleHold).
+const (
+	holdTries     = 3
+	holdFirstWait = 10 * time.Second
+)
 
 // scheduled reports whether g comes from nodkey preapprove.
 func (g *grant) scheduled() bool { return g.id != "" }
@@ -85,10 +121,32 @@ func (c *Core) endWhere(cause func(*grant) audit.EndCause) []audit.GrantEnded {
 		}
 		if g.scheduled() {
 			ended = append(ended, audit.GrantEnded{Subject: g.origin, Cause: why, UsesLeft: max(g.uses, 0)})
+			c.queueMessage(g, why)
 		}
 		return true
 	})
 	return ended
+}
+
+// queueMessage queues the update of the message of g, which ended with
+// cause why: no button, and how and when it ended. A grant that ended
+// by time with uses left also queues a notice. Core.mu must be held.
+func (c *Core) queueMessage(g *grant, why audit.EndCause) {
+	if g.msg == "" {
+		return
+	}
+	at := c.clock.Wall()
+	if why == audit.EndEnded {
+		at = g.end.wall
+	}
+	left := max(g.uses, 0)
+	c.msgQueue = append(c.msgQueue, msgUpdate{
+		msg:    g.msg,
+		prompt: g.prompt,
+		ending: Ending{Answer: audit.AnswerApproveOnce, At: at, GrantEnd: why, UsesLeft: left, Approved: g.approved},
+		notice: why == audit.EndEnded && left > 0, grantID: g.id,
+	})
+	c.wakeGrants()
 }
 
 // sweepGrants removes the grants that have ended. The entries of the
@@ -141,6 +199,104 @@ func (c *Core) takeEnded() ([]audit.GrantEnded, func(audit.GrantEnded)) {
 	return evs, c.onEnded
 }
 
+// deliverMessages makes the queued calls about the messages of scheduled
+// grants, one after the other, until ctx ends. What it did not make stays
+// in the queue. A call that fails is logged; the audit log has the end of
+// the grant anyway.
+func (c *Core) deliverMessages(ctx context.Context) {
+	for ctx.Err() == nil {
+		// The entries of the audit log first: a slow Telegram must not
+		// delay them.
+		c.deliverEnded()
+		c.mu.Lock()
+		if len(c.msgQueue) == 0 {
+			c.mu.Unlock()
+			return
+		}
+		u := c.msgQueue[0]
+		c.msgQueue = c.msgQueue[1:]
+		stale := u.ending.Revoke && c.staleHold(u)
+		c.mu.Unlock()
+		if stale {
+			continue
+		}
+		if !c.updateMessage(ctx, u) {
+			// The stop cut the call short: the next delivery makes it.
+			c.mu.Lock()
+			c.msgQueue = slices.Insert(c.msgQueue, 0, u)
+			c.mu.Unlock()
+		}
+	}
+}
+
+// staleHold reports whether u, an update that adds a Revoke button, is
+// not needed any more: its grant is gone or past its end, or the update
+// of its end waits. Core.mu must be held.
+func (c *Core) staleHold(u msgUpdate) bool {
+	now := c.now()
+	if !slices.ContainsFunc(c.grants, func(g *grant) bool { return g.msg == u.msg && now.before(g.end) }) {
+		return true
+	}
+	return slices.ContainsFunc(c.msgQueue, func(q msgUpdate) bool { return q.msg == u.msg && q.ending.GrantEnd != "" })
+}
+
+// retryHold queues the update u, which adds a Revoke button and failed,
+// again after a wait, unless it has used its tries. It does not block: the
+// wait is in a goroutine of its own, which ends when the core stops.
+func (c *Core) retryHold(u msgUpdate) {
+	u.tries++
+	if u.tries >= holdTries {
+		return
+	}
+	wait := holdFirstWait << (u.tries - 1)
+	t := c.clock.TimerAt(c.now().mono.Add(wait))
+	go func() {
+		defer t.Stop()
+		select {
+		case <-t.C():
+		case <-c.stopCtx.Done():
+			return
+		}
+		c.mu.Lock()
+		c.msgQueue = append(c.msgQueue, u)
+		c.mu.Unlock()
+		c.wakeGrants()
+	}()
+}
+
+// updateMessage makes the calls of u. It reports false when ctx ended
+// before the message was updated.
+func (c *Core) updateMessage(ctx context.Context, u msgUpdate) bool {
+	ectx, cancel := context.WithTimeout(ctx, endTimeout)
+	defer cancel()
+	if err := c.approver.End(ectx, u.msg, u.prompt, u.ending); err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		c.logger.LogAttrs(ectx, slog.LevelWarn, "approval: cannot update the message of a scheduled grant",
+			slog.String("request_id", u.prompt.RequestID), slog.Any("error", err))
+		if u.ending.Revoke {
+			c.retryHold(u)
+		}
+	}
+	if !u.notice {
+		return true
+	}
+	// The grant did not run, or ran late. The approver's own limit of
+	// notices applies; the limit per client does not, because the person
+	// did not ask for this notice (DESIGN.md section 8).
+	n := u.prompt
+	n.Expires, n.TimeLeft, n.Once, n.WindowMinutes = time.Time{}, 0, false, 0
+	n.GrantID, n.UsesLeft = u.grantID, u.ending.UsesLeft
+	nctx, ncancel := context.WithTimeout(ctx, endTimeout)
+	defer ncancel()
+	if err := c.approver.Notify(nctx, n); err != nil {
+		c.logger.LogAttrs(nctx, slog.LevelWarn, "approval: cannot send the notice of a scheduled grant that was not used",
+			slog.String("request_id", n.RequestID), slog.Any("error", err))
+	}
+	return true
+}
+
 // deliverEnded gives the queued entries to the function of OnGrantEnded.
 func (c *Core) deliverEnded() {
 	evs, f := c.takeEnded()
@@ -163,6 +319,7 @@ func (c *Core) watchGrants(ctx context.Context) {
 		next, ok := c.nextEnd()
 		c.mu.Unlock()
 		c.deliverEnded()
+		c.deliverMessages(c.stopCtx)
 		var timer <-chan time.Time
 		var t Timer
 		if ok {
@@ -199,7 +356,8 @@ func (c *Core) nextEnd() (time.Time, bool) {
 
 // dropScheduled ends every scheduled grant with cause stopped, when the
 // core stops: grants live only in memory, so a restart would lose them
-// anyway (DESIGN.md section 8).
+// anyway (DESIGN.md section 8). It hands out the audit entries; the
+// updates of the messages wait for FlushMessages.
 func (c *Core) dropScheduled() {
 	c.mu.Lock()
 	c.queueEnded(c.endWhere(func(g *grant) audit.EndCause {
@@ -210,6 +368,42 @@ func (c *Core) dropScheduled() {
 	}))
 	c.mu.Unlock()
 	c.deliverEnded()
+}
+
+// FlushMessages makes the updates of the messages of scheduled grants that
+// are still waiting, such as those of the grants that a stop dropped. The
+// broker calls it after Run returned and after it denies every request,
+// because Telegram can be slow: the calls take at most
+// stopMessagesTimeout together, so a stop never waits for a Telegram that
+// does not answer.
+func (c *Core) FlushMessages() {
+	ctx, cancel := context.WithTimeout(context.Background(), stopMessagesTimeout)
+	defer cancel()
+	c.deliverMessages(ctx)
+}
+
+// revoke ends the scheduled grant of the request a.RequestID, for the
+// Revoke button. It takes rights away only, but it passes the same checks
+// as every answer: the caller checked the user; here the grant must exist
+// and the message must be its own. A grant that has ended is unknown.
+func (c *Core) revoke(a Answer) error {
+	now := c.now()
+	c.sweepGrants(now)
+	i := slices.IndexFunc(c.grants, func(g *grant) bool { return g.scheduled() && g.reqID == a.RequestID })
+	if i < 0 {
+		return ErrUnknownRequest
+	}
+	g := c.grants[i]
+	if g.msg == "" || a.Message != g.msg {
+		return ErrWrongMessage
+	}
+	c.queueEnded(c.endWhere(func(x *grant) audit.EndCause {
+		if x == g {
+			return audit.EndRevoked
+		}
+		return ""
+	}))
+	return nil
 }
 
 // CancelGrant ends the scheduled grant id of client at the client's
@@ -341,5 +535,10 @@ func (c *Core) startScheduled(r *Result, now moment) {
 	}
 	c.grants = append(c.grants, g)
 	r.live = true
+	if r.msg != "" {
+		g.msg, g.prompt, g.approved = r.msg, r.prompt, r.at
+		c.msgQueue = append(c.msgQueue, msgUpdate{msg: g.msg, prompt: g.prompt,
+			ending: Ending{Answer: audit.AnswerApproveOnce, At: r.at, Revoke: true}})
+	}
 	c.wakeGrants()
 }

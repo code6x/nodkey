@@ -80,6 +80,9 @@ const (
 	dataOnce   = "o:"
 	dataWindow = "w:"
 	dataDeny   = "d:"
+	// dataRevoke is the Revoke button of a scheduled grant. It carries the
+	// ID of the request that made the grant.
+	dataRevoke = "r:"
 	dataLen    = 2 + requestIDLen
 )
 
@@ -103,7 +106,7 @@ func isBase64URL(c byte) bool {
 	return 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-' || c == '_'
 }
 
-// parseData reads button data strictly: "o:", "w:" or "d:", and a
+// parseData reads button data strictly: "o:", "w:", "d:" or "r:", and a
 // request ID. Anything else is not valid.
 func parseData(data string) (audit.Answer, string, bool) {
 	if len(data) != dataLen {
@@ -117,6 +120,8 @@ func parseData(data string) (audit.Answer, string, bool) {
 		action = audit.AnswerApproveWindow
 	case dataDeny:
 		action = audit.AnswerDeny
+	case dataRevoke:
+		action = audit.AnswerRevoke
 	default:
 		return "", "", false
 	}
@@ -235,7 +240,8 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	case !namePattern.MatchString(p.Client):
 		return bad("the client name")
 	}
-	if p.Kind != audit.KindPreapprove && (p.Uses != 0 || !p.From.IsZero() || !p.Until.IsZero()) {
+	if p.Kind != audit.KindPreapprove && (p.Uses != 0 || !p.From.IsZero() || !p.Until.IsZero() ||
+		p.GrantID != "" || p.UsesLeft != 0) {
 		return bad("a span of uses outside a scheduled grant")
 	}
 	switch {
@@ -263,8 +269,14 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 		named := len(p.Secrets) > 0 && allNames(p.Secrets) && p.Key == "" && len(p.Hosts) == 0 && p.RemoteUser == ""
 		keyed := len(p.Secrets) == 0 && namePattern.MatchString(p.Key) && len(p.Hosts) > 0 &&
 			len(p.Hosts) <= approval.MaxGrantHosts && allNames(p.Hosts) && remoteUserPattern.MatchString(p.RemoteUser)
-		if notice || (!named && !keyed) || p.HostKey != "" || !p.GrantEnds.IsZero() || !p.Once || p.WindowMinutes != 0 ||
-			p.Uses < 1 || p.From.IsZero() || !p.From.Before(p.Until) {
+		if (!named && !keyed) || p.HostKey != "" || !p.GrantEnds.IsZero() || p.WindowMinutes != 0 ||
+			p.Uses < 1 || p.From.IsZero() || !p.From.Before(p.Until) || p.Via != "" {
+			return bad("the fields of a scheduled grant")
+		}
+		// The notice that a grant ended with uses left names the grant;
+		// the message of the request does not.
+		if notice != validRequestID(p.GrantID) || (notice && (p.UsesLeft < 1 || p.UsesLeft > p.Uses)) ||
+			(!notice && (p.GrantID != "" || p.UsesLeft != 0 || !p.Once)) {
 			return bad("the fields of a scheduled grant")
 		}
 	default:
@@ -347,7 +359,10 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 	t := &text{}
 	t.write(title(p, notice))
 	if notice {
-		if p.Via == audit.ViaScheduled {
+		if p.Kind == audit.KindPreapprove {
+			t.write("\nnot used: grant " + p.GrantID + " ended with " + strconv.Itoa(p.UsesLeft) + " of " +
+				strconv.Itoa(p.Uses) + " uses left")
+		} else if p.Via == audit.ViaScheduled {
 			t.write("\n" + scheduledNoticeLine)
 		} else {
 			t.write("\n" + noticeLine)
@@ -440,6 +455,17 @@ func keyboard(p approval.Prompt) inlineKeyboard {
 	return inlineKeyboard{InlineKeyboard: [][]inlineButton{row}}
 }
 
+// revokeKeyboard returns the one Revoke button of the message of a
+// scheduled grant.
+func revokeKeyboard(p approval.Prompt) inlineKeyboard {
+	return inlineKeyboard{InlineKeyboard: revokeData(p.RequestID)}
+}
+
+// revokeData returns the rows of the Revoke button of the request id.
+func revokeData(id string) [][]inlineButton {
+	return [][]inlineButton{{{Text: "Revoke", CallbackData: dataRevoke + id}}}
+}
+
 // buttonsLine shows the buttons of k as one line of text, as DESIGN.md
 // section 7 does: "[ Approve once ] [ Deny ]".
 func buttonsLine(k inlineKeyboard) string {
@@ -458,13 +484,23 @@ func expiryLine(p approval.Prompt) string {
 	return "expires " + p.Expires.Format(clockFormat) + " (" + strconv.FormatInt(secs, 10) + " s)"
 }
 
+// bodyLimit is the most UTF-16 code units of the body of the message of
+// p. The last lines need room: one, or for a scheduled grant two, because
+// its message ends with the line of its approval and the line of its end.
+func bodyLimit(p approval.Prompt) int {
+	if p.Kind == audit.KindPreapprove {
+		return maxTextUnits - 2*lastLineRoom
+	}
+	return maxTextUnits - lastLineRoom
+}
+
 // promptMessage returns the message that Ask sends for p: its text and
 // its buttons.
 func promptMessage(p approval.Prompt) (*text, inlineKeyboard, error) {
 	if err := checkPrompt(p, false); err != nil {
 		return nil, inlineKeyboard{}, err
 	}
-	t, err := fitBody(p, false, maxTextUnits-lastLineRoom)
+	t, err := fitBody(p, false, bodyLimit(p))
 	if err != nil {
 		return nil, inlineKeyboard{}, err
 	}
@@ -477,7 +513,7 @@ func promptMessage(p approval.Prompt) (*text, inlineKeyboard, error) {
 func endingText(p approval.Prompt, e approval.Ending) *text {
 	var t *text
 	if checkPrompt(p, false) == nil {
-		t, _ = fitBody(p, false, maxTextUnits-lastLineRoom)
+		t, _ = fitBody(p, false, bodyLimit(p))
 	}
 	if t == nil {
 		// Ask could not have sent a message for p. Show the result anyway.
@@ -491,6 +527,9 @@ func endingText(p approval.Prompt, e approval.Ending) *text {
 // resultLine says how the request of p ended (DESIGN.md section 7).
 func resultLine(p approval.Prompt, e approval.Ending) string {
 	at := e.At.Format(clockFormat)
+	if e.GrantEnd != "" {
+		return grantEndLines(p, e)
+	}
 	switch e.Answer {
 	case audit.AnswerApproveOnce:
 		if p.Kind == audit.KindPreapprove {
@@ -515,6 +554,29 @@ func resultLine(p approval.Prompt, e approval.Ending) string {
 		return "⛔ denied: the broker stopped taking answers"
 	}
 	return "⛔ denied"
+}
+
+// grantEndLines says how and when the scheduled grant of p ended: the
+// line of its approval, then the line of its end.
+func grantEndLines(p approval.Prompt, e approval.Ending) string {
+	approved := resultLine(p, approval.Ending{Answer: e.Answer, At: e.Approved})
+	at := e.At.Format(dateTimeFormat)
+	var end string
+	switch e.GrantEnd {
+	case audit.EndUsedUp:
+		end = "✅ all " + strconv.Itoa(p.Uses) + " use(s) used; the grant ended at " + at
+	case audit.EndEnded:
+		end = "⌛ ended at " + at + " with " + strconv.Itoa(e.UsesLeft) + " of " + strconv.Itoa(p.Uses) + " use(s) left"
+	case audit.EndCancelled:
+		end = "⛔ cancelled by the client at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
+	case audit.EndDenied:
+		end = "⛔ ended by a later Deny at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
+	case audit.EndRevoked:
+		end = "⛔ revoked by you at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
+	default: // audit.EndStopped
+		end = "⛔ dropped: the broker stopped at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
+	}
+	return approved + "\n" + end
 }
 
 // noticeText returns the text of the notice of a "never ask" use.

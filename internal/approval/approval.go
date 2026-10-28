@@ -78,6 +78,11 @@ const MaxGrantHosts = 20
 // drops a login after LoginGraceTime.
 const endTimeout = 5 * time.Second
 
+// stopMessagesTimeout bounds all updates of the messages of scheduled
+// grants when the core stops (dropScheduled), so a stop never waits for a
+// Telegram that does not answer.
+const stopMessagesTimeout = 5 * time.Second
+
 // Options are the optional parts of a Core.
 type Options struct {
 	// Clock is the time source. The default is the real clock.
@@ -112,10 +117,13 @@ type Core struct {
 	// watchGrants hands them to onEnded.
 	endedQueue []audit.GrantEnded
 	onEnded    func(audit.GrantEnded)
-	grantWake  chan struct{} // wakes watchGrants; it has room for one
-	decisions  uint64        // counts the answers that counted
-	running    bool          // Run has started
-	stopped    bool          // Run has returned: no answer can come any more
+	// msgQueue holds the updates of the messages of scheduled grants that
+	// ended, until watchGrants makes them.
+	msgQueue  []msgUpdate
+	grantWake chan struct{} // wakes watchGrants; it has room for one
+	decisions uint64        // counts the answers that counted
+	running   bool          // Run has started
+	stopped   bool          // Run has returned: no answer can come any more
 }
 
 // New returns a core that decides requests by the rules of cfg and asks

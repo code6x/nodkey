@@ -3,9 +3,12 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/code6x/nodkey/internal/api"
@@ -178,4 +181,67 @@ func (rq *request) cancelGrant(r *http.Request) {
 			slog.String("client", rq.client))
 	}
 	rq.answerJSON(api.PreapproveCancelAnswer{ID: req.ID})
+}
+
+// stopNoticeTimeout bounds the stop notice, so a stop never waits long for
+// a Telegram that does not answer. It is a variable only so that a test
+// can make it short.
+var stopNoticeTimeout = 5 * time.Second
+
+// maxStopNoticeGrants is the most grants that the stop notice lists. The
+// rest is counted.
+const maxStopNoticeGrants = 20
+
+// droppedGrants collects the scheduled grants that a stop dropped.
+type droppedGrants struct {
+	mu  sync.Mutex
+	evs []audit.GrantEnded
+}
+
+// note keeps ev if it is the end of a grant by the stop.
+func (d *droppedGrants) note(ev audit.GrantEnded) {
+	if ev.Cause != audit.EndStopped {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.evs = append(d.evs, ev)
+}
+
+// list returns the notes.
+func (d *droppedGrants) list() []audit.GrantEnded {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.evs)
+}
+
+// sendStopNotice sends one notice that lists the scheduled grants that the
+// stop dropped: ID, client, secrets or key, and uses left (DESIGN.md
+// section 8). It sends nothing when there are none. It makes one try, with
+// stopNoticeTimeout; a notice that does not go out is logged, and the
+// grant_ended entries are in the audit log.
+func (s *Service) sendStopNotice(ctx context.Context, notice NoticeFunc, dropped []audit.GrantEnded) {
+	if notice == nil || len(dropped) == 0 {
+		return
+	}
+	defer s.recoverGoroutine("sending the stop notice")
+	var b strings.Builder
+	fmt.Fprintf(&b, "The broker stopped. It dropped %d scheduled grant(s); jobs that need them will ask for a tap:", len(dropped))
+	for i, ev := range dropped {
+		if i == maxStopNoticeGrants {
+			fmt.Fprintf(&b, "\n... and %d more", len(dropped)-i)
+			break
+		}
+		what := ev.Key
+		if len(ev.Secrets) > 0 {
+			what = strings.Join(ev.Secrets, ", ")
+		}
+		fmt.Fprintf(&b, "\n%s: %s, %s, %d use(s) left", ev.GrantID, ev.Client, what, ev.UsesLeft)
+	}
+	nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopNoticeTimeout)
+	defer cancel()
+	if err := notice(nctx, b.String()); err != nil {
+		s.log.Warn("broker: cannot send the stop notice about the dropped scheduled grants",
+			slog.String("error", errorText(err)))
+	}
 }

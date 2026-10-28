@@ -48,6 +48,10 @@ const (
 	AnswerApproveOnce   Answer = "approve_once"
 	AnswerApproveWindow Answer = "approve_window"
 	AnswerDeny          Answer = "deny"
+	// AnswerRevoke is the Revoke button of a scheduled grant. It never
+	// has a decision entry: its result is a grant_ended entry with cause
+	// revoked.
+	AnswerRevoke Answer = "revoke"
 )
 
 // Via says what allowed a request without a tap.
@@ -83,6 +87,7 @@ const (
 	EndCancelled EndCause = "cancelled" // the client cancelled it
 	EndDenied    EndCause = "denied"    // the person denied a later request for it
 	EndStopped   EndCause = "stopped"   // the broker stopped
+	EndRevoked   EndCause = "revoked"   // the person pressed Revoke
 )
 
 // TapCause says why a button press did not count (DESIGN.md section 7).
@@ -454,7 +459,7 @@ func (e GrantEnded) validate() error {
 		return errors.New("it needs a preapprove request, a grant_id and a number of uses left")
 	}
 	switch e.Cause {
-	case EndUsedUp, EndEnded, EndCancelled, EndDenied, EndStopped:
+	case EndUsedUp, EndEnded, EndCancelled, EndDenied, EndStopped, EndRevoked:
 		return nil
 	}
 	return errors.New("cause is not known")

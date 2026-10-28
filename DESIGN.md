@@ -554,7 +554,16 @@ expires 14:07:00 (120 s)
 A scheduled grant (`nodkey preapprove`, section 8) shows the secrets, or
 the key, hosts and remote user, the number of uses and the start and the
 end with the date and the zone. It has only "Approve" and "Deny"; the
-message is in section 8.
+message is in section 8. After "Approve", the message keeps one **Revoke**
+button until the grant ends. Its data is `r:` and the request ID, as for
+the other buttons. It passes the checks of "Telegram details" below:
+the approver's user ID, the private chat, not an inline message, data of
+the strict form, and in the core the grant of the request ID on that
+message. It skips the check of a changed message, because a Revoke only
+takes a right away. It never raises the alert about a changed message,
+except on a message whose request may still wait: there it is refused
+as a changed message, with the alert. The alert still comes from the
+other taps.
 
 A notice of a "never ask" use (section 12) has no buttons and no expiry.
 A notice of a use of a scheduled grant is the same, with the second line
@@ -568,6 +577,22 @@ allowed by a "never ask" rule, without a tap
 ✅ secrets: backup-token
 — claimed by the agent —
 command: restic backup /srv
+```
+
+A notice that a scheduled grant ended with uses left (section 8) is the
+same, with the second line `not used: grant ID ended with 1 of 1 uses
+left`. It goes to the notice chat without a sound:
+
+```
+🔔 Pre-approval · request m4k2
+not used: grant 5Zq0v9xS3JkT1wYb7nQe2A ended with 1 of 1 uses left
+✅ machine: laptop
+✅ secrets: backup-token
+✅ uses: 1
+✅ from: 2026-10-28 03:00:00 UTC
+✅ until: 2026-10-28 04:00:00 UTC
+— claimed by the agent —
+reason: job nightly-backup
 ```
 
 A notice about the version of a client (section 10) has no buttons
@@ -913,7 +938,14 @@ Not masked, for example:
   14:05:12, for 1 use(s) until 2026-10-28 04:00:00 UTC" (a scheduled
   grant), "⛔ denied by you at
   14:02:41", "⌛ expired — denied", "⛔ cancelled by the client" or
-  "⛔ denied: the broker stopped taking answers". An edit without a
+  "⛔ denied: the broker stopped taking answers". The message of a
+  scheduled grant is edited twice more (section 8): when the grant
+  starts, to add the Revoke button, and when the grant ends, to remove
+  it and add a line that says how and when it ended, such as
+  "⛔ revoked by you at 2026-10-28 03:10:00 UTC, with 1 use(s) left". A tap on
+  the Approve or Deny button of that request on such a message is a late
+  tap. A button of another request on it is refused as a changed message,
+  with the alert. An edit without a
   keyboard (`reply_markup`) removes the buttons too: the manual test of
   issue #17 showed this on 2026-10-15
   ([docs/manual-telegram-test.md](docs/manual-telegram-test.md), check
@@ -1314,7 +1346,7 @@ use without a tap when one grant covers it fully:
 **End.** A grant ends when its uses reach 0, when its end time comes, when
 the client cancels it, when a later Deny covers it, or when the broker
 stops. Each end writes one `grant_ended` entry with the cause (`used_up`,
-`ended`, `cancelled`, `denied` or `stopped`) and the uses left. A timer
+`ended`, `cancelled`, `denied`, `revoked` or `stopped`) and the uses left. A timer
 ends a grant at its end time; a request never finds a grant that is past
 its end.
 
@@ -1326,21 +1358,64 @@ its end.
 - **A later Deny.** A Deny for the same client and any secret or key of a
   grant ends it, also before its start (as the Deny of a grant of "Approve
   N min" does, above). A Deny that comes after the tap but before the
-  grant starts stops it from starting.
+  grant starts stops it from starting; the message then keeps the
+  approval line, as for every grant that did not start. The message of a
+  grant that started says "ended by a later Deny", and the Revoke button
+  goes.
+- **Revoke on the phone.** After the grant started, its message has one
+  **Revoke** button (section 7). A tap on it ends the grant at once, with
+  cause `revoked`, through the same end path as the other causes, and the
+  phone shows "Revoked." The tap counts only if the checks of section 7
+  pass (a changed message does not matter for a Revoke), and then only if
+  the grant is still open and the tap is on its own message. Any other Revoke changes nothing: the phone shows "This
+  request has ended." (the grant is gone: ended, used up, cancelled or
+  denied), "This button does not count." (the message is not the
+  grant's); each
+  is a `foreign_tap` entry with its cause (section 9), as for the other
+  buttons. A Revoke only takes a right away, so a forged or replayed one
+  can only end a grant; the data is still bound to the request ID and to
+  the message, so it cannot name another grant. The grant can be revoked
+  before its start too.
+- **The message at the end.** At every end (`used_up`, `ended`,
+  `cancelled`, `denied`, `revoked`, `stopped`) the broker edits the
+  message of the grant: no button, and a line that says how and when it
+  ended, with the uses left. The edits of one grant run one after the
+  other, in the order of the events, in a goroutine of the core, so a
+  slow Telegram never delays a request. A failed edit is logged; the
+  audit log has the end anyway. The edit that adds the Revoke button is
+  tried again after 10 and 20 seconds, while the grant lives (3 tries in
+  all). A Revoke tap on a message whose request still waits is refused as a
+  changed message, with the alert: such a message has no Revoke button.
+- **Not used.** A grant that reaches its end time with uses left (cause
+  `ended`, `uses_left` above 0) sends one silent notice to the notice chat
+  (section 7). It does not count toward the limit of 6 per client, because
+  no request caused it, but it obeys the limit of 20 in all in any 60
+  seconds of the Telegram code (the limit of the notices of uses). A
+  grant that was used up, cancelled, revoked, denied or dropped by a stop
+  sends none. If the notice is over the limit or cannot be sent, the
+  broker logs it. Nothing else changes: the `grant_ended` entry is
+  written before.
 - **A restart** drops all grants, as for every other grant. At a stop,
   the broker writes `grant_ended` with cause `stopped` for each grant that
-  is open.
+  is open, edits their messages, and sends one **stop notice** (section
+  15, step 2 of the stop). It lists each dropped grant: its ID, the
+  client, the secrets or the key, and the uses left, in at most 20 lines.
+  It is one `Inform` call to the notice chat, without a sound, with its
+  own count (3 in any 60 seconds). It has a time limit of 5 seconds, so a
+  stop never waits for a Telegram that does not answer. With no scheduled
+  grant, nothing is sent.
 
 **Answers to the open questions of issue 108.**
 
 1. A broker restart drops the scheduled grants, so a job asks as usual.
-   One notice that lists the dropped grants is planned (issue 111).
+   One notice lists the dropped grants (above). Keeping them across a
+   restart is planned (issue 111).
 2. Several secrets in one run: one tap makes one grant for all of them,
    as above. A run that asks for a secret outside it is not covered.
 3. Cancel by the client: yes, as above.
 4. The clock set back: the uses already made still count.
-5. A later Deny cancels a scheduled grant. The Deny message will say so
-   (a later change).
+5. A later Deny cancels a scheduled grant, and the message of the grant
+   says so (above).
 6. The `window` of a rule does not cap a scheduled grant. Only the
    limits of `[preapprove]` do.
 
@@ -1415,7 +1490,7 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
 | `decision` | the request fields; `user_id`: the Telegram user that answered; `answer`: `approve_once`, `approve_window` or `deny`; `window_minutes` for `approve_window` |
 | `grant_used` | the request fields; `via`: `grant`, `never_rule` or `scheduled` (then `grant_id` is in the request fields) |
-| `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied` or `stopped`; `uses_left` |
+| `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked` or `stopped`; `uses_left` |
 | `secret_sent`, `signed` | the request fields |
 | `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
 | `foreign_tap` | `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7). An entry with cause `edited_message` can belong to a Deny that counted: its `data` is `d:` and the request ID, and that request has a `decision` entry with `deny` |
@@ -1462,7 +1537,12 @@ grant comes when the grant ends. If a request ended it (the last use, or
 a Deny), the entry comes after the entries of that request that the
 approval writes (`request`, `decision`, `grant_used`, `denied`), and
 before `secret_sent` or `signed`, which the broker writes later. It names
-the request that made the grant, not the request that ended it.
+the request that made the grant, not the request that ended it. A Revoke
+tap that counts writes only this entry, with cause `revoked`, and no
+`decision` entry: the cause says who ended the grant, because only the
+approver's tap can do it, and the tap passed the same checks as every
+answer. A Revoke that does not count writes a `foreign_tap` entry, as for
+the other buttons.
 
 A request that the broker denies before the approval core sees it gets a
 request ID from the broker, in the same form, and the entries `request`
@@ -2472,7 +2552,12 @@ order:
    step, it sends no request and no notice.
 2. The polling: the `getUpdates` call that waits is cancelled and its
    connection closed (section 7). From now on no answer counts: every
-   request that waits for the person is denied.
+   request that waits for the person is denied. The scheduled grants are
+   dropped, with their `grant_ended` entries and the edits of their
+   messages (together at most 5 seconds). Then the broker sends the stop
+   notice about them, if there are any (section 8), with a limit of 5
+   seconds. The notice is sent after the polling stopped and before the
+   service stops, so it never delays more than 10 seconds.
 3. The service: new requests get `503`, and the requests in progress end
    and get `503` too (section 10). The broker waits for them, and writes
    the `foreign_tap` entries that still wait. A notice about the version
@@ -2488,7 +2573,9 @@ order:
 
 The stop takes at most 80 seconds. A request may need up to 30 seconds
 to take its answer, and the alert about an audit log that cannot be
-written up to 30 seconds more. The tries of the alerts of the start run
+written up to 30 seconds more. The updates of the messages of scheduled
+grants (5 seconds) and the stop notice (5 seconds) add up to 10 seconds
+after the polling stopped. The tries of the alerts of the start run
 at the same time as these steps, and end within 30 seconds. After 80
 seconds the broker ends without the rest of the stop, and exits with 1.
 The example unit gives it 90 seconds (`TimeoutStopSec=`); then systemd

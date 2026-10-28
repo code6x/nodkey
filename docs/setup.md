@@ -1357,10 +1357,13 @@ nodkey preapprove --secret backup-token \
 
 The message shows the secret, the uses and the time, in the broker's
 local time. After **Approve**, the command prints the ID of the grant and
-ends. At 03:00 the job runs `nodkey run` as usual, and gets the secret
-without a tap. Each use sends a silent notice to the notice chat. When
-the uses are gone, or at 04:00, the grant is gone. To end it earlier,
-for example when the job is removed:
+ends. The message keeps one **Revoke** button. At 03:00 the job runs
+`nodkey run` as usual, and gets the secret without a tap. Each use sends
+a silent notice to the notice chat. When the uses are gone, or at 04:00,
+the grant is gone, and the message shows how and when it ended. If the
+job did not run, or ran late, and a use is left at 04:00, a silent notice
+says `not used`. To end the grant earlier, tap **Revoke** on the phone.
+The client can also cancel it, for example when the job is removed:
 
 ```sh
 nodkey preapprove --cancel ID
@@ -1383,9 +1386,11 @@ Things to know:
   `[preapprove]`: how far ahead it may start (`max_ahead`, 7 days), how
   long it is open (`max_open`, 8 hours), how many uses (`max_uses`, 10)
   and how many grants a machine holds (`max_grants`, 5).
-- A broker restart drops all grants. The job then asks as usual. A
-  **Deny** for the same secret or key ends the grant, also before its
-  start.
+- A broker restart drops all grants. The job then asks as usual. When
+  the broker stops, one notice lists the grants that it dropped: the ID,
+  the machine, the secret or key, and the uses left. A **Deny** for the
+  same secret or key ends the grant, also before its start; the message
+  of the grant says so.
 
 ## 12. Check the audit log
 

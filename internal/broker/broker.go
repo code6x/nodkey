@@ -398,13 +398,21 @@ func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc,
 	defer s.coreStopped.Store(true)
 	// A scheduled grant that ends by itself has no request to carry its
 	// entry (DESIGN.md section 8).
+	var dropped droppedGrants
 	core.OnGrantEnded(func(ev audit.GrantEnded) {
 		if _, err := s.append(ev); err != nil {
 			s.log.Warn("broker: cannot write the grant_ended entry of a scheduled grant")
 		}
+		dropped.note(ev)
 	})
 	err := core.Run(ctx)
 	s.coreStopped.Store(true) // first: deny every request from now on
+	// The grants are dropped by now. Their messages are updated, and one
+	// notice lists them, each with a short time limit. This comes after the
+	// line above, so a slow Telegram never leaves the broker open to
+	// requests that a grant would allow.
+	core.FlushMessages()
+	s.sendStopNotice(ctx, notice, dropped.list())
 	switch {
 	case errors.Is(err, telegram.ErrPollConflict):
 		s.log.Error("broker: another program polls with the bot token, or a webhook is set, so the token may be " +
