@@ -96,8 +96,10 @@ type Result struct {
 	GrantFrom, GrantUntil time.Time
 
 	core     *Core
-	at       time.Time          // when the request was decided, on the wall clock
-	plan     *grant             // the scheduled grant of an approved KindPreapprove request
+	at       time.Time // when the request was decided, on the wall clock
+	plan     *grant    // the scheduled grant of an approved KindPreapprove request
+	msg      MessageID // with plan: the message of the request, and its prompt
+	prompt   Prompt
 	usedID   string             // the scheduled grant that allowed the request
 	ended    []audit.GrantEnded // entries of grants that this request ended
 	vias     []audit.Via        // what allowed each secret or key without a tap

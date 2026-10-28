@@ -267,7 +267,7 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeBody(w, http.StatusOK, `{"ok":true,"result":`+string(msg)+`}`)
 	case "editMessageText", "editMessageReplyMarkup":
 		msg, _ := json.Marshal(map[string]any{
-			"message_id": call.num("message_id"), "date": 1,
+			"message_id": call.num("message_id"), "date": 1, "edit_date": 2,
 			"chat": map[string]any{"id": call.num("chat_id"), "type": "private"},
 			"text": "the text",
 		})

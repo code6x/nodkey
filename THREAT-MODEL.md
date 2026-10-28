@@ -981,7 +981,21 @@ rule (DESIGN.md section 12, decision 3 B) again, but smaller.
   grants or rules. A run that asks for one more secret needs a tap.
 - A Deny of the same client for a secret of the grant ends it, also before
   its start. The client can cancel its own grant, which only takes a right
-  away. Another client's ID and an unknown ID get the same answer, so a
+  away. So can the person, with the **Revoke** button on the message of the
+  grant. A forged or replayed Revoke tap can only take a right away, so it
+  cannot start or widen a grant. A Revoke skips the check of a changed
+  message (T6), because it only takes a right away, and it never raises
+  the alert about a changed message, except on a message whose request
+  may still wait: there it is refused as a changed message, with the
+  alert. The alert still comes from the other taps. Every other check stays: the approver's user ID, the private chat,
+  not an inline message, strict button data, and in the core the grant of
+  the request ID on that very message. So a Revoke also counts on a
+  message that Telegram sends without content (older than 48 hours). A
+  tap on a grant message with the button of another request is refused
+  as a changed message, with the alert. A Revoke on a grant that has ended is
+  refused as a late tap. A Revoke that does not count is a `foreign_tap`
+  entry. One that counts is the `grant_ended` entry with cause `revoked`.
+  Another client's ID and an unknown ID get the same answer, so a
   client cannot learn which grants others hold.
 - The agent can fill the phone with requests for grants. They count as
   other requests toward the limits per client (DESIGN.md section 8), and
@@ -990,7 +1004,14 @@ rule (DESIGN.md section 12, decision 3 B) again, but smaller.
   clock reaches it. A wall clock that someone sets forward on the broker
   host can start a grant early (T16 covers that host). One that is set
   back cannot make a grant last longer, and cannot give more uses.
-- Grants live in memory. A broker restart drops them.
+- Grants live in memory. A broker restart drops them. A grant that ends
+  with uses left sends a silent "not used" notice, and a stop sends one
+  notice that lists the dropped grants, so the person learns that a job
+  will ask for a tap. These notices are the broker's own text, with names
+  from the config and checked IDs; the "not used" notice also shows the
+  claimed reason below the claimed line, cleaned and masked as in every
+  message. If they cannot be sent, they are
+  logged; the audit log has every end.
 - A grant must not outlive the client that asked for it. If the client
   hangs up, or its answer cannot be written, after the grant started, the
   broker cancels the grant and writes `grant_ended` (`cancelled`), as for

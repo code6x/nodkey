@@ -25,11 +25,19 @@ type Approver interface {
 	// the buttons and shows how the request ended. p is the prompt that
 	// Ask got. The core calls End once for each message that Ask sent.
 	// An error does not change the decision; the core logs it.
+	//
+	// The core also calls End for the message of a scheduled grant, after
+	// the grant started and after it ended (DESIGN.md section 7). The
+	// first call has e.Revoke set: the message then keeps one Revoke
+	// button. The last call has e.GrantEnd set: the message then shows
+	// how and when the grant ended, and has no button. The core makes
+	// these calls one after the other, in this order.
 	End(ctx context.Context, m MessageID, p Prompt, e Ending) error
 
-	// Notify sends a silent notice that a "never ask" rule allowed the
-	// request p without a tap (DESIGN.md section 12). The prompt has no
-	// buttons. ctx ends as for Ask. If Notify returns an error, the core
+	// Notify sends a silent notice that a "never ask" rule or a scheduled
+	// grant allowed the request p without a tap (DESIGN.md section 12), or
+	// that a scheduled grant ended with uses left (p.GrantID and
+	// p.UsesLeft are set; see Prompt). The prompt has no buttons. ctx ends as for Ask. If Notify returns an error, the core
 	// denies the request, so a use without a tap is never unseen.
 	//
 	// If a limit of the approver itself stops the notice, Notify returns
@@ -135,6 +143,10 @@ type Prompt struct {
 	// RemoteUser or Secrets say what it covers.
 	Uses        int
 	From, Until time.Time
+	// GrantID and UsesLeft are set only in the notice that a scheduled
+	// grant ended with uses left: the grant's ID and the uses it had left.
+	GrantID  string
+	UsesLeft int
 	// Via is set in a notice of a use that a scheduled grant allowed
 	// (audit.ViaScheduled). It is empty in a notice of a "never ask" use.
 	Via audit.Via
@@ -171,6 +183,17 @@ type Ending struct {
 	Cause audit.Cause
 	// At is when the request ended.
 	At time.Time
+	// Revoke is set when the request is a scheduled grant that has
+	// started: the message keeps one Revoke button (audit.AnswerRevoke)
+	// until the grant ends.
+	Revoke bool
+	// GrantEnd is set when the scheduled grant of the message has ended,
+	// and says why. UsesLeft is the number of uses left. At is when it
+	// ended. The message then has no button.
+	GrantEnd audit.EndCause
+	UsesLeft int
+	// Approved is when the person approved the grant, if GrantEnd is set.
+	Approved time.Time
 }
 
 // Answer is a button press that the approver passes to the core.
@@ -178,7 +201,8 @@ type Answer struct {
 	// RequestID is the request ID from the button.
 	RequestID string
 	// Action is the button: audit.AnswerApproveOnce,
-	// audit.AnswerApproveWindow or audit.AnswerDeny.
+	// audit.AnswerApproveWindow, audit.AnswerDeny or audit.AnswerRevoke.
+	// A Revoke names the request that made the scheduled grant.
 	Action audit.Answer
 	// Message is the message the button is on.
 	Message MessageID

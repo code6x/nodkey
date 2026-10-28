@@ -40,11 +40,12 @@ type coreEnv struct {
 // and backup-token (never, with a notice, for ci only).
 func coreConfig() *config.Broker {
 	return &config.Broker{
-		Telegram: testTelegramConfig(),
-		Clients:  map[string]config.Client{"laptop": {Name: "laptop"}, "ci": {Name: "ci"}},
+		Telegram:   testTelegramConfig(),
+		Preapprove: config.DefaultPreapprove(),
+		Clients:    map[string]config.Client{"laptop": {Name: "laptop"}, "ci": {Name: "ci"}},
 		Secrets: map[string]config.Secret{
 			"github-token": {Name: "github-token", Clients: []string{"laptop"},
-				Rule: config.Rule{Ask: config.AskWindow, Window: 15 * time.Minute}},
+				Rule: config.Rule{Ask: config.AskWindow, Window: 15 * time.Minute, Preapprove: true}},
 			"db-password": {Name: "db-password", Clients: []string{"laptop"}, Rule: config.Rule{Ask: config.AskAlways}},
 			"backup-token": {Name: "backup-token", Clients: []string{"ci"},
 				Rule: config.Rule{Ask: config.AskNever, Notify: true}},

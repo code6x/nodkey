@@ -11,6 +11,12 @@
 // or the URL: an error names the Bot API method and a fixed reason
 // (THREAT-MODEL.md T19).
 //
+// The message of a scheduled grant that started also has a Revoke button.
+// A Revoke only takes a right away, so it skips the check of a changed
+// message and never raises its alert, except on a message whose request
+// may still wait: there it is refused as a changed message, with the
+// alert. The other checks stay.
+//
 // A button press counts only if all of these are true (DESIGN.md section
 // 7): it is from the configured user ID, in the private chat with that
 // user, on the message of its request, for a request that waits, before
@@ -142,6 +148,11 @@ type Approver struct {
 
 	running atomic.Bool // Run runs
 
+	// editMu orders the edit that adds a Revoke button (End) and the edit
+	// that shows a result again after a late tap (ended), so that the
+	// second cannot remove the button that the first adds.
+	editMu sync.Mutex
+
 	mu sync.Mutex
 	// sent holds the messages that Ask sent. order holds its keys, oldest
 	// first; there are at most maxRemembered.
@@ -168,6 +179,11 @@ type sentMessage struct {
 	keyboard [][]inlineButton
 	// final is the HTML text that End gave the message, or "" before End.
 	final string
+	// held is true once End gave the message its Revoke button: the
+	// request of the message is decided, and only a Revoke can count on
+	// it. heldID is the request ID in that button.
+	held   bool
+	heldID string
 }
 
 // reportWindow counts the reports of refused taps of one budget in one
@@ -329,6 +345,22 @@ func (a *Approver) End(ctx context.Context, m approval.MessageID, p approval.Pro
 		return errors.New("telegram: End: the message ID is not one that Ask returned")
 	}
 	html := endingText(p, e).html.String()
+	if e.Revoke {
+		// The message of a scheduled grant that started: it keeps the
+		// Revoke button. A Revoke needs no check of the message (see
+		// changed). The grant's end sets the final text.
+		kb := revokeKeyboard(p)
+		a.editMu.Lock()
+		defer a.editMu.Unlock()
+		a.hold(m, p.RequestID)
+		return a.editWith(ctx, chatID, msgID, html, kb)
+	}
+	if e.GrantEnd != "" {
+		// The end of a grant: a late tap must not write the approval text
+		// again after this edit (see ended).
+		a.editMu.Lock()
+		defer a.editMu.Unlock()
+	}
 	// First, so that a tap that comes now sees that the broker itself
 	// changes this message, and leaves the result as it is.
 	a.setFinal(m, html)
@@ -350,7 +382,7 @@ func (a *Approver) Notify(ctx context.Context, p approval.Prompt) error {
 		return err
 	}
 	if !a.takeNotice() {
-		a.log.LogAttrs(ctx, slog.LevelWarn, "telegram: too many notices in the last minute; the use is denied",
+		a.log.LogAttrs(ctx, slog.LevelWarn, "telegram: too many notices in the last minute; the use is denied, or the notice is dropped",
 			slog.String("request_id", p.RequestID), slog.Int("limit", NoticesPerMinute))
 		return ErrNoticeLimit
 	}
@@ -420,16 +452,22 @@ func (a *Approver) Inform(ctx context.Context, msg string) error {
 
 // edit replaces the text of a message with html, and removes its buttons.
 func (a *Approver) edit(ctx context.Context, chatID, msgID int64, html string) error {
+	return a.editWith(ctx, chatID, msgID, html, emptyKeyboard())
+}
+
+// editWith replaces the text of a message with html and its buttons with
+// kb.
+func (a *Approver) editWith(ctx context.Context, chatID, msgID int64, html string, kb inlineKeyboard) error {
 	err := a.api.call(ctx, "editMessageText", editMessageTextParams{
 		ChatID:             chatID,
 		MessageID:          msgID,
 		Text:               html,
 		ParseMode:          "HTML",
 		LinkPreviewOptions: noPreview,
-		ReplyMarkup:        emptyKeyboard(),
+		ReplyMarkup:        kb,
 	}, nil)
 	if errors.Is(err, errNotModified) {
-		return nil // it shows this text already, without buttons
+		return nil // it shows this text already, with these buttons
 	}
 	return err
 }
@@ -439,6 +477,16 @@ func (a *Approver) remember(m approval.MessageID, keyboard [][]inlineButton) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.entryLocked(m).keyboard = keyboard
+}
+
+// hold notes that the message m has a Revoke button for the request id,
+// after End gave it its first result: its request is a scheduled grant that
+// started. The message has no final text until the grant ends.
+func (a *Approver) hold(m approval.MessageID, id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	e := a.entryLocked(m)
+	e.keyboard, e.final, e.held, e.heldID = revokeData(id), "", true, id
 }
 
 // setFinal notes the text that End gives the message m.

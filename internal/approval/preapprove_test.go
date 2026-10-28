@@ -73,6 +73,7 @@ func (e *env) grant(r *approval.Request, n int) *approval.Result {
 	if !res.GrantStarted() {
 		e.t.Fatal("the grant did not start")
 	}
+	synctest.Wait() // the message gets its Revoke button
 	return res
 }
 

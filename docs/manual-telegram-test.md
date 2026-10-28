@@ -539,6 +539,44 @@ grep -cF -f "$T/telegram-token" "$T/broker.log" "$T/state/audit.jsonl"
 `grep` reads the token from the file, so it is not in the list of
 processes. Expected: it prints `0` for both files.
 
+### Check 14: Scheduled grants (optional)
+
+This checks the Revoke button, the notice of a grant that was not used,
+and the notice of a stop. In `$T/broker.toml`, add `preapprove = true`
+to the section of `demo-always`, add an empty `[preapprove]` section,
+and start the broker again. Then, terminal 2, with `NOW` and `LATER` as
+times in the next 10 minutes (for example `2026-10-28T14:05` and
+`2026-10-28T14:08`, in the local time of the broker):
+
+```sh
+HOME="$T/home" "$T/nodkey" preapprove --secret demo-always \
+  --from NOW --until LATER --uses 2 --reason "check 14"
+```
+
+1. Tap **Approve**. Look at the message.
+2. Tap **Revoke**. Terminal 2 prints nothing more. Then
+   `ask demo-always "check 14, after the revoke"` asks for a tap. Tap
+   **Deny**.
+3. Do step 1 again. Wait until `LATER`.
+4. Do step 1 again. Stop the broker with Ctrl-C.
+
+Expected:
+
+- Step 1: the message has the line `👍 approved by you at ...` and one
+  **Revoke** button.
+- Step 2: the phone shows `Revoked.`. The message has no button, and a
+  line `⛔ revoked by you at ..., with 2 use(s) left`. A second tap on
+  the old button is not possible; if you can make one, the phone shows
+  `This request has ended.`.
+- Step 3: after `LATER`, the message has no button and a line `⌛ ended at
+  ... with 2 of 2 use(s) left`. A silent notice comes: `🔔
+  Pre-approval ...` with `not used: grant ... ended with 2 of 2 uses
+  left`.
+- Step 4: the message has the line `⛔ dropped: the broker stopped at
+  ...`. One notice comes, `ℹ️ nodkey: The broker stopped. It dropped 1
+  scheduled grant(s) ...`, with the grant ID, `test`, `demo-always` and
+  the uses left. The broker still stops within a few seconds.
+
 ## Clean up
 
 1. Terminal 1: stop the broker with Ctrl-C, if it still runs.
@@ -580,3 +618,6 @@ raw answer of the Bot API, and the lines of the log with `user_id` or
 | 11 | revoked token (optional) | exit code 77; no alert | | |
 | 12 | `audit verify` with the anchors | ok, all anchors match | | |
 | 13 | the bot token in the logs | `0` for `broker.log` and for `audit.jsonl` | | |
+| 14 | Revoke on a scheduled grant | `Revoked.`; button gone; `revoked by you` | | |
+| 14 | grant ends with uses left | `ended at ... with 2 of 2 use(s) left`; silent notice `not used` | | |
+| 14 | stop with a scheduled grant | `dropped: the broker stopped`; one notice that lists the grant | | |

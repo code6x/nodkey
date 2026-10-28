@@ -41,6 +41,7 @@ var errPanic = errors.New("telegram: polling stopped after a panic; no answers c
 const (
 	tapCountedApprove = "Approved."
 	tapCountedDeny    = "Denied."
+	tapCountedRevoke  = "Revoked."
 	tapTooEarly       = "Not ready yet. Tap again in a moment."
 	tapEnded          = "This request has ended."
 	tapExpired        = "This request has expired."
@@ -239,6 +240,8 @@ func tapResult(action audit.Answer, err error) (string, audit.TapCause) {
 	switch {
 	case err == nil && action == audit.AnswerDeny:
 		return tapCountedDeny, ""
+	case err == nil && action == audit.AnswerRevoke:
+		return tapCountedRevoke, ""
 	case err == nil:
 		return tapCountedApprove, ""
 	case errors.Is(err, approval.ErrTooEarly):
@@ -297,6 +300,37 @@ func (a *Approver) check(q *callbackQuery) (approval.Answer, audit.TapCause) {
 //     it, so this is a late press.
 func (a *Approver) changed(ctx context.Context, q *callbackQuery, ans approval.Answer) (handled, deny bool) {
 	sent, known := a.lookup(ans.Message)
+	if ans.Action == audit.AnswerRevoke {
+		// A Revoke only takes a right away, so a changed message is no
+		// reason to refuse it on the message of a grant (held), on one that
+		// ended, or on one that this approver does not know (too old). The
+		// other checks stay: the user, the chat, the data, and in the core
+		// the grant of the request ID on this very message. But a message
+		// whose request may still wait has no Revoke button: such a button
+		// was put there by someone else, as a changed message.
+		if known && sent.final == "" && !sent.held {
+			a.answerTap(ctx, q, tapChanged)
+			a.report(ctx, q, audit.TapEditedMessage)
+			a.alertChanged(ctx, q)
+			return true, false
+		}
+		return false, false
+	}
+	if known && sent.final == "" && sent.held {
+		// The request of this message is decided; End gave it a Revoke
+		// button. Only a Revoke can count on it. A button of its request is
+		// a late tap, such as the second tap of a double tap. A button of
+		// another request is not on this message by the broker's doing.
+		if ans.RequestID != sent.heldID {
+			a.answerTap(ctx, q, tapChanged)
+			a.report(ctx, q, audit.TapEditedMessage)
+			a.alertChanged(ctx, q)
+			return true, false
+		}
+		a.answerTap(ctx, q, tapEnded)
+		a.report(ctx, q, audit.TapUnknownRequest)
+		return true, false
+	}
 	edited := q.Message.EditDate != 0
 	if known && sent.final == "" && !sameKeyboard(sent.keyboard, q.Message.ReplyMarkup) {
 		edited = true
@@ -465,6 +499,8 @@ func cutData(s string) string {
 //     after the restart.
 func (a *Approver) ended(ctx context.Context, m *message) {
 	chatID, msgID := m.Chat.ID, m.MessageID
+	a.editMu.Lock()
+	defer a.editMu.Unlock()
 	sent, known := a.lookup(messageID(chatID, msgID))
 	switch {
 	case known && sent.final == "":

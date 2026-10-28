@@ -69,7 +69,9 @@ const (
 	// tries of the alert messages of the start that are in progress run at
 	// the same time, for at most alertTimeout (sendAlerts). The example
 	// unit sets TimeoutStopSec=90s, so the broker ends on its own first and
-	// logs why.
+	// logs why. The stop of the approver also takes up to 5 seconds for the
+	// updates of the messages of scheduled grants, and up to 5 seconds for
+	// the stop notice about them: 10 seconds more.
 	stopTimeout = 80 * time.Second
 )
 

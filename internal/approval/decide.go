@@ -385,6 +385,11 @@ func (c *Core) ask(ctx context.Context, p *pending) *Result {
 	}
 	if p.msg != "" {
 		c.end(ctx, p, prompt, res)
+		if res.plan != nil {
+			// The grant keeps the message, with a Revoke button, once it
+			// starts (startScheduled).
+			res.msg, res.prompt = p.msg, prompt
+		}
 	}
 	return res
 }
@@ -520,6 +525,9 @@ func (c *Core) Answer(a Answer) error {
 	if a.UserID <= 0 || a.UserID != c.cfg.Telegram.UserID {
 		return ErrNotApprover
 	}
+	if a.Action == audit.AnswerRevoke {
+		return c.revoke(a)
+	}
 	p := c.waiting[a.RequestID]
 	if p == nil {
 		if q := c.ids[a.RequestID]; q != nil && q.state == stateAsking {
@@ -639,6 +647,7 @@ func (c *Core) makeGrantID(p *pending) error {
 func (c *Core) approvePlan(p *pending, res *Result) {
 	res.Subject.GrantID = p.plan.id
 	g := *p.plan
+	g.reqID = p.id
 	g.origin = res.Subject
 	g.origin.Secrets = slices.Clone(res.Subject.Secrets)
 	g.origin.Hosts = slices.Clone(res.Subject.Hosts)
