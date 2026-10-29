@@ -1146,6 +1146,7 @@ Each secret and each key has a rule:
 
 A rule may also have `preapprove = true`, for scheduled grants (below). It
 is off by default, and the config check refuses it with `ask = "never"`.
+A rule may have `standing = true` too, for standing grants (below).
 
 Any other `ask` value, also an empty one, denies the request. So does a
 `never` rule for a key without `hosts`, and a `never` rule that does not
@@ -1222,6 +1223,25 @@ name exactly one client. The config check refuses all of these (section
   the 6 of its client, so a client cannot try again and again within the
   minute. A notice about the version of a client (section 7) counts
   toward neither of these limits.
+
+### The grant core
+
+All grants share one record and one end path. A grant has a **kind**:
+
+| kind | what it is | audit kind |
+|---|---|---|
+| window | "Approve N min" (above): from a tap on a request, for minutes | none |
+| scheduled | a pre-approval, one time span, N uses (below) | `preapprove` |
+| standing | a pre-approval with daily or weekly windows, for weeks (below) | `standing` |
+
+A later fourth kind is planned in issue 103, step 9: a one-use
+pre-approval of a login. It would use the same record.
+
+The record has the client, the scope, the end, the uses left, and, for a
+standing grant, a list of windows and the uses in the current window. A
+grant is **live** before its end and, if it has windows, inside one of
+them. Every end goes through one path, with one cause, one `grant_ended`
+entry and one edit of the message.
 
 ### Scheduled grants
 
@@ -1427,6 +1447,111 @@ the real job fails, and that is a visible sign. The reason is claimed:
 the person cannot check that "job nightly-backup" exists. A tap means
 "this client may use this secret in this time", nothing more.
 
+### Standing grants
+
+A scheduled grant covers one time span. A job that runs every night for
+weeks would need a tap each day. A standing grant lets the person approve
+it once: **this client may use these secrets in these daily or weekly
+windows, N times in each window, until this date.** It needs a tap, and it
+is bound to a token that changes at each use. Secrets only; SSH keys are
+planned for later.
+
+**The request.** The same command and the same endpoint as a scheduled
+grant, with the audit kind `standing`. `nodkey preapprove` takes one of
+`--daily 03:00-05:00` or `--weekly mon,thu 03:00-05:00` (section 15), for
+at most 7 windows. With one of them, `--until` is a must, `--uses` means
+the uses in each window (default 1), and `--from` is optional (default:
+now). A window does not pass midnight and is not longer than `max_window`.
+Windows are in broker local time, with the summer-time rules of `hours`
+(section 12): a window that opens twice on the day the clocks go back
+still has one count, and a window in the skipped hour does not open. To
+avoid this, run the broker in UTC.
+
+**The rule.** A rule may have `standing = true`, off by default, only for
+`always` and `window` rules. It is a flag apart from `preapprove`, because
+a standing grant is a much wider right: one flag for both would widen every
+config that has `preapprove = true`. The same checks as for a scheduled
+grant run before any message (known secrets, allowed for the client, count
+of grants), with the limits of `[standing]` (section 14):
+
+| key | default | ceiling |
+|---|---|---|
+| `max_days` (from now to the end) | 90 | 366 |
+| `max_window` (one window) | 8 h | 8 h |
+| `max_uses` (per window) | 1 | 10 |
+| `max_grants` (per client) | 3 | 20 |
+| `warn_days` (warning before the end) | 7 | none |
+| `summary` (weekly list, local time) | `"mon 09:00"` | none |
+
+A config without `[standing]` allows no standing grant. The message is
+that of a scheduled grant, with the windows, the uses per window and the
+end date, and the buttons **Approve** and **Deny**.
+
+**The token.** After the tap, the broker makes a token: `nkg_`, 32 random
+bytes in base62, and a CRC32 checksum, as GitHub does. The broker keeps
+only its SHA-256 hash. The token is in the answer to `nodkey preapprove`
+once, and nowhere else. The client writes it to the file of `--grant-token
+FILE` and never prints it. It works only with the TLS key of its client.
+The client refuses a token file that is not its own, or that other users
+can read or write (mode 0600 at most).
+
+**Use and rotation.** `nodkey run --grant-token FILE` sends the token in
+the header `Nodkey-Grant-Token`. The broker, in this order:
+
+1. Checks the hash and the client, that the grant covers the whole
+   request, that now is inside a window, and that a use is left in it.
+2. Makes a new token and writes `grant_used` (`via` = `standing`, with the
+   hash of the new token) to disk.
+3. Sends the silent notice, which counts toward the limits of 6 per client
+   and 20 in all (as in a scheduled grant).
+4. Answers with the secrets and the new token.
+
+The client writes the new token to a temp file, syncs it, and renames it
+over the old file. Only then does it use the secrets. If the write
+fails, it does not run the command. It never retries a request that had a
+token by itself. For each use, the broker keeps one 32-byte hash until the
+grant ends, to know the old tokens.
+
+**Alarms.** An alarm is a Telegram message with sound, and a `grant_alarm`
+entry with a cause. It counts toward the limit of 20 notices in all. One
+grant sends at most one alarm in a window.
+
+| case | request | grant | cause |
+|---|---|---|---|
+| an old token | denied | **ends** (`alarm`) | `old_token` |
+| more uses in a window than allowed | denied | **ends** (`alarm`) | `over_uses` |
+| a valid token outside the windows | denied | stays | `outside_window` |
+| an unknown token, or the token of another client | denied | none | `unknown_token` (rate limited) |
+| a window ended with no use | none | stays | `missed_window` |
+
+An old token is taken as stolen. A retry after a lost answer looks the
+same, and the broker cannot tell them apart. There is no pause and no
+Resume: a new grant is one tap. A request without a token goes the
+normal way, with a tap.
+
+**On the phone.** The message of the grant has a **Revoke** button, as in
+a scheduled grant. Within `warn_days` of the end, a warning comes with a
+**Renew** button. A tap on Renew, after the full checks of section 7, makes
+a new grant (new ID, new end, the same scope). The next use of the old
+token gets the token of the new grant, and the old grant ends with cause
+`renewed`. Once a week (`summary`) a message lists each standing grant: the
+client, the secrets, the windows, the last use and the end date. The bot
+command `/grants` from the approver shows the same list.
+
+**End.** A standing grant ends when its end date comes, on Revoke, on an
+alarm that ends it, on a renewal, or at a broker stop. A **Deny** of
+another request of the same client and secret does **not** end it: an
+"Approve once" Deny at noon must not break the night job. The Deny message
+says "standing grants stay; use Revoke to end them". At a stop the grants
+are dropped, written as `stopped`, and listed in the stop notice. Keeping
+them is issue 111.
+
+**The honest limit.** The token finds a theft; it does not stop it. The
+same user on the client can read and rewrite the token file, so a thief
+can use the grant first. The real job then finds an old token and fails,
+and the alarm comes. Run the job as its own system user (see
+`docs/setup.md`). See T36 in THREAT-MODEL.md.
+
 ## 9. Audit log
 
 - One file, JSON Lines: one entry per line. The broker opens it once, at
@@ -1449,7 +1574,7 @@ the person cannot check that "job nightly-backup" exists. A tap means
 - A line is at most 64 KiB. The broker refuses a longer entry, so the
   request is denied.
 - Events: `broker_started`, `request`, `decision`, `grant_used`,
-  `grant_ended`, `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
+  `grant_ended`, `grant_alarm`, `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
   `log_recovered`, `broker_stopped`. Each event about a request holds the
   request ID, the client, the names, the verified host if any, and the
   claimed command and reason (masked as in section 7).
@@ -1489,8 +1614,9 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `broker_stopped` | none |
 | `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
 | `decision` | the request fields; `user_id`: the Telegram user that answered; `answer`: `approve_once`, `approve_window` or `deny`; `window_minutes` for `approve_window` |
-| `grant_used` | the request fields; `via`: `grant`, `never_rule` or `scheduled` (then `grant_id` is in the request fields) |
-| `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked` or `stopped`; `uses_left` |
+| `grant_used` | the request fields; `via`: `grant`, `never_rule`, `scheduled` or `standing` (then `grant_id` is in the request fields); for `standing` also `new_token_hash` |
+| `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked`, `stopped`, `alarm` or `renewed`; `uses_left` |
+| `grant_alarm` | the request fields; `grant_id` (none for an unknown token); `cause`: `old_token`, `over_uses`, `outside_window`, `unknown_token` or `missed_window` |
 | `secret_sent`, `signed` | the request fields |
 | `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
 | `foreign_tap` | `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7). An entry with cause `edited_message` can belong to a Deny that counted: its `data` is `d:` and the request ID, and that request has a `decision` entry with `deny` |
@@ -1855,7 +1981,7 @@ a path, a query, `OPTIONS *` or `PRI *` gets 404. The types are in
 | `/v1/secrets` | `run` | `secrets` (each with `var` and `name`), `command`, `dir`, `reason` | `secrets`: each with `var` and `value`, in the order of the request |
 | `/v1/sign` | `ssh-agent` | `public_key`, `data`, `flags`, `binds`, `commands`, `reason` | `format` and `blob` of the signature |
 | `/v1/ssh-grant` | `ssh-grant` | `key`, `user`, `hosts`, `seconds` (`--for`), `reason` | `minutes`: how long the grants last |
-| `/v1/preapprove` | `preapprove` | `secrets`, `key`, `user`, `hosts`, `from`, `until` (texts, read by the broker), `uses`, `reason` | `id` of the grant, `from` and `until` in RFC 3339, in the broker's local time |
+| `/v1/preapprove` | `preapprove` | `secrets`, `key`, `user`, `hosts`, `from`, `until` (texts, read by the broker), `uses`, `reason`; for a standing grant also `windows` (list of day names and `HH:MM-HH:MM`) | `id` of the grant, `from` and `until` in RFC 3339, in the broker's local time; for a standing grant also `grant_token` |
 | `/v1/preapprove/cancel` | `preapprove --cancel` | `id` | `id`; 403 for an ID that the client does not have |
 
 - Each field must be there, none may be `null`, and no other field may be
@@ -1901,6 +2027,9 @@ of different versions can fail with only "the answer of the broker is not
 valid", or a `400`. So each side tells the other its version, and says
 when they differ.
 
+- `/v1/secrets` may have the header `Nodkey-Grant-Token` with the token of a
+  standing grant (section 8). The answer then also has `grant_token`, the
+  new token. Without the header, the request goes the normal way.
 - Each request has the header `Nodkey-Version` with the client's version,
   as `nodkey version` prints it, such as `0.2.0` or `dev`. Each answer of
   the broker has it with the broker's version: with every status, also
@@ -2116,6 +2245,9 @@ listed hosts with that key) without a tap. To keep it small:
   own project, read through its own store entry with its own machine
   account (see the two `bws` stores in section 14).
 
+A standing grant (section 8) is the better form of this decision: it needs a
+tap, it ends by itself, and its token finds a use by something else.
+
 **Not chosen:** matching the command name ("only for `backup.sh`"). The
 command is claimed. The agent can send any command line it wants.
 
@@ -2259,6 +2391,14 @@ max_open = "8h"                     # the longest time from start to end
 max_uses = 10                       # the most uses of one grant
 max_grants = 5                      # the most per client: approved, not ended, plus waiting
 
+[standing]                          # optional; the limits of standing grants (section 8)
+max_days = 90                       # from now to the end date; ceiling 366
+max_window = "8h"                   # one window; ceiling 8h
+max_uses = 1                        # per window; ceiling 10
+max_grants = 3                      # per client; ceiling 20
+warn_days = 7                       # warning before the end
+summary = "mon 09:00"               # weekly list, broker local time
+
 [client.laptop]
 pin = "sha256:Yf3c...base64..."     # printed by `nodkey keygen`
 
@@ -2284,6 +2424,7 @@ clients = ["laptop"]
 ask = "window"
 window = "15m"
 preapprove = true                   # optional; default false: `nodkey preapprove` may ask for it
+standing = true                     # optional; default false: standing grants (only `always`, `window`)
 
 [key.deploy]
 file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
@@ -2359,6 +2500,11 @@ More rules:
   "never"`. In `[preapprove]`, `max_ahead` is 1 minute to 31 days,
   `max_open` is 1 minute to 24 hours, `max_uses` is 1 to 1000 and
   `max_grants` is 1 to 100. Each has the default of section 8.
+- `standing` is `true` or `false`, and is not allowed with `ask =
+  "never"`. In `[standing]`, `max_days` is 1 to 366, `max_window` is 1
+  minute to 8 hours, `max_uses` is 1 to 10, `max_grants` is 1 to 20,
+  `warn_days` is 1 or more, and `summary` is a day name and `HH:MM`.
+  Each has the default of section 8.
 - `max_per_day`, if present, is 1 or more. For no limit, leave it out.
   So `0` cannot mean "no uses" to a person and "no limit" to the broker.
 - `check` in `[updates]` is `true` or `false`. Without it, and without
@@ -2462,10 +2608,11 @@ other users must not be able to change it.
 
 ```
 nodkey broker [--config FILE]
-nodkey run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
+nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --from TIME --until TIME --uses N [--reason TEXT]
+nodkey preapprove --secret NAME... (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM) --until TIME [--from TIME] [--uses N] --grant-token FILE [--reason TEXT]
 nodkey preapprove --cancel ID
 nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
@@ -2682,6 +2829,13 @@ on stdout. Its last line on stderr is always
 `nodkey: SSH logins as deploy to 2 hosts allowed until 14:20 (exit 0)`.
 Before it, it may print one warning about the version of the broker
 (section 10).
+
+`nodkey preapprove` with `--daily` or `--weekly` asks for a standing grant
+(section 8). `--weekly` takes day names (`mon,thu`) and one window.
+`--grant-token FILE` is a must; the client writes the token there after the
+tap (mode 0600, new file or its own file) and prints no token. `nodkey run
+--grant-token FILE` uses it and rotates it, as section 8 says; if the
+file cannot be saved, the command does not run (exit 77).
 
 `nodkey preapprove` asks for a scheduled grant (section 8) and waits for
 the tap, as `nodkey ssh-grant` does. The times are read as section 8
