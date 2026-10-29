@@ -839,6 +839,13 @@ It is off by default, and it is an error with `ask = "never"`. The four
 limits are optional. Their defaults are in the example above. They are
 safe, so leave them unless you need more.
 
+**`[standing]` and `standing`.** A secret with `standing = true` lets a
+client ask for a standing grant: daily or weekly windows, for weeks
+([section 11](#a-job-that-runs-every-night-standing-grants)). It is a
+separate flag from `preapprove`, off by default, and an error with
+`ask = "never"`. Without a `[standing]` section, no standing grant is
+allowed. Its keys and defaults are in section 11.
+
 **`[updates]`.** `check` is optional, `true` by default. Then the broker
 asks GitHub 10 minutes after its start, and then once a day, whether a
 newer release of nodkey is out, and sends you a silent notice when one
@@ -1377,10 +1384,6 @@ Things to know:
 - Anything on that machine can use the grant inside its time, not only
   the job. Keep the span short and the uses few. If something else uses
   the grant up, the real job fails, and that shows it.
-- If you use a token file (`--grant-token`), keep it in a private folder,
-  such as the home folder of the job user. Do not put it in a shared
-  folder like `/tmp`: another user there could delete the file or block
-  its update.
 - For a key, use `--key`, `--user` and `--host` as for `nodkey ssh-grant`.
   **Each SSH connection takes one use.** A tool that opens many
   connections, such as Ansible, needs more uses, or `ControlPersist` in
@@ -1398,6 +1401,145 @@ Things to know:
   the machine, the secret or key, and the uses left. A **Deny** for the
   same secret or key ends the grant, also before its start; the message
   of the grant says so.
+
+### A job that runs every night: standing grants
+
+A scheduled grant covers one time span. A job that runs every night for
+weeks would need a new grant, and a tap, each day. A standing grant lets
+you approve it once: this client may use these secrets in these daily or
+weekly windows, N times in each window, until a date. It is for secrets
+only, not for SSH keys.
+
+Turn it on for the secret, in `broker.toml`. It is off by default, and
+it is a separate flag from `preapprove`. The rule must have `ask =
+"always"` or `ask = "window"`. The `[standing]` section must be there,
+also when it is empty: without it, no standing grant is allowed. These
+are its keys and their defaults:
+
+```toml
+[secret.backup-token]
+# ...
+clients = ["backup"]
+ask = "always"
+standing = true
+
+[standing]
+max_days = 90                       # from now to the end date; at most 366
+max_window = "8h"                   # one window; at most 8h
+max_uses = 1                        # uses in each window; at most 10
+max_grants = 3                      # standing grants of one client; at most 20
+warn_days = 7                       # the warning before the end; less than max_days
+summary = "mon 09:00"               # the weekly list, in broker local time
+```
+
+**Run the job as its own system user.** Anything that runs as the same
+user can read the token file and use the grant. Give the job its own
+user, with its home folder in `/var/lib`, and its own client key and
+config ([section 11](#the-key-and-the-config-of-the-client)), with its
+own `[client.backup]` section on the broker. Then the agent's user
+cannot read the token or the key, if it cannot use `sudo` or become root. On the agent machine, as root:
+
+```sh
+useradd --system --home-dir /var/lib/nightly-backup --shell /usr/sbin/nologin nightly-backup
+install -d -m 0700 -o nightly-backup -g nightly-backup /var/lib/nightly-backup
+sudo -H -u nightly-backup sh -c 'install -d -m 0700 ~/.config ~/.config/nodkey &&
+  nodkey keygen --out ~/.config/nodkey/client.key'
+```
+
+Write `~nightly-backup/.config/nodkey/client.toml` as before, owned by
+`nightly-backup`, with mode 0600.
+
+**Ask for the grant** as that user. `--until` is a must. `--uses` is
+the uses in each window (default 1). `--from` is optional (default:
+now). Give `--daily HH:MM-HH:MM`, or `--weekly DAYS HH:MM-HH:MM` (such as
+`--weekly mon,thu 03:00-05:00`), not both. A window is in broker local
+time, and does not pass midnight. `--grant-token FILE` is a must:
+
+```sh
+sudo -H -u nightly-backup nodkey preapprove --secret backup-token \
+  --daily 03:00-05:00 --until 2026-12-31T00:00 \
+  --grant-token /var/lib/nightly-backup/token --reason "job nightly-backup"
+```
+
+The message shows the windows, the uses in each window and the end, with
+**Approve** and **Deny**. After **Approve**, the command writes the token
+to the file and prints the ID of the grant. It never prints the token.
+The file must be a new file, or a file that the user owns with mode 0600.
+The client refuses a token file that is not its own, or that other users
+can read or write. Keep it in a private folder, not in `/tmp`.
+
+**The job.** A systemd service and a timer. The timer starts the job
+inside the window:
+
+```ini
+# /etc/systemd/system/nightly-backup.service
+[Unit]
+Description=Nightly backup
+
+[Service]
+Type=oneshot
+User=nightly-backup
+Group=nightly-backup
+StateDirectory=nightly-backup
+StateDirectoryMode=0700
+Environment=HOME=/var/lib/nightly-backup
+ExecStart=/usr/local/bin/nodkey run --grant-token /var/lib/nightly-backup/token \
+  --secret BACKUP_TOKEN=backup-token --reason "job nightly-backup" -- /usr/local/bin/backup
+```
+
+```ini
+# /etc/systemd/system/nightly-backup.timer
+[Unit]
+Description=Nightly backup
+
+[Timer]
+OnCalendar=*-*-* 03:30
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl daemon-reload
+systemctl enable --now nightly-backup.timer
+```
+
+`OnCalendar` is in the local time of the agent machine, and the window
+is in the local time of the broker. If the two differ, add the zone of
+the broker, such as `OnCalendar=*-*-* 03:30 UTC`. Do not add
+`Persistent=true` to the timer: a missed run would start
+later, outside the window, and that gives an alarm. Each use needs no
+tap and sends a silent notice. `nodkey run` writes a new token to the
+file before it runs the command. If it cannot save the file, the command
+does not run (exit 77).
+
+Things to know:
+
+- **The client never retries a request with a token.** An old token
+  ends the grant with an alarm, because it looks like a stolen token. So
+  if a run failed in the middle (for example the network broke after
+  the broker sent the answer), the next run has an old token. Then make
+  a new grant: one tap.
+- Alarms come with sound. These end the grant: an old token, more uses
+  in a window than allowed, and the token of another machine's grant.
+  These only alarm, and the grant stays: a valid token outside the
+  windows, an unknown token, and a window that ended with no use.
+- `warn_days` (default 7) before the end, a warning with a **Renew**
+  button comes, with sound. Renew makes a new grant of the same length,
+  from now, with the same secrets and windows. The job keeps its token
+  file: its next use gets the token of the new grant. A grant can be
+  renewed once, and a grant that is not longer than `warn_days` gets no
+  warning.
+- The message of the grant has a **Revoke** button: it ends the grant at
+  once. `nodkey preapprove --cancel ID`, as the job user, ends it too. A
+  **Deny** of another request does not end a standing grant.
+- Send `/grants` to the bot, in your private chat with it: it lists each
+  standing grant, with the machine, the secrets, the windows, the last
+  use and the end. Once a week, at `summary`, the same list comes as a
+  silent message. The list never shows a token.
+- A broker restart drops all standing grants, as it drops scheduled
+  grants. The stop notice lists them. Then make new grants. Keeping
+  them over a restart is issue #111.
 
 ## 12. Check the audit log
 

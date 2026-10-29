@@ -996,7 +996,12 @@ Not masked, for example:
   internet. The next call confirms the updates of the call before, so
   Telegram forgets them. After a crash, Telegram sends the updates that
   were not confirmed again; their taps find no waiting request.
-- Only `callback_query` updates are read. Text sent to the bot is ignored.
+- The broker asks only for `callback_query` and `message` updates. A
+  `message` is read only for the command `/grants` (section 8): the text
+  `/grants`, or `/grants@` and a name, with no space inside, from the
+  approver in the private chat with the approver, at most 3 answers in
+  any 60 seconds. Every other text sent to the bot is ignored, without an
+  answer.
 - If `getUpdates` fails with a conflict (another program polls with the same
   token, or a webhook was set), the broker logs an alert and sends a
   message: the bot token may be stolen. Then the Telegram code stops
@@ -1598,8 +1603,8 @@ windows, the last use and the end date. The bot command `/grants` from the
 approver shows the same list. The list never shows a token or a hash.
 With no standing grant, the weekly message says so, and `/grants` does too.
 For `/grants` the bot also asks Telegram for `message` updates. Only the
-exact text `/grants` from the approver in the private chat with the approver
-gets an answer, at most 3 in a minute. A message from anyone or anywhere
+text `/grants` (or `/grants@` and a name) from the approver in the
+private chat with the approver gets an answer, at most 3 in a minute. A message from anyone or anywhere
 else is ignored without an answer.
 
 **Missed window.** When a window of a live grant ends with no use in it,

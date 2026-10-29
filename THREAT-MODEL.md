@@ -181,7 +181,17 @@ Risk that remains: none known.
 **T5. Someone else presses the button.**
 The broker accepts only the configured Telegram user ID, in the private
 chat with that user.
-Risk that remains: see T7.
+The bot also reads text messages, for the command `/grants` only
+(DESIGN.md section 8). It answers only the text `/grants` (or `/grants@`
+and a name) from the approver, in the private chat with the
+approver, at most 3 times in any 60 seconds, and only in that chat. The
+answer lists the standing grants: the machine, the secrets, the windows,
+the last use and the end. It never has a token or a hash. Any other text,
+and any text from another user or chat, is ignored without an answer, so
+nobody else learns of the grants, and nobody can make the bot send many
+messages. A command can approve, renew or end nothing.
+Risk that remains: see T7. Someone who can use the approver's account
+can read the list.
 
 **T6. The bot token is stolen.**
 With the token, an attacker can read updates before the broker does, send
