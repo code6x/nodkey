@@ -155,6 +155,8 @@ type clientState struct {
 	sent rateLog
 	// notices holds when the newest notices of "never ask" uses were sent.
 	notices rateLog
+	// unknown holds when the newest alarms of unknown tokens came.
+	unknown rateLog
 	// queue holds the requests that wait for a place, oldest first.
 	queue []*pending
 	// paused holds when the pause after a Deny ends, for each secret or

@@ -57,6 +57,7 @@ const claimedHead = "— claimed by the agent —"
 const (
 	noticeLine          = `allowed by a "never ask" rule, without a tap`
 	scheduledNoticeLine = `allowed by a scheduled grant, without a tap`
+	standingNoticeLine  = `allowed by a standing grant, without a tap`
 	// standingDenyLine is in the message of a standing grant. A Deny of
 	// another request does not end the grant (DESIGN.md section 8).
 	standingDenyLine = `A Deny of other requests does not end this grant. Use Revoke to end it.`
@@ -254,8 +255,11 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 		return bad("windows outside a standing grant")
 	}
 	switch {
-	case notice && p.Via != "" && p.Via != audit.ViaScheduled, !notice && p.Via != "":
+	case notice && p.Via != "" && p.Via != audit.ViaScheduled && p.Via != audit.ViaStanding, !notice && p.Via != "":
 		return bad("the via")
+	}
+	if p.Via == audit.ViaStanding && p.Kind != audit.KindSecrets {
+		return bad("a standing use outside a secrets request")
 	}
 	switch p.Kind {
 	case audit.KindSecrets:
@@ -386,6 +390,8 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		if p.Kind == audit.KindPreapprove {
 			t.write("\nnot used: grant " + p.GrantID + " ended with " + strconv.Itoa(p.UsesLeft) + " of " +
 				strconv.Itoa(p.Uses) + " uses left")
+		} else if p.Via == audit.ViaStanding {
+			t.write("\n" + standingNoticeLine)
 		} else if p.Via == audit.ViaScheduled {
 			t.write("\n" + scheduledNoticeLine)
 		} else {
@@ -643,4 +649,49 @@ func standingEndLine(cause audit.EndCause, at string) string {
 		return "⛔ dropped: the broker stopped at " + at
 	}
 	return "⛔ ended at " + at
+}
+
+// alarmText returns the text of the alarm of a standing grant. It holds
+// the client, the secret names, the grant ID and a fixed text for the
+// cause; no token and no claimed text.
+func alarmText(a approval.Alarm) (*text, error) {
+	bad := func(what string) error { return errors.New("telegram: the alarm is not valid: " + what) }
+	switch {
+	case !validRequestID(a.RequestID):
+		return nil, bad("the request ID")
+	case !shortCodePattern.MatchString(a.ShortCode):
+		return nil, bad("the short code")
+	case !namePattern.MatchString(a.Client):
+		return nil, bad("the client name")
+	case len(a.Secrets) > 0 && !allNames(a.Secrets):
+		return nil, bad("the secrets")
+	case (a.GrantID == "") != (a.Cause == audit.AlarmUnknownToken) || (a.GrantID != "" && !validRequestID(a.GrantID)):
+		return nil, bad("the grant ID")
+	}
+	var what string
+	switch a.Cause {
+	case audit.AlarmOldToken:
+		what = "an old token was used again; it may be stolen. The grant is ended."
+	case audit.AlarmOverUses:
+		what = "more uses than allowed in one window. The grant is ended."
+	case audit.AlarmOutsideWindow:
+		what = "a valid token was used outside the windows. The request was denied; the grant stays."
+	case audit.AlarmUnknownToken:
+		what = "a token that no grant of this machine has. The request was denied."
+	default:
+		return nil, bad("the cause")
+	}
+	if a.Ended != (a.Cause == audit.AlarmOldToken || a.Cause == audit.AlarmOverUses) {
+		return nil, bad("the end")
+	}
+	t := &text{}
+	t.write("🚨 Standing grant alarm · request " + a.ShortCode + "\n" + what)
+	t.write("\n✅ machine: " + a.Client)
+	if len(a.Secrets) > 0 {
+		t.write("\n✅ secrets: " + strings.Join(a.Secrets, ", "))
+	}
+	if a.GrantID != "" {
+		t.write("\n✅ grant: " + a.GrantID)
+	}
+	return t, nil
 }

@@ -1544,7 +1544,8 @@ grant ends, to know the old tokens.
 
 **Alarms.** An alarm is a Telegram message with sound, and a `grant_alarm`
 entry with a cause. It counts toward the limit of 20 notices in all. One
-grant sends at most one alarm in a window.
+grant sends at most one alarm in a window. For a valid token outside the
+windows, the limit is one alarm in a calendar day.
 
 | case | request | grant | cause |
 |---|---|---|---|

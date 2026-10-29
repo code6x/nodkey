@@ -49,6 +49,8 @@ type Approver struct {
 	asked     []Asked
 	ended     []Ended
 	notices   []approval.Prompt
+	alarms    []approval.Alarm
+	alarmErr  error
 	askErr    error
 	notifyErr error
 	endErr    error
@@ -243,6 +245,28 @@ func (a *Approver) Ended() []Ended {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]Ended(nil), a.ended...)
+}
+
+// Alarm keeps the alarm, unless FailAlarm set an error.
+func (a *Approver) Alarm(ctx context.Context, al approval.Alarm) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.alarmErr != nil {
+		return a.alarmErr
+	}
+	a.alarms = append(a.alarms, al)
+	a.changedLocked()
+	return nil
+}
+
+// Alarms returns the alarms, oldest first.
+func (a *Approver) Alarms() []approval.Alarm {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]approval.Alarm(nil), a.alarms...)
 }
 
 // Notices returns the notices of "never ask" uses, oldest first.

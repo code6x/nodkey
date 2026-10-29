@@ -116,6 +116,7 @@ type Result struct {
 	plan     *grant    // the scheduled grant of an approved KindPreapprove request
 	msg      MessageID // with plan: the message of the request, and its prompt
 	prompt   Prompt
+	su       *standingUse       // the use path of a standing grant
 	usedID   string             // the scheduled grant that allowed the request
 	ended    []audit.GrantEnded // entries of grants that this request ended
 	vias     []audit.Via        // what allowed each secret or key without a tap
@@ -149,6 +150,11 @@ type Result struct {
 // grant_used and before secret_sent or signed.
 func (r *Result) Events() []audit.Event {
 	events := r.mainEvents()
+	if r.su != nil && r.su.alarm != "" {
+		s := r.Subject
+		s.GrantID = r.su.grantID
+		events = append(events, audit.GrantAlarm{Subject: s, Cause: r.su.alarm})
+	}
 	for _, ev := range r.ended {
 		events = append(events, ev)
 	}
@@ -167,7 +173,7 @@ func (r *Result) mainEvents() []audit.Event {
 			events = append(events, audit.Denied{Subject: r.Subject, Cause: r.Cause})
 		}
 	case r.Allowed:
-		for _, via := range []audit.Via{audit.ViaGrant, audit.ViaNeverRule, audit.ViaScheduled} {
+		for _, via := range []audit.Via{audit.ViaGrant, audit.ViaNeverRule, audit.ViaScheduled, audit.ViaStanding} {
 			used := false
 			var secrets []string
 			for i, v := range r.vias {
@@ -186,10 +192,14 @@ func (r *Result) mainEvents() []audit.Event {
 			if s.Kind == audit.KindSecrets {
 				s.Secrets = secrets
 			}
-			if via == audit.ViaScheduled {
-				s.GrantID = r.usedID
+			gu := audit.GrantUsed{Subject: s, Via: via}
+			if via == audit.ViaScheduled || via == audit.ViaStanding {
+				gu.GrantID = r.usedID
 			}
-			events = append(events, audit.GrantUsed{Subject: s, Via: via})
+			if via == audit.ViaStanding {
+				gu.NewTokenHash = r.newTokenHash()
+			}
+			events = append(events, gu)
 		}
 	default:
 		if r.Cause == audit.CauseError && r.ErrorCode != "" {

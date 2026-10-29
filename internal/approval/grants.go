@@ -72,6 +72,8 @@ type grant struct {
 	// before: one for each use. The grant never holds a token.
 	tokenHash [32]byte
 	oldHashes [][32]byte
+	// alarmMark is the day of the last alarm outside the windows.
+	alarmMark string
 }
 
 // grantKind is the kind of a grant (DESIGN.md section 8, "The grant core").

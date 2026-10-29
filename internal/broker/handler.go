@@ -366,6 +366,13 @@ func (rq *request) decide(ctx context.Context, ar *approval.Request) (res *appro
 	rq.inDecide = true
 	res = rq.core.Decide(ctx, ar)
 	rq.inDecide = false
+	return rq.settle(res)
+}
+
+// settle writes the entries of res, and answers a request that is not
+// allowed (see decide).
+func (rq *request) settle(res *approval.Result) (*approval.Result, receipt, bool) {
+	var rc receipt
 	rq.sub = res.Subject
 	if res.Err != nil {
 		// Result.Err goes to the journal, never to the audit log.
