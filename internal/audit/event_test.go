@@ -208,7 +208,22 @@ func TestStandingEvents(t *testing.T) {
 	ok.Windows = []string{"daily 03:00-05:00", "mon,thu 10:30-11:00"}
 	good("a standing request", Request{Subject: ok})
 	good("a standing decision", Decision{Subject: ok, UserID: 1, Answer: AnswerApproveOnce})
-	good("a standing use", GrantUsed{Subject: ok, Via: ViaStanding})
+	h := strings.Repeat("ab", 32)
+	good("a standing use", GrantUsed{Subject: ok, Via: ViaStanding, NewTokenHash: h})
+	bad("a standing use without a hash", GrantUsed{Subject: ok, Via: ViaStanding})
+	bad("a standing use with a short hash", GrantUsed{Subject: ok, Via: ViaStanding, NewTokenHash: "ab"})
+	bad("a hash outside a standing use", GrantUsed{Subject: ok, Via: ViaScheduled, NewTokenHash: h})
+	for _, c := range []AlarmCause{AlarmOldToken, AlarmOverUses, AlarmOutsideWindow, AlarmMissedWindow} {
+		good("grant_alarm "+string(c), GrantAlarm{Subject: ok, Cause: c})
+		noID := ok
+		noID.GrantID = ""
+		bad("grant_alarm without a grant "+string(c), GrantAlarm{Subject: noID, Cause: c})
+	}
+	noID := ok
+	noID.GrantID = ""
+	good("an unknown token alarm", GrantAlarm{Subject: noID, Cause: AlarmUnknownToken})
+	bad("an unknown token alarm with a grant", GrantAlarm{Subject: ok, Cause: AlarmUnknownToken})
+	bad("an alarm with a cause that is not known", GrantAlarm{Subject: ok, Cause: "x"})
 	for _, c := range []EndCause{EndAlarm, EndRenewed, EndRevoked, EndStopped, EndEnded} {
 		good("grant_ended "+string(c), GrantEnded{Subject: ok, Cause: c})
 	}

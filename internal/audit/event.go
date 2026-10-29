@@ -229,6 +229,31 @@ type GrantUsed struct {
 	Subject
 	// Via says what allowed it.
 	Via Via `json:"via"`
+	// NewTokenHash is the SHA-256 hash of the new token of a standing
+	// grant, in hex, for Via standing only. Never the token itself.
+	NewTokenHash string `json:"new_token_hash,omitempty"`
+}
+
+// AlarmCause says why a standing grant raised an alarm (DESIGN.md section
+// 8).
+type AlarmCause string
+
+// The causes of a grant_alarm entry.
+const (
+	AlarmOldToken      AlarmCause = "old_token"      // a token that was replaced came again
+	AlarmOverUses      AlarmCause = "over_uses"      // more uses in a window than allowed
+	AlarmOutsideWindow AlarmCause = "outside_window" // a valid token outside the windows
+	AlarmUnknownToken  AlarmCause = "unknown_token"  // a token that no grant of the client has
+	AlarmMissedWindow  AlarmCause = "missed_window"  // a window ended with no use
+)
+
+// GrantAlarm records an alarm of a standing grant. Subject is that of the
+// request, with the GrantID of the grant. For an unknown token there is no
+// grant, so no GrantID.
+type GrantAlarm struct {
+	Subject
+	// Cause says why.
+	Cause AlarmCause `json:"cause"`
 }
 
 // GrantEnded records the end of a scheduled grant. Subject is that of the
@@ -308,6 +333,7 @@ const (
 	eventDecision      = "decision"
 	eventGrantUsed     = "grant_used"
 	eventGrantEnded    = "grant_ended"
+	eventGrantAlarm    = "grant_alarm"
 	eventSecretSent    = "secret_sent"
 	eventSigned        = "signed"
 	eventDenied        = "denied"
@@ -322,6 +348,7 @@ func (Request) eventName() string       { return eventRequest }
 func (Decision) eventName() string      { return eventDecision }
 func (GrantUsed) eventName() string     { return eventGrantUsed }
 func (GrantEnded) eventName() string    { return eventGrantEnded }
+func (GrantAlarm) eventName() string    { return eventGrantAlarm }
 func (SecretSent) eventName() string    { return eventSecretSent }
 func (Signed) eventName() string        { return eventSigned }
 func (Denied) eventName() string        { return eventDenied }
@@ -481,10 +508,37 @@ func (e GrantUsed) validate() error {
 		return err
 	}
 	switch e.Via {
-	case ViaGrant, ViaNeverRule, ViaScheduled, ViaStanding:
+	case ViaGrant, ViaNeverRule, ViaScheduled:
+		if e.NewTokenHash != "" {
+			return errors.New("new_token_hash is only for via standing")
+		}
+		return nil
+	case ViaStanding:
+		if !isHex64(e.NewTokenHash) {
+			return errors.New("a standing use needs new_token_hash, 64 hex digits")
+		}
 		return nil
 	}
 	return errors.New("via is not known")
+}
+
+func (e GrantAlarm) validate() error {
+	if err := e.Subject.validate(true); err != nil {
+		return err
+	}
+	switch e.Cause {
+	case AlarmUnknownToken:
+		if e.GrantID != "" {
+			return errors.New("an unknown token has no grant_id")
+		}
+		return nil
+	case AlarmOldToken, AlarmOverUses, AlarmOutsideWindow, AlarmMissedWindow:
+		if e.GrantID == "" {
+			return errors.New("it needs a grant_id")
+		}
+		return nil
+	}
+	return errors.New("cause is not known")
 }
 
 func (e GrantEnded) validate() error {
@@ -551,7 +605,7 @@ func encodeEvent(ev Event) (string, []byte, error) {
 	// pointer has the methods as well, and a nil pointer would panic in
 	// them.
 	switch ev.(type) {
-	case BrokerStarted, BrokerStopped, Request, Decision, GrantUsed, GrantEnded, SecretSent, Signed, Denied, ForeignTap, Failure,
+	case BrokerStarted, BrokerStopped, Request, Decision, GrantUsed, GrantEnded, GrantAlarm, SecretSent, Signed, Denied, ForeignTap, Failure,
 		logRecovered:
 	default:
 		return "", nil, errors.New("not an event of the audit package; pass an event such as audit.Signed{...} as a value")
