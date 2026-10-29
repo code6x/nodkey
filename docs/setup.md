@@ -779,6 +779,9 @@ max_open = "8h"                     # the longest time from start to end
 max_uses = 10                       # the most uses of one grant
 max_grants = 5                      # the most per client: approved, not ended, plus waiting
 
+[standing]                          # optional; the limits of standing grants (DESIGN.md section 8)
+summary = "mon 09:00"               # the weekly list of standing grants, in broker local time
+
 [client.laptop]
 pin = "sha256:Yf3c...base64..."     # printed by `nodkey keygen`
 

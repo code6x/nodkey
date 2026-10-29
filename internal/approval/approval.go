@@ -192,9 +192,15 @@ func (c *Core) Run(ctx context.Context) error {
 		defer close(watched)
 		c.watchGrants(ctx)
 	}()
+	summed := make(chan struct{})
+	go func() {
+		defer close(summed)
+		c.watchSummary(ctx)
+	}()
 	defer func() {
 		c.stopAll()
 		<-watched
+		<-summed
 		c.dropScheduled()
 	}()
 	if err := c.approver.Run(ctx, c.Answer); err != nil {

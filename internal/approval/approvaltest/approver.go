@@ -50,6 +50,7 @@ type Approver struct {
 	ended     []Ended
 	notices   []approval.Prompt
 	alarms    []approval.Alarm
+	summaries [][]approval.GrantInfo
 	alarmErr  error
 	askErr    error
 	notifyErr error
@@ -368,4 +369,23 @@ func Text(p approval.Prompt) string {
 	buttons = append(buttons, "[Deny]")
 	b.WriteString(strings.Join(buttons, " "))
 	return b.String()
+}
+
+// Summary keeps the list of a weekly summary.
+func (a *Approver) Summary(ctx context.Context, grants []approval.GrantInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.summaries = append(a.summaries, append([]approval.GrantInfo(nil), grants...))
+	a.changedLocked()
+	return nil
+}
+
+// Summaries returns the lists of the weekly summaries, oldest first.
+func (a *Approver) Summaries() [][]approval.GrantInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([][]approval.GrantInfo(nil), a.summaries...)
 }
