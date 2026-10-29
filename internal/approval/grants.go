@@ -508,7 +508,7 @@ func (c *Core) revoke(a Answer) error {
 	return nil
 }
 
-// CancelGrant ends the scheduled grant id of client at the client's
+// CancelGrant ends the scheduled or standing grant id of client at the client's
 // request, without a tap. It returns the audit entry, which the caller
 // writes. It reports false for an ID that no grant of client has, and the
 // answer is the same for the ID of another client: a client learns
@@ -518,7 +518,7 @@ func (c *Core) CancelGrant(client, id string) (audit.GrantEnded, bool) {
 	defer c.mu.Unlock()
 	c.sweepGrants(c.now()) // a grant past its end is gone
 	ended := c.endWhere(func(g *grant) audit.EndCause {
-		if g.scheduled() && g.client == client && g.id == id {
+		if g.audited() && g.client == client && g.id == id {
 			return audit.EndCancelled
 		}
 		return ""

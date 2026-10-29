@@ -79,9 +79,12 @@ func TestStandingGrantIsMade(t *testing.T) {
 	if n := e.main.fetched(); n != 0 {
 		t.Errorf("a standing grant fetched %d values", n)
 	}
-	// The scheduled grants are not touched: this grant is no scheduled one.
-	if _, ok := e.core.CancelGrant("laptop", ans.ID); ok {
-		t.Error("the cancel of a scheduled grant ended a standing grant")
+	// The client can cancel its own standing grant, but not that of another.
+	if _, ok := e.core.CancelGrant("ci", ans.ID); ok {
+		t.Error("another client cancelled the grant")
+	}
+	if end, ok := e.core.CancelGrant("laptop", ans.ID); !ok || end.Cause != audit.EndCancelled {
+		t.Errorf("the cancel of a standing grant: %+v, %v", end, ok)
 	}
 }
 
@@ -208,5 +211,52 @@ func TestStandingRevokeAndStop(t *testing.T) {
 	}
 	if !stopped {
 		t.Error("no grant_ended:stopped for the standing grant")
+	}
+}
+
+// TestStandingCancel: the client can cancel its own standing grant, the
+// token stops working, and another client or an unknown ID finds nothing.
+func TestStandingCancel(t *testing.T) {
+	e, tok, id := useEnv(t)
+	cancel := func(client, id string) *result {
+		return e.post(t.Context(), e.httpClient(client), api.PathPreapproveCancel, api.PreapproveCancelRequest{ID: id})
+	}
+	mustStatus(t, cancel("ci", id), http.StatusForbidden)
+	mustStatus(t, cancel("laptop", "AAAAAAAAAAAAAAAAAAAAAA"), http.StatusForbidden)
+	before := len(e.audit.all())
+	mustStatus(t, cancel("laptop", id), http.StatusOK)
+	events := e.audit.waitFor(t, before+1)[before:]
+	mustEvents(t, events, "grant_ended:cancelled")
+	if end := events[0].(audit.GrantEnded); end.GrantID != id || end.Kind != audit.KindStanding {
+		t.Errorf("entry %+v", end)
+	}
+	mustStatus(t, cancel("laptop", id), http.StatusForbidden)
+	// The token is unknown now: denied, and no use.
+	res, _ := e.useToken("laptop", tok)
+	mustStatus(t, res, http.StatusForbidden)
+}
+
+// TestStandingAnswerNotWritten: the answer with the token cannot be
+// written, so nobody has the token. The broker cancels the grant.
+func TestStandingAnswerNotWritten(t *testing.T) {
+	wrap := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == api.PathPreapprove {
+				w = failWriter{w}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	e := newEnv(t, envOptions{wrap: wrap, config: standingOn})
+	c := e.httpClient("laptop")
+	p := e.start(c, api.PathPreapprove, standReq("github-token"))
+	id := e.waitAsked(1)[0].Prompt.RequestID
+	e.tap(id, audit.AnswerApproveOnce)
+	p.wait(t)
+	events := e.audit.waitFor(t, 3)
+	mustEvents(t, events, "request decision:approve_once grant_ended:cancelled")
+	e.clock.Advance(time.Hour)
+	if n := len(e.alarmEntries()); n != 0 {
+		t.Errorf("%d alarms", n)
 	}
 }

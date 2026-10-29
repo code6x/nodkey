@@ -1570,7 +1570,9 @@ client, the secrets, the windows, the last use and the end date. The bot
 command `/grants` from the approver shows the same list.
 
 **End.** A standing grant ends when its end date comes, on Revoke, on an
-alarm that ends it, on a renewal, or at a broker stop. A **Deny** of
+alarm that ends it, on a renewal, on a cancel by its own client (`nodkey
+preapprove --cancel`, or the broker, when the answer with the token cannot
+be written; cause `cancelled`), or at a broker stop. A **Deny** of
 another request of the same client and secret does **not** end it: an
 "Approve once" Deny at noon must not break the night job. The Deny message
 says "standing grants stay; use Revoke to end them". At a stop the grants
