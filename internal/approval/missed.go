@@ -82,7 +82,7 @@ func nextWindowEnd(g *grant, wall time.Time) (time.Duration, bool) {
 // forward. Core.mu must be held.
 func (c *Core) scanMissed(now moment) {
 	for _, g := range c.grants {
-		if !g.standing() || !now.wall.After(g.scanned) {
+		if !g.standing() || g.pendingRenewal() || !now.wall.After(g.scanned) {
 			continue
 		}
 		from := g.scanned

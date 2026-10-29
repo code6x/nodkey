@@ -531,6 +531,9 @@ func (c *Core) waitLook(ctx context.Context, p *pending) *Result {
 //   - ErrNotApprover, ErrWrongMessage, ErrExpired, ErrNotAllowed or
 //     ErrStopped.
 func (c *Core) Answer(a Answer) error {
+	if a.Action == audit.AnswerRenew {
+		return c.renew(a) // it writes an entry, so it takes the lock itself
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.stopped {

@@ -30,7 +30,7 @@ func (c *Core) ListStanding() []GrantInfo {
 	now := c.now()
 	var out []GrantInfo
 	for _, g := range c.grants {
-		if !g.standing() || !now.before(g.end) {
+		if !g.standing() || g.pendingRenewal() || !now.before(g.end) {
 			continue
 		}
 		gi := GrantInfo{Client: g.client, LastUse: g.lastUse, End: g.end.wall}

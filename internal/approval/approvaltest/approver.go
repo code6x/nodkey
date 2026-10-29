@@ -51,6 +51,8 @@ type Approver struct {
 	notices   []approval.Prompt
 	alarms    []approval.Alarm
 	summaries [][]approval.GrantInfo
+	warnings  []Warned
+	warnErr   error
 	alarmErr  error
 	askErr    error
 	notifyErr error
@@ -388,4 +390,41 @@ func (a *Approver) Summaries() [][]approval.GrantInfo {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([][]approval.GrantInfo(nil), a.summaries...)
+}
+
+// Warned is a warning before the end of a standing grant, and its message.
+type Warned struct {
+	Warning approval.Warning
+	Message approval.MessageID
+}
+
+// Warn keeps the warning, unless FailWarn set an error.
+func (a *Approver) Warn(ctx context.Context, w approval.Warning) (approval.MessageID, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.warnErr != nil {
+		return "", a.warnErr
+	}
+	a.next++
+	m := approval.MessageID("message-" + strconv.Itoa(a.next))
+	a.warnings = append(a.warnings, Warned{Warning: w, Message: m})
+	a.changedLocked()
+	return m, nil
+}
+
+// FailWarn makes Warn fail with err. nil makes it work again.
+func (a *Approver) FailWarn(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.warnErr = err
+}
+
+// Warnings returns the warnings, oldest first.
+func (a *Approver) Warnings() []Warned {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]Warned(nil), a.warnings...)
 }

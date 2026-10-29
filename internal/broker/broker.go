@@ -410,6 +410,14 @@ func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc,
 			s.log.Warn("broker: cannot write the grant_alarm entry of a missed window")
 		}
 	})
+	// A Renew counts only when its decision entry is on disk.
+	core.OnRenewed(func(ev audit.Decision) error {
+		if _, err := s.append(ev); err != nil {
+			s.log.Warn("broker: cannot write the decision entry of a Renew; the Renew does not count")
+			return err
+		}
+		return nil
+	})
 	err := core.Run(ctx)
 	s.coreStopped.Store(true) // first: deny every request from now on
 	// The grants are dropped by now. Their messages are updated, and one

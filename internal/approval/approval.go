@@ -121,6 +121,10 @@ type Core struct {
 	// and sends them.
 	alarmQueue []missedAlarm
 	onAlarm    func(audit.GrantAlarm)
+	// warnQueue holds the warnings before the end of standing grants,
+	// until watchGrants sends them. onRenewed writes the entry of a Renew.
+	warnQueue []warnItem
+	onRenewed func(audit.Decision) error
 	// msgQueue holds the updates of the messages of scheduled grants that
 	// ended, until watchGrants makes them.
 	msgQueue  []msgUpdate

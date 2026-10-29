@@ -104,8 +104,8 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 	var cur, old, foreign *grant
 	if r.Token != nil {
 		for _, g := range c.grants {
-			if !g.standing() {
-				continue
+			if !g.standing() || g.pendingRenewal() {
+				continue // a renewal has no token before its handover
 			}
 			mine := g.client == p.client
 			if grantkey.Equal(g.tokenHash, *r.Token) {
@@ -160,6 +160,11 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 		return deny(old, audit.AlarmOldToken, true)
 	}
 	g := cur
+	if g.next != nil {
+		// g was renewed: its token now belongs to the renewal, which this
+		// use rotates (DESIGN.md section 8).
+		g = c.handOver(g)
+	}
 	for _, it := range p.items {
 		if !g.covers(p.client, it.ref, "", "") {
 			return c.denied(p, audit.CauseNotAllowed) // a client's mistake, not an alarm

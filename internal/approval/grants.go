@@ -89,6 +89,21 @@ type grant struct {
 	// lastUse is the wall time of the last use of a standing grant, and
 	// prevUse the one before it (giveBackUse restores it). Zero: never.
 	lastUse, prevUse time.Time
+
+	// warnAt is when the warning before the end of a standing grant comes
+	// (zero: none, the grant is too short), warned says that it was
+	// queued, and warnMsg is its message, which has the Renew button.
+	warnAt  time.Time
+	warned  bool
+	warnMsg MessageID
+	// next is the renewal of a standing grant, which waits for the next
+	// use of this grant's token, and renewOf is the grant that a waiting
+	// renewal renews. renewing is true while the entry of a Renew is
+	// being written.
+	next, renewOf *grant
+	renewing      bool
+	// endedAs is the cause with which the grant ended.
+	endedAs audit.EndCause
 }
 
 // grantKind is the kind of a grant (DESIGN.md section 8, "The grant core").
@@ -222,17 +237,34 @@ func (g *grant) touches(items []item) bool {
 
 // endWhere is the one place where grants end. It removes each grant for
 // which cause returns a cause, and returns the audit entries of the
-// scheduled ones among them. Core.mu must be held.
+// scheduled ones among them. A renewal that waits for its handover ends
+// with its grant, with the same cause, because it has no token of its own.
+// Core.mu must be held.
 func (c *Core) endWhere(cause func(*grant) audit.EndCause) []audit.GrantEnded {
+	why := make(map[*grant]audit.EndCause)
+	for _, g := range c.grants {
+		if w := cause(g); w != "" {
+			why[g] = w
+		}
+	}
+	for _, g := range c.grants {
+		if w := why[g]; w != "" && w != audit.EndRenewed && g.next != nil && why[g.next] == "" {
+			why[g.next] = w
+		}
+	}
 	var ended []audit.GrantEnded
 	c.grants = slices.DeleteFunc(c.grants, func(g *grant) bool {
-		why := cause(g)
-		if why == "" {
+		w := why[g]
+		if w == "" {
 			return false
 		}
+		g.endedAs = w
+		if g.renewOf != nil {
+			g.renewOf.next = nil
+		}
 		if g.audited() {
-			ended = append(ended, audit.GrantEnded{Subject: g.origin, Cause: why, UsesLeft: max(g.uses, 0)})
-			c.queueMessage(g, why)
+			ended = append(ended, audit.GrantEnded{Subject: g.origin, Cause: w, UsesLeft: max(g.uses, 0)})
+			c.queueMessage(g, w)
 		}
 		return true
 	})
@@ -264,6 +296,13 @@ func (c *Core) queueMessage(g *grant, why audit.EndCause) {
 // scheduled ones wait for the goroutine of watchGrants. Core.mu must be
 // held.
 func (c *Core) sweepGrants(now moment) {
+	// A grant with a renewal hands its token over at its end: its client
+	// gets the renewal's token on its next use.
+	for _, g := range slices.Clone(c.grants) {
+		if g.next != nil && !now.before(g.end) && now.before(g.next.end) {
+			c.handOver(g)
+		}
+	}
 	c.queueEnded(c.endWhere(func(g *grant) audit.EndCause {
 		if !now.before(g.end) {
 			return audit.EndEnded
@@ -430,10 +469,12 @@ func (c *Core) watchGrants(ctx context.Context) {
 		now := c.now()
 		c.sweepGrants(now)
 		c.scanMissed(now)
+		c.scanWarnings(now)
 		next, ok := c.nextEnd()
 		c.mu.Unlock()
 		c.deliverEnded()
 		c.deliverAlarms()
+		c.deliverWarnings()
 		c.deliverMessages(c.stopCtx)
 		var timer <-chan time.Time
 		var t Timer
@@ -477,7 +518,10 @@ func (c *Core) nextEnd() (time.Time, bool) {
 			continue
 		}
 		take(g.end.mono)
-		if g.standing() && now.before(g.end) {
+		if g.standing() && !g.warned && !g.warnAt.IsZero() {
+			take(now.mono.Add(max(g.warnAt.Sub(now.wall), 0)))
+		}
+		if g.standing() && !g.pendingRenewal() && now.before(g.end) {
 			if left, ok := nextWindowEnd(g, now.wall); ok {
 				take(now.mono.Add(left))
 			}
@@ -603,7 +647,7 @@ func (c *Core) scheduledCount(client string) int {
 func (c *Core) standingCount(client string) int {
 	n := 0
 	for _, g := range c.grants {
-		if g.standing() && g.client == client {
+		if g.standing() && !g.pendingRenewal() && g.client == client {
 			n++
 		}
 	}
@@ -689,6 +733,7 @@ func (c *Core) startScheduled(r *Result, now moment) {
 		}
 	}
 	if g.standing() {
+		g.warnAt = c.warnTime(g, now.wall)
 		g.scanned = now.wall
 		if g.start.After(g.scanned) {
 			g.scanned = g.start
