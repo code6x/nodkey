@@ -70,6 +70,11 @@ const ShortCodeHeader = "Nodkey-Short-Code"
 // decides nothing with it. Read it with Version.
 const VersionHeader = "Nodkey-Version"
 
+// GrantTokenHeader holds the token of a standing grant (DESIGN.md
+// sections 8 and 10). nodkey run sends it with the request for secrets. The
+// value is a secret: never print or log it.
+const GrantTokenHeader = "Nodkey-Grant-Token" //nolint:gosec // G101: a header name, not a credential.
+
 // Version returns the version in the header VersionHeader of a request or
 // an answer. It returns "" when there is no such header, more than one,
 // or a value that version.Valid refuses. Such a value counts as no
@@ -123,6 +128,8 @@ const (
 	// MaxTime is the most bytes of a time in a PreapproveRequest. Valid
 	// times are shorter.
 	MaxTime = 64
+	// MaxWindows is the most windows of a standing grant.
+	MaxWindows = 7
 	// MaxKeys is the most keys that one client may use, so that a
 	// KeysAnswer stays small. The broker refuses to start with more.
 	MaxKeys = 256
