@@ -20,8 +20,10 @@ const noLimit = -1
 // host keys and for one remote user, from its start until its end, for a
 // number of uses.
 type grant struct {
-	// id is the ID of a scheduled grant. It is "" for the other grants,
-	// which have no entry in the audit log of their own.
+	// kind says what the grant is. The zero value is a window grant.
+	kind grantKind
+	// id is the ID of a scheduled or standing grant. It is "" for a window
+	// grant, which has no entry in the audit log of its own.
 	id     string
 	client string
 	// refs are the secrets of the grant, or the one key.
@@ -54,7 +56,38 @@ type grant struct {
 	prompt Prompt
 	// approved is when the person approved it.
 	approved time.Time
+
+	// windows are the daily or weekly windows of a standing grant. A grant
+	// without windows is live all the time before its end.
+	windows []window
+	// perWindow is the number of uses in each opening of a window of a
+	// standing grant.
+	perWindow int
+	// winKey is the latest opening of a window that had a use, and winUsed
+	// the uses in it. A later opening starts the count again.
+	winKey  windowKey
+	winUsed int
+	// tokenHash is the SHA-256 hash of the current token of a standing
+	// grant, and oldHashes are the hashes of the tokens that it had
+	// before: one for each use. The grant never holds a token.
+	tokenHash [32]byte
+	oldHashes [][32]byte
+	// alarmMark is the day of the last alarm outside the windows.
+	alarmMark string
 }
+
+// grantKind is the kind of a grant (DESIGN.md section 8, "The grant core").
+type grantKind int
+
+const (
+	// kindWindow: "Approve N min" or nodkey ssh-grant. It must be the zero
+	// value.
+	kindWindow grantKind = iota
+	// kindScheduled: a pre-approval with one time span.
+	kindScheduled
+	// kindStanding: a pre-approval with daily or weekly windows.
+	kindStanding
+)
 
 // msgUpdate is a call to the approver about the message of a scheduled
 // grant: End, and for a grant that ended with uses left also Notify. The
@@ -81,15 +114,69 @@ const (
 	holdFirstWait = 10 * time.Second
 )
 
-// scheduled reports whether g comes from nodkey preapprove.
-func (g *grant) scheduled() bool { return g.id != "" }
+// scheduled reports whether g is a scheduled grant.
+func (g *grant) scheduled() bool { return g.kind == kindScheduled }
+
+// standing reports whether g is a standing grant.
+func (g *grant) standing() bool { return g.kind == kindStanding }
+
+// audited reports whether g comes from nodkey preapprove, of any kind: it
+// has an ID, entries in the audit log and a message.
+func (g *grant) audited() bool { return g.kind != kindWindow }
 
 // live reports whether g may be used at now: not before its start on the
 // wall clock, and before its end on both clocks (moment.before), so a
 // grant is never usable at or after its end. A wall clock that is set back
 // cannot make it last longer, because the monotonic end stays.
+//
+// A grant with windows is live only inside one of them, read on the wall
+// clock (window.go).
 func (g *grant) live(now moment) bool {
-	return !now.wall.Before(g.start) && now.before(g.end)
+	if now.wall.Before(g.start) || !now.before(g.end) {
+		return false
+	}
+	if len(g.windows) == 0 {
+		return true
+	}
+	_, _, in := windowAt(g.windows, now.wall)
+	return in
+}
+
+// tryUse takes one use of the standing grant g at now, if it may be used.
+// It tells apart a grant that is outside its windows and one whose uses in
+// this window are spent, for the alarms. A standing grant without a valid
+// window cannot be used.
+func (g *grant) tryUse(now moment) useResult {
+	if !g.standing() || len(g.windows) == 0 || !now.before(g.end) {
+		return useNone
+	}
+	if now.wall.Before(g.start) {
+		return useOutsideWindow // a valid token before the start is outside the windows
+	}
+	key, _, in := windowAt(g.windows, now.wall)
+	if !in {
+		return useOutsideWindow
+	}
+	// A later opening starts the count again. An earlier or equal one keeps
+	// it, so a wall clock set back cannot give more uses.
+	if key.after(g.winKey) {
+		g.winKey, g.winUsed = key, 0
+	}
+	if g.winUsed >= g.perWindow {
+		return useOverUses
+	}
+	g.winUsed++
+	return useOK
+}
+
+// giveBackUse takes back the use that tryUse took, because the use did
+// not happen.
+func (g *grant) giveBackUse() {
+	if g.standing() {
+		g.winUsed = max(g.winUsed-1, 0)
+		return
+	}
+	g.uses++
 }
 
 // covers reports whether g covers the item r of a request of client with
@@ -119,7 +206,7 @@ func (c *Core) endWhere(cause func(*grant) audit.EndCause) []audit.GrantEnded {
 		if why == "" {
 			return false
 		}
-		if g.scheduled() {
+		if g.audited() {
 			ended = append(ended, audit.GrantEnded{Subject: g.origin, Cause: why, UsesLeft: max(g.uses, 0)})
 			c.queueMessage(g, why)
 		}
@@ -311,7 +398,8 @@ func (c *Core) deliverEnded() {
 // watchGrants ends the scheduled grants when their time is up, and hands
 // their entries out, until ctx ends or the core stops. A timer follows the
 // monotonic clock only; a wall clock that moves forward is found by the
-// next request, which sweeps first (begin).
+// next request, which sweeps first (begin). It also wakes at the end of
+// the current window of each standing grant.
 func (c *Core) watchGrants(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -341,14 +429,31 @@ func (c *Core) watchGrants(ctx context.Context) {
 	}
 }
 
-// nextEnd returns the earliest end of a scheduled grant, on the monotonic
-// clock. Core.mu must be held.
+// nextEnd returns the earliest time that watchGrants must wake for, on
+// the monotonic clock: the end of an audited grant, or the end of the
+// current window of a standing grant (the missed-window alarm of part 2
+// reads it). The end of a window is the wall clock time left in it, added
+// to the monotonic clock; if the clocks change inside the window, the wake
+// is early or late, and the one who reads it looks again. Core.mu must be
+// held.
 func (c *Core) nextEnd() (time.Time, bool) {
 	var next time.Time
 	found := false
+	take := func(t time.Time) {
+		if !found || t.Before(next) {
+			next, found = t, true
+		}
+	}
+	now := c.now()
 	for _, g := range c.grants {
-		if g.scheduled() && (!found || g.end.mono.Before(next)) {
-			next, found = g.end.mono, true
+		if !g.audited() {
+			continue
+		}
+		take(g.end.mono)
+		if g.standing() && now.before(g.end) {
+			if _, left, in := windowAt(g.windows, now.wall); in {
+				take(now.mono.Add(left))
+			}
 		}
 	}
 	return next, found
@@ -361,7 +466,7 @@ func (c *Core) nextEnd() (time.Time, bool) {
 func (c *Core) dropScheduled() {
 	c.mu.Lock()
 	c.queueEnded(c.endWhere(func(g *grant) audit.EndCause {
-		if g.scheduled() {
+		if g.audited() {
 			return audit.EndStopped
 		}
 		return ""
@@ -389,7 +494,7 @@ func (c *Core) FlushMessages() {
 func (c *Core) revoke(a Answer) error {
 	now := c.now()
 	c.sweepGrants(now)
-	i := slices.IndexFunc(c.grants, func(g *grant) bool { return g.scheduled() && g.reqID == a.RequestID })
+	i := slices.IndexFunc(c.grants, func(g *grant) bool { return g.audited() && g.reqID == a.RequestID })
 	if i < 0 {
 		return ErrUnknownRequest
 	}
@@ -406,7 +511,7 @@ func (c *Core) revoke(a Answer) error {
 	return nil
 }
 
-// CancelGrant ends the scheduled grant id of client at the client's
+// CancelGrant ends the scheduled or standing grant id of client at the client's
 // request, without a tap. It returns the audit entry, which the caller
 // writes. It reports false for an ID that no grant of client has, and the
 // answer is the same for the ID of another client: a client learns
@@ -416,7 +521,7 @@ func (c *Core) CancelGrant(client, id string) (audit.GrantEnded, bool) {
 	defer c.mu.Unlock()
 	c.sweepGrants(c.now()) // a grant past its end is gone
 	ended := c.endWhere(func(g *grant) audit.EndCause {
-		if g.scheduled() && g.client == client && g.id == id {
+		if g.audited() && g.client == client && g.id == id {
 			return audit.EndCancelled
 		}
 		return ""
@@ -431,7 +536,7 @@ func (c *Core) CancelGrant(client, id string) (audit.GrantEnded, bool) {
 // ssh-grant with the scope k is valid now.
 func (c *Core) granted(k grantKey, now moment) bool {
 	return slices.ContainsFunc(c.grants, func(g *grant) bool {
-		return !g.scheduled() && g.covers(k.client, k.ref, k.hostKey, k.user) && g.live(now)
+		return g.kind == kindWindow && g.covers(k.client, k.ref, k.hostKey, k.user) && g.live(now)
 	})
 }
 
@@ -440,14 +545,14 @@ func (c *Core) granted(k grantKey, now moment) bool {
 // the later end. Core.mu must be held.
 func (c *Core) addWindowGrant(k grantKey, end moment) {
 	for _, g := range c.grants {
-		if !g.scheduled() && g.covers(k.client, k.ref, k.hostKey, k.user) && len(g.refs) == 1 {
+		if g.kind == kindWindow && g.covers(k.client, k.ref, k.hostKey, k.user) && len(g.refs) == 1 {
 			if g.end.mono.Before(end.mono) {
 				g.end = end
 			}
 			return
 		}
 	}
-	g := &grant{client: k.client, refs: []ref{k.ref}, user: k.user, end: end, uses: noLimit}
+	g := &grant{kind: kindWindow, client: k.client, refs: []ref{k.ref}, user: k.user, end: end, uses: noLimit}
 	if k.hostKey != "" {
 		g.hostKeys = []string{k.hostKey}
 	}
@@ -460,6 +565,18 @@ func (c *Core) scheduledCount(client string) int {
 	n := 0
 	for _, g := range c.grants {
 		if g.scheduled() && g.client == client {
+			n++
+		}
+	}
+	return n
+}
+
+// standingCount returns how many standing grants client has. Core.mu must
+// be held.
+func (c *Core) standingCount(client string) int {
+	n := 0
+	for _, g := range c.grants {
+		if g.standing() && g.client == client {
 			n++
 		}
 	}
@@ -525,12 +642,23 @@ func (c *Core) startScheduled(r *Result, now moment) {
 		return
 	}
 	c.sweepGrants(now)
-	if !now.before(g.end) || c.scheduledCount(g.client) >= c.cfg.Preapprove.MaxGrants {
+	if !now.before(g.end) {
 		return
 	}
-	for _, ref := range g.refs {
-		if c.client(g.client).denied[ref] > r.seq {
-			return // a Deny came after the tap
+	if g.standing() {
+		// A Deny of another request does not touch a standing grant
+		// (DESIGN.md section 8).
+		if c.standingCount(g.client) >= c.cfg.Standing.MaxGrants {
+			return
+		}
+	} else {
+		if c.scheduledCount(g.client) >= c.cfg.Preapprove.MaxGrants {
+			return
+		}
+		for _, ref := range g.refs {
+			if c.client(g.client).denied[ref] > r.seq {
+				return // a Deny came after the tap
+			}
 		}
 	}
 	c.grants = append(c.grants, g)

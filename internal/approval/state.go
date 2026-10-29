@@ -155,6 +155,8 @@ type clientState struct {
 	sent rateLog
 	// notices holds when the newest notices of "never ask" uses were sent.
 	notices rateLog
+	// unknown holds when the newest alarms of unknown tokens came.
+	unknown rateLog
 	// queue holds the requests that wait for a place, oldest first.
 	queue []*pending
 	// paused holds when the pause after a Deny ends, for each secret or
@@ -163,6 +165,8 @@ type clientState struct {
 	// preapproving counts the preapprove requests that wait for a tap or
 	// are being decided.
 	preapproving int
+	// standingPending is the same for standing grants.
+	standingPending int
 	// denied holds the number of the newest Deny for each secret or key
 	// (see Core.decisions). A grant from an earlier tap does not start.
 	denied map[ref]uint64
@@ -272,7 +276,10 @@ func (c *Core) deny(cs *clientState, p *pending, res *Result, now moment, seq ui
 	// A scheduled grant ends too, also one that has not started yet; its
 	// entry follows the entries of res.
 	res.ended = append(res.ended, c.endWhere(func(g *grant) audit.EndCause {
-		if g.client == p.client && g.touches(p.items) {
+		// A standing grant stays: it lasts for weeks, and a Deny at noon
+		// must not break the night job. Only Revoke, an alarm, a renewal
+		// and its end date end it (DESIGN.md section 8).
+		if g.client == p.client && !g.standing() && g.touches(p.items) {
 			return audit.EndDenied
 		}
 		return ""
@@ -310,7 +317,7 @@ func (c *Core) neverApplies(client string, it item, now moment) bool {
 // scheduled grant is never covered: it asks for new grants. A scheduled
 // grant is not looked at here (findScheduled).
 func (c *Core) covered(p *pending, now moment) ([]audit.Via, bool) {
-	if p.kind == audit.KindSSHGrant || p.kind == audit.KindPreapprove || len(p.items) == 0 {
+	if p.kind == audit.KindSSHGrant || p.kind.IsPreapprove() || len(p.items) == 0 {
 		return nil, false
 	}
 	vias := make([]audit.Via, len(p.items))

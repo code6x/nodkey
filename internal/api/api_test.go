@@ -29,7 +29,7 @@ var allTypes = []any{
 	SecretsRequest{}, SecretRef{}, SecretsAnswer{}, SecretValue{},
 	SignRequest{}, SignAnswer{},
 	GrantRequest{}, GrantAnswer{},
-	PreapproveRequest{}, PreapproveAnswer{}, PreapproveCancelRequest{}, PreapproveCancelAnswer{},
+	PreapproveRequest{}, Window{}, PreapproveAnswer{}, PreapproveCancelRequest{}, PreapproveCancelAnswer{},
 	ErrorAnswer{},
 }
 
@@ -96,7 +96,15 @@ func fullValues() []any {
 			Secrets: []string{"backup-token"}, Key: "k", User: "u", Hosts: []string{"web-1"},
 			From: "2026-10-28T03:00", Until: "2026-10-28T04:00+02:00", Uses: 2, Reason: "r",
 		},
+		&PreapproveRequest{
+			Secrets: []string{"backup-token"}, Hosts: []string{}, From: "2026-10-28T03:00", Until: "2026-12-28T04:00+02:00", Uses: 1,
+			Windows: []Window{{Kind: "daily", Days: []string{}, From: "03:00", To: "05:00"},
+				{Kind: "weekly", Days: []string{"mon", "thu"}, From: "00:00", To: "23:59"}},
+		},
+		&Window{Kind: "weekly", Days: []string{"sun"}, From: "01:05", To: "02:10"},
 		&PreapproveAnswer{ID: "AAAAAAAAAAAAAAAAAAAAAA", From: "2026-10-28T03:00:00+02:00", Until: "2026-10-28T04:00:00+02:00"},
+		&PreapproveAnswer{ID: "AAAAAAAAAAAAAAAAAAAAAA", From: "2026-10-28T03:00:00+02:00", Until: "2026-10-28T04:00:00+02:00",
+			GrantToken: "not-a-real-token"},
 		&PreapproveCancelRequest{ID: "AAAAAAAAAAAAAAAAAAAAAA"},
 		&PreapproveCancelAnswer{ID: "AAAAAAAAAAAAAAAAAAAAAA"},
 		&ErrorAnswer{Error: "Forbidden"},
@@ -773,6 +781,126 @@ func TestParseTime(t *testing.T) {
 	} {
 		if got, err := ParseTime(in, berlin); err == nil {
 			t.Errorf("ParseTime(%q) = %v; want it refused", in, got)
+		}
+	}
+}
+
+// TestPreapproveWindows: the windows of a standing grant are optional,
+// capped, and checked strictly; an old request has no field for them.
+func TestPreapproveWindows(t *testing.T) {
+	good := Window{Kind: "daily", Days: []string{}, From: "03:00", To: "05:00"}
+	base := func(ws ...Window) *PreapproveRequest {
+		return &PreapproveRequest{Secrets: []string{"s"}, Hosts: []string{}, From: "a", Until: "b", Uses: 1, Windows: ws}
+	}
+	data, err := json.Marshal(base())
+	if err != nil || strings.Contains(string(data), "windows") {
+		t.Errorf("a request without windows is %s, %v; want no windows field", data, err)
+	}
+	if err := base(slices.Repeat([]Window{good}, MaxWindows)...).Check(); err != nil {
+		t.Errorf("%d windows: %v", MaxWindows, err)
+	}
+	for _, tt := range []struct {
+		name string
+		w    []Window
+	}{
+		{"too many", slices.Repeat([]Window{good}, MaxWindows+1)},
+		{"kind", []Window{{Kind: "monthly", From: "03:00", To: "05:00"}}},
+		{"empty kind", []Window{{From: "03:00", To: "05:00"}}},
+		{"long kind", []Window{{Kind: strings.Repeat("a", MaxName+1), From: "03:00", To: "05:00"}}},
+		{"daily with days", []Window{{Kind: "daily", Days: []string{"mon"}, From: "03:00", To: "05:00"}}},
+		{"weekly without days", []Window{{Kind: "weekly", From: "03:00", To: "05:00"}}},
+		{"weekly day twice", []Window{{Kind: "weekly", Days: []string{"mon", "mon"}, From: "03:00", To: "05:00"}}},
+		{"weekly bad day", []Window{{Kind: "weekly", Days: []string{"Mon"}, From: "03:00", To: "05:00"}}},
+		{"weekly 8 days", []Window{{Kind: "weekly", Days: slices.Repeat([]string{"mon"}, 8), From: "03:00", To: "05:00"}}},
+		{"to before from", []Window{{Kind: "daily", From: "05:00", To: "03:00"}}},
+		{"empty span", []Window{{Kind: "daily", From: "03:00", To: "03:00"}}},
+		{"hour 24", []Window{{Kind: "daily", From: "03:00", To: "24:00"}}},
+		{"minute 60", []Window{{Kind: "daily", From: "03:60", To: "04:00"}}},
+		{"no zero pad", []Window{{Kind: "daily", From: "3:00", To: "05:00"}}},
+		{"seconds", []Window{{Kind: "daily", From: "03:00:00", To: "05:00"}}},
+		{"letters", []Window{{Kind: "daily", From: "ab:cd", To: "05:00"}}},
+		{"long time", []Window{{Kind: "daily", From: strings.Repeat("1", MaxTime+1), To: "05:00"}}},
+	} {
+		r := base(tt.w...)
+		if r.Check() == nil {
+			t.Errorf("%s: Check passes", tt.name)
+		}
+		data, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeInto(&PreapproveRequest{}, data); err == nil {
+			t.Errorf("%s: the request is decoded", tt.name)
+		}
+	}
+	pre := `{"secrets":[],"key":"","user":"","hosts":[],"from":"","until":"","uses":1,"reason":""`
+	win := `{"kind":"daily","days":[],"from":"03:00","to":"05:00"}`
+	if _, err := decodeInto(&PreapproveRequest{}, []byte(pre+`,"windows":[`+win+`]}`)); err != nil {
+		t.Errorf("a valid request: %v", err)
+	}
+	if _, err := decodeInto(&PreapproveRequest{}, []byte(pre+`}`)); err != nil {
+		t.Errorf("a request without windows: %v", err)
+	}
+	for _, bad := range []string{
+		pre + `,"windows":[]}`,
+		pre + `,"windows":null}`,
+		pre + `,"windows":[null]}`,
+		pre + `,"windows":{}}`,
+		pre + `,"windows":[` + win + `],"windows":[` + win + `]}`,
+		pre + `,"windows":[{"kind":"daily","days":[],"from":"03:00","to":"05:00","x":1}]}`,
+		pre + `,"windows":[{"kind":"daily","days":[],"from":"03:00"}]}`,
+		pre + `,"windows":[{"kind":"daily","days":null,"from":"03:00","to":"05:00"}]}`,
+		pre + `,"windows":[{"Kind":"daily","days":[],"from":"03:00","to":"05:00"}]}`,
+		pre + `,"windows":[{"kind":"weekly","days":["mon",null],"from":"03:00","to":"05:00"}]}`,
+	} {
+		if _, err := decodeInto(&PreapproveRequest{}, []byte(bad)); err == nil {
+			t.Errorf("%s: the request was decoded", bad)
+		}
+	}
+}
+
+// TestPreapproveAnswerToken: grant_token is optional, a string, capped,
+// and nothing else is allowed.
+func TestPreapproveAnswerToken(t *testing.T) {
+	pre := `{"id":"AAAAAAAAAAAAAAAAAAAAAA","from":"a","until":"b"`
+	for _, ok := range []string{pre + `}`, pre + `,"grant_token":"x"}`} {
+		if _, err := decodeInto(&PreapproveAnswer{}, []byte(ok)); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		pre + `,"grant_token":null}`,
+		pre + `,"grant_token":1}`,
+		pre + `,"grant_token":"` + strings.Repeat("a", MaxGrantToken+1) + `"}`,
+		pre + `,"grant_token":"x","grant_token":"y"}`,
+		pre + `,"token":"x"}`,
+		`{"id":"AAAAAAAAAAAAAAAAAAAAAA","from":"a","grant_token":"x"}`,
+	} {
+		if _, err := decodeInto(&PreapproveAnswer{}, []byte(bad)); err == nil {
+			t.Errorf("%s: the answer was decoded", bad)
+		}
+	}
+}
+
+func TestGrantTokenHeader(t *testing.T) {
+	if GrantTokenHeader != "Nodkey-Grant-Token" { //nolint:gosec // G101: a header name, not a credential.
+		t.Errorf("GrantTokenHeader = %q", GrantTokenHeader)
+	}
+}
+
+// TestPreapproveAnswerHidesToken: no way of printing or logging the answer
+// shows the token.
+func TestPreapproveAnswerHidesToken(t *testing.T) {
+	tok := strings.Repeat("q", 12) + "-made-up"
+	a := PreapproveAnswer{ID: "AAAAAAAAAAAAAAAAAAAAAA", From: "a", Until: "b", GrantToken: tok}
+	var buf strings.Builder
+	slog.New(slog.NewTextHandler(&buf, nil)).Info("x", "answer", a)
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("x", "answer", &a)
+	for _, out := range []string{
+		fmt.Sprintf("%v %+v %#v %s %q %x %d", a, a, a, a, a, a, a), fmt.Sprintf("%v %+v %#v", &a, &a, &a), buf.String(),
+	} {
+		if strings.Contains(out, tok) {
+			t.Error("an output holds the token")
 		}
 	}
 }

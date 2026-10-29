@@ -8,12 +8,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/code6x/nodkey/internal/api"
+	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/sshauth"
 	"github.com/code6x/nodkey/internal/transport"
 )
@@ -21,6 +23,10 @@ import (
 // preapproveUsage is the help of nodkey preapprove.
 const preapproveUsage = `Usage: nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...)
                          --from TIME --until TIME --uses N [--reason TEXT]
+       nodkey preapprove --secret NAME...
+                         (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM)
+                         --until TIME [--from TIME] [--uses N]
+                         --grant-token FILE [--reason TEXT]
        nodkey preapprove --cancel ID
 
 Ask the broker now for a grant that you use later, and wait until a person
@@ -42,12 +48,24 @@ is gone. A job that runs at night can ask for its grant when it is planned.
                   2026-10-28T03:00, which is the broker's local time.
                   Give an offset near the change to summer time.
   --uses N        how many uses the grant has
+  --daily W       a standing grant (secrets only): the window W, such as
+                  03:00-05:00, every day, in the broker's local time
+  --weekly D W    the same, on the days D, such as mon,thu (mon tue wed
+                  thu fri sat sun). Give --daily or --weekly, not both.
+                  With one of them, --until is a must, --from is optional
+                  (default: now), --uses is the number in each window
+                  (default 1), and the grant needs no tap after the first.
+  --grant-token FILE
+                  for a standing grant: the file where the token is
+                  written. The token is never printed. It must be a new
+                  file, or your own file with mode 0600.
   --reason TEXT   why the grant is needed. Without it, the reason is the
                   environment variable NODKEY_REASON.
   --cancel ID     end a grant of this machine now, without a tap; ID is
                   what nodkey preapprove printed on its standard output
 
-After an approval, the ID of the grant is printed on standard output. The
+After an approval, the ID of the grant is printed on standard output. For a
+standing grant, nodkey run --grant-token FILE uses the token. The
 client config is ~/.config/nodkey/client.toml. nodkey preapprove exits with
 0 when the person approved or the grant is cancelled, or with 64 (wrong
 usage), 69 (the broker cannot be reached) or 77 (denied, or not a grant of
@@ -95,6 +113,11 @@ type preapproveOptions struct {
 	from, until string   // as typed
 	uses        int
 	cancel      string // --cancel: the ID; the other options are not given
+	// windows is the standing grant: one window, from --daily or --weekly.
+	// Nil for a scheduled grant.
+	windows []api.Window
+	// grantToken is the file of --grant-token, for a standing grant.
+	grantToken string
 }
 
 // runPreapprove runs nodkey preapprove, and returns the exit code.
@@ -112,6 +135,15 @@ func (g granter) runPreapprove(ctx context.Context, args []string, stdout, w io.
 	reason := o.reason
 	if !o.reasonSet {
 		reason = lookupEnv(g.environ(), reasonVar)
+	}
+	if o.windows != nil {
+		// Fail before the tap, not after: the token would have no place.
+		if err := CheckGrantTokenFile(o.grantToken); err != nil {
+			return fail(stderr, exitUsage, err.Error())
+		}
+		if o.from == "" {
+			o.from = g.now().Format(time.RFC3339)
+		}
 	}
 	path, body, err := newPreapprove(o, reason)
 	if err != nil {
@@ -172,14 +204,48 @@ func (g granter) runPreapprove(ctx context.Context, args []string, stdout, w io.
 		return cancelled(ctx, stderr)
 	}
 	if !valid {
-		mayHaveStarted()
+		if o.windows != nil && validGrantID(ans.ID) {
+			// A standing grant without a usable answer has no use. End it.
+			cancelLeftover(ctx, b, ans.ID, stderr)
+		} else {
+			mayHaveStarted()
+		}
 		return fail(stderr, exitUnavailable, "the answer of the broker is not valid")
+	}
+	if err := saveAnswerToken(o, ans.GrantToken); err != nil {
+		// A standing grant without its token is of no use. End it.
+		cancelLeftover(ctx, b, ans.ID, stderr)
+		return fail(stderr, exitUnavailable, err.Error()+"; the grant "+ans.ID+" is cancelled")
 	}
 	// The grant is made. The ID goes to stdout for a script that cancels.
 	_, _ = fmt.Fprintln(stdout, ans.ID)
 	_, _ = fmt.Fprintf(stderr, "nodkey: grant %s: %s from %s until %s (exit %d)\n",
 		ans.ID, usesText(o.uses), ans.From, ans.Until, exitOK)
 	return exitOK
+}
+
+// saveAnswerToken checks the token of the answer against the request and
+// saves it. A scheduled grant must come with no token; a standing grant
+// must come with a token that grantkey.Parse accepts. The errors never
+// hold the token.
+func saveAnswerToken(o *preapproveOptions, raw string) error {
+	if o.windows == nil {
+		if raw != "" {
+			return errors.New("the answer of the broker is not valid: it has a token for a grant that is not a standing grant")
+		}
+		return nil
+	}
+	if raw == "" {
+		return errors.New("the answer of the broker is not valid: it has no token")
+	}
+	tok, err := grantkey.Parse(raw)
+	if err != nil {
+		return errors.New("the answer of the broker is not valid: its token is not a token")
+	}
+	if err := SaveGrantToken(o.grantToken, tok); err != nil {
+		return err
+	}
+	return nil
 }
 
 // cancelWait is the most time that cancelLeftover waits for the broker.
@@ -254,7 +320,8 @@ func parsePreapproveArgs(args []string) (*preapproveOptions, error) {
 		rest = rest[1:]
 		name, value, hasValue := splitOption(arg)
 		switch name {
-		case "secret", "key", "user", "host", "from", "until", "uses", "reason", "cancel":
+		case "secret", "key", "user", "host", "from", "until", "uses", "reason", "cancel",
+			"daily", "weekly", "grant-token":
 		case "h", "help":
 			return nil, errors.New("--help must be the only argument")
 		default:
@@ -277,6 +344,20 @@ func parsePreapproveArgs(args []string) (*preapproveOptions, error) {
 		}
 		var err error
 		switch name {
+		case "daily":
+			err = addWindow(o, given, name, value, "")
+		case "weekly":
+			if len(rest) == 0 {
+				return nil, errors.New("--weekly needs days and a window, such as --weekly mon,thu 03:00-05:00")
+			}
+			var span string
+			span, rest = rest[0], rest[1:]
+			err = addWindow(o, given, name, value, span)
+		case "grant-token":
+			if value == "" || len(value) > 4096 || strings.ContainsRune(value, 0) {
+				err = errors.New("--grant-token: give the path of a file")
+			}
+			o.grantToken = value
 		case "secret":
 			err = addSecret(o, seen, value)
 		case "key":
@@ -326,6 +407,12 @@ func checkPreapproveGiven(o *preapproveOptions, given map[string]bool) error {
 			return errors.New("--cancel must be the only option")
 		}
 		return nil
+	}
+	if o.windows != nil {
+		return checkStandingGiven(o, given)
+	}
+	if given["grant-token"] {
+		return errors.New("--grant-token is for a standing grant: give --daily or --weekly")
 	}
 	switch {
 	case len(o.secrets) > 0 && (given["key"] || given["user"] || len(o.hosts) > 0):
@@ -386,6 +473,7 @@ func newPreapprove(o *preapproveOptions, reason string) (string, []byte, error) 
 		req := api.PreapproveRequest{
 			Secrets: o.secrets, Key: o.key, User: o.user, Hosts: o.hosts,
 			From: o.from, Until: o.until, Uses: int64(o.uses), Reason: claimedText(reason),
+			Windows: o.windows,
 		}
 		if err := req.Check(); err != nil {
 			return "", nil, errors.New("the request is over a cap of the broker")
@@ -397,4 +485,72 @@ func newPreapprove(o *preapproveOptions, reason string) (string, []byte, error) 
 		return "", nil, errors.New("the request is larger than the broker reads")
 	}
 	return path, body, nil
+}
+
+// checkStandingGiven checks the options of a standing grant: secrets,
+// --until and --grant-token are a must; --from and --uses are optional.
+func checkStandingGiven(o *preapproveOptions, given map[string]bool) error {
+	switch {
+	case given["key"] || given["user"] || len(o.hosts) > 0:
+		return errors.New("a standing grant is for secrets only; give them with --secret")
+	case len(o.secrets) == 0:
+		return errors.New("give the secrets with --secret NAME")
+	case !given["until"]:
+		return errors.New("a standing grant needs its end: give --until TIME, such as --until 2026-12-28T00:00")
+	case !given["grant-token"]:
+		return errors.New("a standing grant needs --grant-token FILE, the file where the token is written")
+	}
+	if !given["uses"] {
+		o.uses = 1
+	}
+	return nil
+}
+
+// addWindow adds the window of --daily (days "") or --weekly to o. Only one
+// of the two may be given, and only once. For --weekly, days is the list
+// of day names; span is the window "HH:MM-HH:MM".
+func addWindow(o *preapproveOptions, given map[string]bool, option, value, span string) error {
+	if given["daily"] && option == "weekly" || given["weekly"] && option == "daily" {
+		return errors.New("give --daily or --weekly, not both")
+	}
+	w := api.Window{Kind: api.WindowDaily, Days: []string{}}
+	if option == "weekly" {
+		w.Kind = api.WindowWeekly
+		days, err := parseDays(value)
+		if err != nil {
+			return fmt.Errorf("--weekly: %w", err)
+		}
+		w.Days = days
+	} else {
+		span = value
+	}
+	from, to, ok := strings.Cut(span, "-")
+	if !ok {
+		return fmt.Errorf("--%s %.64q: give a window such as 03:00-05:00", option, span)
+	}
+	w.From, w.To = from, to
+	if err := w.Check(); err != nil {
+		return fmt.Errorf("--%s %.64q: give a window of two times HH:MM on one day, such as 03:00-05:00, with the first before the second", option, span)
+	}
+	o.windows = []api.Window{w}
+	return nil
+}
+
+// parseDays reads day names such as "mon,thu": lower case, each once. It
+// returns them in the order of the week.
+func parseDays(s string) ([]string, error) {
+	var days []string
+	for name := range strings.SplitSeq(s, ",") {
+		if !slices.Contains(api.Weekdays[:], name) {
+			return nil, fmt.Errorf("%.64q is not a day; use mon, tue, wed, thu, fri, sat or sun, with commas, such as mon,thu", name)
+		}
+		if slices.Contains(days, name) {
+			return nil, fmt.Errorf("the day %s is given twice", name)
+		}
+		days = append(days, name)
+	}
+	slices.SortFunc(days, func(a, b string) int {
+		return slices.Index(api.Weekdays[:], a) - slices.Index(api.Weekdays[:], b)
+	})
+	return days, nil
 }

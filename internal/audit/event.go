@@ -38,6 +38,9 @@ const (
 	// KindPreapprove is nodkey preapprove: a scheduled grant for later
 	// (DESIGN.md section 8).
 	KindPreapprove Kind = "preapprove"
+	// KindStanding is nodkey preapprove with daily or weekly windows: a
+	// standing grant (DESIGN.md section 8).
+	KindStanding Kind = "standing"
 )
 
 // Answer is the button the approver pressed.
@@ -62,6 +65,7 @@ const (
 	ViaGrant     Via = "grant"      // a grant from an "Approve N min" tap or from nodkey ssh-grant
 	ViaNeverRule Via = "never_rule" // a rule with ask = "never"
 	ViaScheduled Via = "scheduled"  // a scheduled grant from nodkey preapprove
+	ViaStanding  Via = "standing"   // a standing grant from nodkey preapprove with windows
 )
 
 // Cause says why a request was denied.
@@ -88,6 +92,8 @@ const (
 	EndDenied    EndCause = "denied"    // the person denied a later request for it
 	EndStopped   EndCause = "stopped"   // the broker stopped
 	EndRevoked   EndCause = "revoked"   // the person pressed Revoke
+	EndAlarm     EndCause = "alarm"     // a standing grant met an old token or too many uses (DESIGN.md section 8)
+	EndRenewed   EndCause = "renewed"   // a standing grant was replaced by its renewal
 )
 
 // TapCause says why a button press did not count (DESIGN.md section 7).
@@ -170,7 +176,18 @@ type Subject struct {
 	Uses      int    `json:"uses,omitempty"`
 	NotBefore string `json:"not_before,omitempty"`
 	NotAfter  string `json:"not_after,omitempty"`
+	// Windows are the windows of a KindStanding request, such as
+	// "daily 03:00-05:00" or "mon,thu 03:00-05:00", in the broker's local
+	// time. Uses is then the number of uses in each window.
+	Windows []string `json:"windows,omitempty"`
 }
+
+// IsPreapprove reports whether k is a request for a grant that nodkey
+// preapprove makes: a scheduled grant or a standing grant.
+func (k Kind) IsPreapprove() bool { return k == KindPreapprove || k == KindStanding }
+
+// maxWindowEntries is the most windows in a standing request (api.MaxWindows).
+const maxWindowEntries = 7
 
 // BrokerStarted is the first entry of each broker run.
 type BrokerStarted struct {
@@ -212,6 +229,31 @@ type GrantUsed struct {
 	Subject
 	// Via says what allowed it.
 	Via Via `json:"via"`
+	// NewTokenHash is the SHA-256 hash of the new token of a standing
+	// grant, in hex, for Via standing only. Never the token itself.
+	NewTokenHash string `json:"new_token_hash,omitempty"`
+}
+
+// AlarmCause says why a standing grant raised an alarm (DESIGN.md section
+// 8).
+type AlarmCause string
+
+// The causes of a grant_alarm entry.
+const (
+	AlarmOldToken      AlarmCause = "old_token"      // a token that was replaced came again
+	AlarmOverUses      AlarmCause = "over_uses"      // more uses in a window than allowed
+	AlarmOutsideWindow AlarmCause = "outside_window" // a valid token outside the windows
+	AlarmUnknownToken  AlarmCause = "unknown_token"  // a token that no grant of the client has
+	AlarmMissedWindow  AlarmCause = "missed_window"  // a window ended with no use
+)
+
+// GrantAlarm records an alarm of a standing grant. Subject is that of the
+// request, with the GrantID of the grant. For an unknown token there is no
+// grant, so no GrantID.
+type GrantAlarm struct {
+	Subject
+	// Cause says why.
+	Cause AlarmCause `json:"cause"`
 }
 
 // GrantEnded records the end of a scheduled grant. Subject is that of the
@@ -291,6 +333,7 @@ const (
 	eventDecision      = "decision"
 	eventGrantUsed     = "grant_used"
 	eventGrantEnded    = "grant_ended"
+	eventGrantAlarm    = "grant_alarm"
 	eventSecretSent    = "secret_sent"
 	eventSigned        = "signed"
 	eventDenied        = "denied"
@@ -305,6 +348,7 @@ func (Request) eventName() string       { return eventRequest }
 func (Decision) eventName() string      { return eventDecision }
 func (GrantUsed) eventName() string     { return eventGrantUsed }
 func (GrantEnded) eventName() string    { return eventGrantEnded }
+func (GrantAlarm) eventName() string    { return eventGrantAlarm }
 func (SecretSent) eventName() string    { return eventSecretSent }
 func (Signed) eventName() string        { return eventSigned }
 func (Denied) eventName() string        { return eventDenied }
@@ -319,6 +363,10 @@ var (
 	// namePattern is the name rule of DESIGN.md section 14, for clients,
 	// secrets, keys and known hosts.
 	namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+	// windowPattern is the form of a window in a standing request:
+	// "daily 03:00-05:00" or "mon,thu 03:00-05:00".
+	windowPattern = regexp.MustCompile(`^(daily|(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun)){0,6}) ([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$`)
 	// remoteUserPattern is the rule for remote user names in DESIGN.md
 	// section 6.
 	remoteUserPattern = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$`)
@@ -363,11 +411,26 @@ func (s *Subject) validate(needRequest bool) error {
 		if s.HostKey != "" || (len(s.Secrets) > 0 && s.Key != "") {
 			return errors.New("a preapprove request names secrets or one key, not both, and has no single host key")
 		}
+	case KindStanding:
+		if s.HostKey != "" || s.Key != "" || len(s.Hosts) > 0 || s.RemoteUser != "" {
+			return errors.New("a standing request names secrets only")
+		}
 	default:
 		return errors.New("kind is not known")
 	}
-	if s.Kind != KindPreapprove && (s.Uses != 0 || s.NotBefore != "" || s.NotAfter != "") {
+	if !s.Kind.IsPreapprove() && (s.Uses != 0 || s.NotBefore != "" || s.NotAfter != "") {
 		return errors.New("only a preapprove request has uses and a time span")
+	}
+	if s.Kind != KindStanding && len(s.Windows) > 0 {
+		return errors.New("only a standing request has windows")
+	}
+	if len(s.Windows) > maxWindowEntries {
+		return errors.New("too many windows")
+	}
+	for _, w := range s.Windows {
+		if !windowPattern.MatchString(w) {
+			return errors.New("a window must look like \"daily 03:00-05:00\"")
+		}
 	}
 	if s.GrantID != "" && !requestIDPattern.MatchString(s.GrantID) {
 		return errors.New("grant_id must be 16 bytes in base64url without padding")
@@ -446,20 +509,47 @@ func (e GrantUsed) validate() error {
 	}
 	switch e.Via {
 	case ViaGrant, ViaNeverRule, ViaScheduled:
+		if e.NewTokenHash != "" {
+			return errors.New("new_token_hash is only for via standing")
+		}
+		return nil
+	case ViaStanding:
+		if !isHex64(e.NewTokenHash) {
+			return errors.New("a standing use needs new_token_hash, 64 hex digits")
+		}
 		return nil
 	}
 	return errors.New("via is not known")
+}
+
+func (e GrantAlarm) validate() error {
+	if err := e.Subject.validate(true); err != nil {
+		return err
+	}
+	switch e.Cause {
+	case AlarmUnknownToken:
+		if e.GrantID != "" {
+			return errors.New("an unknown token has no grant_id")
+		}
+		return nil
+	case AlarmOldToken, AlarmOverUses, AlarmOutsideWindow, AlarmMissedWindow:
+		if e.GrantID == "" {
+			return errors.New("it needs a grant_id")
+		}
+		return nil
+	}
+	return errors.New("cause is not known")
 }
 
 func (e GrantEnded) validate() error {
 	if err := e.Subject.validate(true); err != nil {
 		return err
 	}
-	if e.Kind != KindPreapprove || e.GrantID == "" || e.UsesLeft < 0 {
+	if !e.Kind.IsPreapprove() || e.GrantID == "" || e.UsesLeft < 0 {
 		return errors.New("it needs a preapprove request, a grant_id and a number of uses left")
 	}
 	switch e.Cause {
-	case EndUsedUp, EndEnded, EndCancelled, EndDenied, EndStopped, EndRevoked:
+	case EndUsedUp, EndEnded, EndCancelled, EndDenied, EndStopped, EndRevoked, EndAlarm, EndRenewed:
 		return nil
 	}
 	return errors.New("cause is not known")
@@ -515,7 +605,7 @@ func encodeEvent(ev Event) (string, []byte, error) {
 	// pointer has the methods as well, and a nil pointer would panic in
 	// them.
 	switch ev.(type) {
-	case BrokerStarted, BrokerStopped, Request, Decision, GrantUsed, GrantEnded, SecretSent, Signed, Denied, ForeignTap, Failure,
+	case BrokerStarted, BrokerStopped, Request, Decision, GrantUsed, GrantEnded, GrantAlarm, SecretSent, Signed, Denied, ForeignTap, Failure,
 		logRecovered:
 	default:
 		return "", nil, errors.New("not an event of the audit package; pass an event such as audit.Signed{...} as a value")

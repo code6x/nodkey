@@ -10,6 +10,7 @@ import (
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/claim"
+	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/store"
 	"github.com/code6x/nodkey/internal/transport"
 )
@@ -40,12 +41,28 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 		rq.logDeniedVar(req.Secrets)
 		return
 	}
-	res, rc, ok := rq.decide(ctx, &approval.Request{
-		Client: rq.client, Kind: audit.KindSecrets, Secrets: names, Claim: cl,
-	})
+	var res *approval.Result
+	var rc receipt
+	if tokens := r.Header.Values(api.GrantTokenHeader); len(tokens) > 0 {
+		// A request with a token never asks the person (DESIGN.md section 8).
+		res, rc, ok = rq.decideStanding(ctx, names, cl, tokens)
+	} else {
+		res, rc, ok = rq.decide(ctx, &approval.Request{
+			Client: rq.client, Kind: audit.KindSecrets, Secrets: names, Claim: cl,
+		})
+	}
 	if !ok {
 		return
 	}
+	// A standing grant has a new token now. If nothing is answered, the
+	// client never gets it, so the use is undone and the old token stays
+	// valid (DESIGN.md section 8).
+	handed := false
+	defer func() {
+		if !handed {
+			res.Undo()
+		}
+	}()
 	// The decision entry is on disk: the grants of an "Approve N min" tap
 	// may start, before anything is handed out.
 	res.StartGrants()
@@ -54,6 +71,9 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 		return
 	}
 	ans := api.SecretsAnswer{Secrets: make([]api.SecretValue, len(req.Secrets))}
+	if tok, rotated := res.NewToken(); rotated {
+		ans.GrantToken = tok.Reveal()
+	}
 	for i, ref := range req.Secrets {
 		// The value goes from Bytes into the answer, without a copy.
 		ans.Secrets[i] = api.SecretValue{Var: ref.Var, Value: values[ref.Name].Bytes()}
@@ -77,6 +97,7 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 		return
 	}
 	rq.answered = true
+	handed = true
 	if err := transport.WriteJSONBody(rq.w, http.StatusOK, body); err != nil {
 		rq.s.log.Warn("broker: cannot write the answer; the client may not have it",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
@@ -181,4 +202,38 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 		values[name] = v
 	}
 	return values, true
+}
+
+// decideStanding decides a request that has the header of a standing grant
+// token (DESIGN.md section 8). The core never asks the person. It writes
+// the entries, sends the alarm of a denied request, and sends the silent
+// notice of an allowed one. It returns ok only when every step worked; the
+// request has its answer otherwise. If a step fails after the new token
+// was made, the use is undone, so the old token stays valid.
+func (rq *request) decideStanding(ctx context.Context, names []string, cl approval.Claim, tokens []string) (*approval.Result, receipt, bool) {
+	var hash *[32]byte
+	if len(tokens) == 1 {
+		if t, err := grantkey.Parse(tokens[0]); err == nil {
+			h := grantkey.Hash(t)
+			hash = &h
+		}
+	}
+	rq.failCode = audit.CodeApproverFailed
+	res := rq.core.UseStanding(approval.StandingRequest{Client: rq.client, Secrets: names, Claim: cl, Token: hash})
+	res, rc, ok := rq.settle(res)
+	if !ok {
+		if res.Allowed {
+			res.Undo() // the entry could not be written, or the broker stops
+		}
+		res.SendAlarm(ctx)
+		return res, rc, false
+	}
+	if err := res.SendNotice(ctx); err != nil {
+		rq.s.log.Warn("broker: cannot send the notice of a standing grant use; the request is denied",
+			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client),
+			slog.String("error", errorText(err)))
+		rq.fail(audit.CodeApproverFailed)
+		return res, rc, false
+	}
+	return res, rc, true
 }

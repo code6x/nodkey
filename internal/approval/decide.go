@@ -116,9 +116,12 @@ func (p *pending) prompt(now moment) Prompt {
 	if p.kind == audit.KindSSHGrant {
 		pr.GrantEnds = p.grantEnds.wall
 	}
-	if p.kind == audit.KindPreapprove {
+	if p.kind.IsPreapprove() {
 		loc := now.wall.Location()
 		pr.Uses, pr.From, pr.Until = p.plan.uses, p.plan.start.In(loc), p.plan.end.wall.In(loc)
+		if p.kind == audit.KindStanding {
+			pr.Uses, pr.Windows = p.plan.perWindow, slices.Clone(p.subject.Windows)
+		}
 	}
 	return pr
 }
@@ -160,7 +163,7 @@ func (c *Core) Decide(ctx context.Context, r *Request) *Result {
 		// grant nothing, so the request ends then too.
 		p.deadline = earlier(p.deadline, p.grantEnds)
 	}
-	if p.kind == audit.KindPreapprove {
+	if p.kind.IsPreapprove() {
 		// Its grant ends at a fixed time, as an SSH grant's do: after it,
 		// an approval would grant nothing.
 		end := p.plan.end.wall
@@ -199,7 +202,11 @@ func (c *Core) leave(p *pending) {
 	delete(c.ids, p.id)
 	delete(c.codes, p.code)
 	if p.preCounted {
-		c.client(p.client).preapproving--
+		if p.kind == audit.KindStanding {
+			c.client(p.client).standingPending--
+		} else {
+			c.client(p.client).preapproving--
+		}
 	}
 	switch p.state {
 	case stateQueued:
@@ -226,13 +233,20 @@ func (c *Core) begin(p *pending) *Result {
 	now := c.now()
 	c.sweepGrants(now)
 	cs := c.client(p.client)
-	if p.kind == audit.KindPreapprove {
+	if p.kind.IsPreapprove() {
 		// The grants that are approved and not ended, and the requests
 		// that wait for a tap (StartGrants checks the first again).
-		if c.scheduledCount(p.client)+cs.preapproving >= c.cfg.Preapprove.MaxGrants {
-			return c.denied(p, audit.CauseLimit)
+		if p.kind == audit.KindStanding {
+			if c.standingCount(p.client)+cs.standingPending >= c.cfg.Standing.MaxGrants {
+				return c.denied(p, audit.CauseLimit)
+			}
+			cs.standingPending++
+		} else {
+			if c.scheduledCount(p.client)+cs.preapproving >= c.cfg.Preapprove.MaxGrants {
+				return c.denied(p, audit.CauseLimit)
+			}
+			cs.preapproving++
 		}
-		cs.preapproving++
 		p.preCounted = true
 	}
 	if vias, ok := c.covered(p, now); ok {
@@ -551,7 +565,7 @@ func (c *Core) Answer(a Answer) error {
 			return ErrNotAllowed
 		}
 		res.Allowed = true
-		if p.kind == audit.KindPreapprove {
+		if p.kind.IsPreapprove() {
 			c.approvePlan(p, res)
 		}
 	case audit.AnswerApproveWindow:
@@ -651,6 +665,7 @@ func (c *Core) approvePlan(p *pending, res *Result) {
 	g.origin = res.Subject
 	g.origin.Secrets = slices.Clone(res.Subject.Secrets)
 	g.origin.Hosts = slices.Clone(res.Subject.Hosts)
+	g.origin.Windows = slices.Clone(res.Subject.Windows)
 	res.plan = &g
 	res.GrantID = g.id
 	loc := c.clock.Wall().Location()
@@ -667,7 +682,7 @@ func (c *Core) uncount(p *pending) {
 	}
 	p.counted = nil
 	if g := p.used; g != nil && slices.Contains(c.grants, g) {
-		g.uses++ // the use did not happen
+		g.giveBackUse() // the use did not happen
 	}
 	p.used = nil
 }

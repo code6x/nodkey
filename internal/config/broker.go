@@ -50,6 +50,7 @@ type Broker struct {
 	Telegram       Telegram
 	Updates        Updates
 	Preapprove     PreapproveLimits
+	Standing       StandingLimits
 	Clients        map[string]Client // by name
 	Stores         map[string]Store  // by name
 	Secrets        map[string]Secret // by name
@@ -109,6 +110,58 @@ func DefaultPreapprove() PreapproveLimits {
 	}
 }
 
+// StandingLimits is the [standing] section: the limits of standing grants
+// (DESIGN.md section 8). A config without the section allows no standing
+// grant: Enabled is false and the other fields are zero. A section, also
+// an empty one, sets Enabled and fills each missing key with its default.
+// Code that makes a Broker by hand must set them: the zero value allows
+// no standing grant at all.
+type StandingLimits struct {
+	// Enabled is true when the config has a [standing] section.
+	Enabled bool
+	// MaxDays is the most days from now to the end of a grant.
+	MaxDays int
+	// MaxWindow is the longest single window.
+	MaxWindow time.Duration
+	// MaxUses is the most uses in one window.
+	MaxUses int
+	// MaxGrants is the most standing grants of one client.
+	MaxGrants int
+	// WarnDays is how many days before the end the warning comes. It is
+	// 1 or more and less than MaxDays.
+	WarnDays int
+	// SummaryDay and SummaryMinute are the time of the weekly list, in the
+	// broker's local time. SummaryMinute is the minute of the day, 0 to
+	// 1439.
+	SummaryDay    time.Weekday
+	SummaryMinute int
+}
+
+// The defaults and the ceilings of the [standing] section.
+const (
+	defaultStandingDays     = 90
+	defaultStandingWindow   = 8 * time.Hour
+	defaultStandingUses     = 1
+	defaultStandingGrants   = 3
+	defaultStandingWarnDays = 7
+	defaultStandingSummary  = "mon 09:00"
+	maxStandingDays         = 366
+	maxStandingWindow       = 8 * time.Hour
+	maxStandingUses         = 10
+	maxStandingGrants       = 20
+)
+
+// DefaultStanding returns the limits that apply with an empty [standing]
+// section. They have Enabled set.
+func DefaultStanding() StandingLimits {
+	day, minute, _ := parseSummary(defaultStandingSummary)
+	return StandingLimits{
+		Enabled: true, MaxDays: defaultStandingDays, MaxWindow: defaultStandingWindow,
+		MaxUses: defaultStandingUses, MaxGrants: defaultStandingGrants, WarnDays: defaultStandingWarnDays,
+		SummaryDay: day, SummaryMinute: minute,
+	}
+}
+
 // Client is a [client.NAME] section: a machine that may ask.
 type Client struct {
 	Name string
@@ -165,6 +218,7 @@ type (
 		Telegram   telegramSection          `toml:"telegram"`
 		Updates    updatesSection           `toml:"updates"`
 		Preapprove preapproveSection        `toml:"preapprove"`
+		Standing   *standingSection         `toml:"standing"`
 		Client     map[string]clientSection `toml:"client"`
 		Store      map[string]storeSection  `toml:"store"`
 		Secret     map[string]secretSection `toml:"secret"`
@@ -185,6 +239,14 @@ type (
 		MaxOpen   *string `toml:"max_open"`
 		MaxUses   *int    `toml:"max_uses"`
 		MaxGrants *int    `toml:"max_grants"`
+	}
+	standingSection struct {
+		MaxDays   *int    `toml:"max_days"`
+		MaxWindow *string `toml:"max_window"`
+		MaxUses   *int    `toml:"max_uses"`
+		MaxGrants *int    `toml:"max_grants"`
+		WarnDays  *int    `toml:"warn_days"`
+		Summary   *string `toml:"summary"`
 	}
 	clientSection struct {
 		Pin string `toml:"pin"`
@@ -273,6 +335,9 @@ func newBroker(f *brokerFile) (*Broker, error) {
 	}
 	b.Updates.Check = f.Updates.Check == nil || *f.Updates.Check
 	if b.Preapprove, err = parsePreapprove(&f.Preapprove); err != nil {
+		return nil, err
+	}
+	if b.Standing, err = parseStanding(f.Standing); err != nil {
 		return nil, err
 	}
 	if err := b.addClients(f.Client); err != nil {
@@ -427,6 +492,93 @@ func parsePreapprove(s *preapproveSection) (PreapproveLimits, error) {
 		}
 	}
 	return l, nil
+}
+
+// parseStanding checks the [standing] section. A nil section means no
+// standing grant is allowed.
+func parseStanding(s *standingSection) (StandingLimits, error) {
+	if s == nil {
+		return StandingLimits{}, nil
+	}
+	const sec = "[standing]"
+	l := DefaultStanding()
+	count := func(key string, v *int, most int, into *int) error {
+		if v == nil {
+			return nil
+		}
+		if *v < 1 || *v > most {
+			return fmt.Errorf("%s: must be from 1 to %d", place(sec, key), most)
+		}
+		*into = *v
+		return nil
+	}
+	if err := count("max_days", s.MaxDays, maxStandingDays, &l.MaxDays); err != nil {
+		return StandingLimits{}, err
+	}
+	if s.MaxWindow != nil {
+		d, err := parseDuration(sec, "max_window", *s.MaxWindow)
+		if err != nil {
+			return StandingLimits{}, err
+		}
+		if d < time.Minute || d > maxStandingWindow {
+			return StandingLimits{}, fmt.Errorf("%s: must be from %s to %s", place(sec, "max_window"),
+				formatDuration(time.Minute), formatDuration(maxStandingWindow))
+		}
+		l.MaxWindow = d
+	}
+	if err := count("max_uses", s.MaxUses, maxStandingUses, &l.MaxUses); err != nil {
+		return StandingLimits{}, err
+	}
+	if err := count("max_grants", s.MaxGrants, maxStandingGrants, &l.MaxGrants); err != nil {
+		return StandingLimits{}, err
+	}
+	if s.WarnDays != nil {
+		if *s.WarnDays < 1 {
+			return StandingLimits{}, fmt.Errorf("%s: must be 1 or more", place(sec, "warn_days"))
+		}
+		l.WarnDays = *s.WarnDays
+	}
+	if l.WarnDays >= l.MaxDays {
+		return StandingLimits{}, fmt.Errorf("%s: must be less than max_days (%d)", place(sec, "warn_days"), l.MaxDays)
+	}
+	if s.Summary != nil {
+		day, minute, err := parseSummary(*s.Summary)
+		if err != nil {
+			return StandingLimits{}, fmt.Errorf("%s: must be a day name and a time, such as \"mon 09:00\"", place(sec, "summary"))
+		}
+		l.SummaryDay, l.SummaryMinute = day, minute
+	}
+	return l, nil
+}
+
+var weekdays = map[string]time.Weekday{
+	"sun": time.Sunday, "mon": time.Monday, "tue": time.Tuesday, "wed": time.Wednesday,
+	"thu": time.Thursday, "fri": time.Friday, "sat": time.Saturday,
+}
+
+// parseSummary reads "mon 09:00": a lower-case three-letter day name, one
+// space, and HH:MM from 00:00 to 23:59. Nothing else is accepted.
+func parseSummary(s string) (time.Weekday, int, error) {
+	bad := errors.New("bad summary")
+	name, clock, ok := strings.Cut(s, " ")
+	if !ok || len(clock) != 5 || clock[2] != ':' {
+		return 0, 0, bad
+	}
+	day, ok := weekdays[name]
+	if !ok {
+		return 0, 0, bad
+	}
+	for _, i := range []int{0, 1, 3, 4} {
+		if clock[i] < '0' || clock[i] > '9' {
+			return 0, 0, bad
+		}
+	}
+	h := int(clock[0]-'0')*10 + int(clock[1]-'0')
+	m := int(clock[3]-'0')*10 + int(clock[4]-'0')
+	if h > 23 || m > 59 {
+		return 0, 0, bad
+	}
+	return day, h*60 + m, nil
 }
 
 // parseTimeout parses an optional timeout from minTimeout to most.

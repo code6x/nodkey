@@ -186,3 +186,71 @@ func TestPreapproveEvents(t *testing.T) {
 	bad("secrets and a key", Request{Subject: both})
 	bad("via that is not known", GrantUsed{Subject: secretsSubject(), Via: "scheduled2"})
 }
+
+// TestStandingEvents: the kind standing, its windows, and the end causes
+// alarm and renewed are accepted; what a standing request may not hold is
+// refused.
+func TestStandingEvents(t *testing.T) {
+	good := func(name string, ev Event) {
+		t.Helper()
+		if _, _, err := encodeEvent(ev); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	bad := func(name string, ev Event) {
+		t.Helper()
+		if _, _, err := encodeEvent(ev); err == nil {
+			t.Errorf("%s: the event was accepted", name)
+		}
+	}
+	ok := preapproveSubject()
+	ok.Kind = KindStanding
+	ok.Windows = []string{"daily 03:00-05:00", "mon,thu 10:30-11:00"}
+	good("a standing request", Request{Subject: ok})
+	good("a standing decision", Decision{Subject: ok, UserID: 1, Answer: AnswerApproveOnce})
+	h := strings.Repeat("ab", 32)
+	good("a standing use", GrantUsed{Subject: ok, Via: ViaStanding, NewTokenHash: h})
+	bad("a standing use without a hash", GrantUsed{Subject: ok, Via: ViaStanding})
+	bad("a standing use with a short hash", GrantUsed{Subject: ok, Via: ViaStanding, NewTokenHash: "ab"})
+	bad("a hash outside a standing use", GrantUsed{Subject: ok, Via: ViaScheduled, NewTokenHash: h})
+	for _, c := range []AlarmCause{AlarmOldToken, AlarmOverUses, AlarmOutsideWindow, AlarmMissedWindow} {
+		good("grant_alarm "+string(c), GrantAlarm{Subject: ok, Cause: c})
+		noID := ok
+		noID.GrantID = ""
+		bad("grant_alarm without a grant "+string(c), GrantAlarm{Subject: noID, Cause: c})
+	}
+	noID := ok
+	noID.GrantID = ""
+	good("an unknown token alarm", GrantAlarm{Subject: noID, Cause: AlarmUnknownToken})
+	bad("an unknown token alarm with a grant", GrantAlarm{Subject: ok, Cause: AlarmUnknownToken})
+	bad("an alarm with a cause that is not known", GrantAlarm{Subject: ok, Cause: "x"})
+	for _, c := range []EndCause{EndAlarm, EndRenewed, EndRevoked, EndStopped, EndEnded} {
+		good("grant_ended "+string(c), GrantEnded{Subject: ok, Cause: c})
+	}
+	// The new causes are for grants; a scheduled grant accepts them too in
+	// the log, because the cause is checked, not the kind.
+	withKey := ok
+	withKey.Key = "deploy"
+	bad("a key in a standing request", Request{Subject: withKey})
+	withUser := ok
+	withUser.RemoteUser = "deploy"
+	bad("a remote user in a standing request", Request{Subject: withUser})
+	for _, w := range []string{"", "daily", "daily 3:00-5:00", "daily 03:00-24:00", "xyz 03:00-05:00", "mon,mon,mon,mon,mon,mon,mon,mon 03:00-05:00",
+		"daily 03:00-05:00\nA", "daily 03:00-05:00 ", "weekly 03:00-05:00"} {
+		s := ok
+		s.Windows = []string{w}
+		bad("the window "+w, Request{Subject: s})
+	}
+	many := ok
+	many.Windows = make([]string, 8)
+	for i := range many.Windows {
+		many.Windows[i] = "daily 03:00-05:00"
+	}
+	bad("8 windows", Request{Subject: many})
+	sched := preapproveSubject()
+	sched.Windows = []string{"daily 03:00-05:00"}
+	bad("windows in a scheduled request", Request{Subject: sched})
+	sec := secretsSubject()
+	sec.Windows = []string{"daily 03:00-05:00"}
+	bad("windows in a secrets request", Request{Subject: sec})
+}

@@ -1026,6 +1026,47 @@ use up to N uses of what it names. After a use, the secret stays on the
 agent machine (section 5, item 1). Choose short spans, few uses and
 narrow secrets, as for a "never ask" rule.
 
+**T36. A standing grant is used by something else on the same client.**
+A standing grant (DESIGN.md section 8) lets a client use named secrets in
+daily or weekly windows for weeks, without a tap. The broker knows the
+client only by its TLS key, so the grant also has a token that changes at
+each use. The token is in a file on the client.
+- **The honest limit.** The token finds a theft; it does not stop it. The
+  same user can read the token file, and can rewrite it. A thief who
+  copies the token and uses it first gets the secrets once. The real job
+  then comes with the old token, and the broker ends the grant and sends
+  an alarm. A thief who reads the file and writes back the new token each
+  time can use the grant like the job. Then the one-use-per-window rule
+  (`over_uses`) and the missed-window alarm are what catch it.
+- The broker keeps only the SHA-256 hash of each token. A token works only
+  with the TLS key of its client, so a copy on another machine gets an
+  alarm and no secret.
+- Old token, or more uses than allowed: the request is denied, the grant
+  ends and an alarm comes. A retry after a lost answer looks the same, so
+  the client saves the new token before it uses the secrets and never
+  retries by itself. A new grant is one tap, so there is no pause state.
+- A valid token outside the windows is denied with an alarm, and the grant
+  stays; this holds also before the start of the grant, and the day's
+  alarm counts only if it was sent. The current or old token of another
+  client's grant has left its machine: the request is denied and that
+  grant ends, with an alarm that names it. An unknown token is denied with
+  a rate-limited alarm; it may be a guess. Alarms have sound, count toward
+  the 20 notices in all, and one grant sends at most one in a window.
+- Run the job as its own system user, so an agent that runs as another
+  user cannot read the token file. The client refuses a token file that
+  others can read or write, or that it does not own. Root can still read
+  it.
+- A standing grant is wider than a scheduled grant, so it has its own rule
+  flag (`standing = true`), its own limits (`[standing]`), and a weekly
+  list of all standing grants on the phone.
+- A Deny of another request does not end a standing grant, so a Deny
+  cannot be used to break the job. The person ends it with **Revoke**.
+- Standing grants live in memory and are dropped at a broker stop. The
+  stop notice lists them (T35).
+
+Risk that remains: the same as T35, for weeks. Choose few uses, short
+windows, narrow secrets and a near end date.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

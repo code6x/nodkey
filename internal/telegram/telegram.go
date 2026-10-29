@@ -395,6 +395,29 @@ func (a *Approver) Notify(ctx context.Context, p approval.Prompt) error {
 	}, nil)
 }
 
+// Alarm sends the alarm of a standing grant to the notice chat, with a
+// sound. It counts toward the notices per minute of Notify (DESIGN.md
+// section 8): when the limit is reached it sends nothing and returns
+// ErrNoticeLimit.
+func (a *Approver) Alarm(ctx context.Context, al approval.Alarm) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t, err := alarmText(al)
+	if err != nil {
+		return err
+	}
+	if !a.takeNotice() {
+		return ErrNoticeLimit
+	}
+	return a.api.call(ctx, "sendMessage", sendMessageParams{
+		ChatID:             a.noticeChat,
+		Text:               t.html.String(),
+		ParseMode:          "HTML",
+		LinkPreviewOptions: noPreview,
+	}, nil)
+}
+
 // Alert sends msg to the approver's private chat, with a sound, for a
 // problem the person must see, such as a polling conflict or a torn line
 // in the audit log. msg is the broker's own text, never claimed text. It

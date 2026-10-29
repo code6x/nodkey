@@ -153,3 +153,108 @@ func TestScheduledNotice(t *testing.T) {
 		t.Error("a notice with an unknown via was accepted")
 	}
 }
+
+// designStanding is the example of a standing grant in DESIGN.md section
+// 8, as the person sees it. It is the message of
+//
+//	nodkey preapprove --secret backup-token --daily 03:00-05:00 --weekly mon,thu 10:30-11:00 \
+//	                  --until 2026-12-31 --uses 1 --reason "job nightly-backup"
+const designStanding = `🗓 Standing grant · request m4k2
+✅ machine: laptop
+✅ secrets: backup-token
+✅ window: daily 03:00-05:00
+✅ window: mon,thu 10:30-11:00
+✅ uses in each window: 1
+✅ from: 2026-10-28 03:00:00 UTC
+✅ until: 2026-12-31 00:00:00 UTC
+A Deny of other requests does not end this grant. Use Revoke to end it.
+— claimed by the agent —
+reason: job nightly-backup
+expires 14:07:00 (120 s)
+[ Approve ] [ Deny ]`
+
+func standingPrompt() approval.Prompt {
+	p := preapprovePrompt()
+	p.Kind = audit.KindStanding
+	p.Windows = []string{"daily 03:00-05:00", "mon,thu 10:30-11:00"}
+	p.Until = time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	return p
+}
+
+// TestStandingMessageAsInDesign: the message of a standing grant is
+// exactly the example of DESIGN.md, which still shows it.
+func TestStandingMessageAsInDesign(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "DESIGN.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(doc), "```\n"+designStanding+"\n```") {
+		t.Errorf("DESIGN.md does not show this message any more:\n%s", designStanding)
+	}
+	e := newEnv(t)
+	shown, err := e.a.Ask(context.Background(), standingPrompt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shown.Text != designStanding {
+		t.Errorf("text:\n%s\nwant:\n%s", shown.Text, designStanding)
+	}
+}
+
+// TestStandingPromptIsStrict: checkPrompt refuses what a standing prompt
+// may not have, and windows on any other prompt.
+func TestStandingPromptIsStrict(t *testing.T) {
+	if err := checkPrompt(standingPrompt(), false); err != nil {
+		t.Fatalf("a good prompt: %v", err)
+	}
+	tests := []struct {
+		name   string
+		change func(*approval.Prompt)
+	}{
+		{"no windows", func(p *approval.Prompt) { p.Windows = nil }},
+		{"8 windows", func(p *approval.Prompt) { p.Windows = make([]string, 8) }},
+		{"a window with markup", func(p *approval.Prompt) { p.Windows = []string{"daily <b>03:00-05:00"} }},
+		{"a window with a newline", func(p *approval.Prompt) { p.Windows = []string{"daily 03:00-05:00\nA"} }},
+		{"a window with a bad day", func(p *approval.Prompt) { p.Windows = []string{"xyz 03:00-05:00"} }},
+		{"a window with a bad time", func(p *approval.Prompt) { p.Windows = []string{"daily 25:00-26:00"} }},
+		{"a key", func(p *approval.Prompt) { p.Key, p.Hosts, p.RemoteUser = "web", []string{"web-1"}, "deploy" }},
+		{"no secrets", func(p *approval.Prompt) { p.Secrets = nil }},
+		{"no uses", func(p *approval.Prompt) { p.Uses = 0 }},
+		{"no Approve button", func(p *approval.Prompt) { p.Once = false }},
+		{"a window button", func(p *approval.Prompt) { p.WindowMinutes = 5 }},
+		{"a grant ID", func(p *approval.Prompt) { p.GrantID = testID(1) }},
+		{"the end before the start", func(p *approval.Prompt) { p.Until = p.From }},
+	}
+	for _, tt := range tests {
+		p := standingPrompt()
+		tt.change(&p)
+		if checkPrompt(p, false) == nil {
+			t.Errorf("%s: the prompt passed", tt.name)
+		}
+	}
+	// A notice of a standing grant is not made yet.
+	if checkPrompt(standingPrompt(), true) == nil {
+		t.Error("a notice of a standing grant passed")
+	}
+	// Windows on a scheduled grant.
+	p := preapprovePrompt()
+	p.Windows = []string{"daily 03:00-05:00"}
+	if checkPrompt(p, false) == nil {
+		t.Error("windows on a scheduled grant passed")
+	}
+}
+
+// TestStandingEndLines: the line of the end shows the cause and no uses
+// left, which a standing grant does not count.
+func TestStandingEndLines(t *testing.T) {
+	at := time.Date(2026, 10, 30, 3, 0, 0, 0, time.UTC)
+	for cause, want := range map[audit.EndCause]string{
+		audit.EndRevoked: "revoked by you", audit.EndAlarm: "alarm", audit.EndRenewed: "renewed",
+		audit.EndStopped: "broker stopped", audit.EndEnded: "ended at",
+	} {
+		got := resultLine(standingPrompt(), approval.Ending{Answer: audit.AnswerApproveOnce, At: at, Approved: at, GrantEnd: cause})
+		if !strings.Contains(got, want) || strings.Contains(got, "use(s) left") || !strings.Contains(got, "in each window") {
+			t.Errorf("%s: %q", cause, got)
+		}
+	}
+}

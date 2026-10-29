@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 )
 
 // The requests and the answers. Each type decodes strictly
@@ -163,6 +164,10 @@ func (s *SecretRef) UnmarshalJSON(data []byte) error {
 // of its pool, which nobody clears.
 type SecretsAnswer struct {
 	Secrets []SecretValue `json:"secrets"`
+	// GrantToken is the new token of a standing grant (DESIGN.md section
+	// 8), in the answer to a request with the header GrantTokenHeader, and
+	// only there. It is a secret: never print or log it.
+	GrantToken string `json:"grant_token"`
 }
 
 // Check checks the caps of the answer: at most MaxSecrets values, each at
@@ -170,6 +175,9 @@ type SecretsAnswer struct {
 func (a *SecretsAnswer) Check() error {
 	if len(a.Secrets) > MaxSecrets {
 		return errTooMany
+	}
+	if len(a.GrantToken) > MaxGrantToken {
+		return errTooLong
 	}
 	total := 0
 	for _, s := range a.Secrets {
@@ -181,12 +189,26 @@ func (a *SecretsAnswer) Check() error {
 	return nil
 }
 
+// MarshalJSON writes no field "grant_token" when there is no token. The
+// broker writes the answer with Encode; this is for tests.
+func (a SecretsAnswer) MarshalJSON() ([]byte, error) {
+	type plain SecretsAnswer
+	if a.GrantToken == "" {
+		return json.Marshal(struct {
+			plain
+			GrantToken *struct{} `json:"grant_token,omitempty"`
+		}{plain: plain(a)})
+	}
+	return json.Marshal(plain(a))
+}
+
 // UnmarshalJSON decodes strictly, and checks the caps.
 func (a *SecretsAnswer) UnmarshalJSON(data []byte) error {
 	var v SecretsAnswer
-	err := decodeObject(data, map[string]field{
-		"secrets": list(&v.Secrets, MaxSecrets, object[SecretValue]()),
-	})
+	err := decodeObjectOptional(data, map[string]field{
+		"secrets":     list(&v.Secrets, MaxSecrets, object[SecretValue]()),
+		"grant_token": text(&v.GrantToken),
+	}, map[string]bool{"grant_token": true})
 	if err != nil {
 		return err
 	}
@@ -215,7 +237,16 @@ func (a *SecretsAnswer) Encode() ([]byte, error) {
 		tail  = `"}`
 		end   = `]}`
 	)
+	const tokenKey = `],"grant_token":"` //nolint:gosec // G101: a JSON key, not a credential.
 	n := len(head) + len(end)
+	if a.GrantToken != "" {
+		for _, c := range []byte(a.GrantToken) {
+			if c != '_' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+				return nil, errBadVar // a token needs no escaping in JSON
+			}
+		}
+		n += len(tokenKey) + len(a.GrantToken) + len(`"}`) - len(end)
+	}
 	for i, s := range a.Secrets {
 		if !ValidVar(s.Var) {
 			return nil, errBadVar
@@ -239,6 +270,11 @@ func (a *SecretsAnswer) Encode() ([]byte, error) {
 		b = base64.StdEncoding.AppendEncode(b, s.Value)
 		b = append(b, tail...)
 	}
+	if a.GrantToken != "" {
+		b = append(b, tokenKey...)
+		b = append(b, a.GrantToken...)
+		return append(b, `"}`...), nil
+	}
 	return append(b, end...), nil
 }
 
@@ -252,6 +288,9 @@ func (a *SecretsAnswer) Clear() {
 
 // String returns a text without the values.
 func (a SecretsAnswer) String() string {
+	if a.GrantToken != "" {
+		return fmt.Sprintf("api.SecretsAnswer{%d values, token hidden}", len(a.Secrets))
+	}
 	return fmt.Sprintf("api.SecretsAnswer{%d values}", len(a.Secrets))
 }
 
@@ -510,16 +549,26 @@ type PreapproveRequest struct {
 	// the person typed them (ParseTime). The broker reads them.
 	From  string `json:"from"`
 	Until string `json:"until"`
-	// Uses is how many uses the grant has.
+	// Uses is how many uses the grant has. With Windows, it is the uses
+	// in each window.
 	Uses int64 `json:"uses"`
 	// Reason is the reason from --reason, or "". It is claimed.
 	Reason string `json:"reason"`
+	// Windows makes the request one for a standing grant (DESIGN.md
+	// section 8): 1 to MaxWindows windows. Nil for a scheduled grant; then
+	// MarshalJSON does not write the field.
+	Windows []Window `json:"windows"`
 }
 
 // Check checks the caps of the request.
 func (r *PreapproveRequest) Check() error {
-	if len(r.Secrets) > MaxSecrets || len(r.Hosts) > MaxGrantHosts {
+	if len(r.Secrets) > MaxSecrets || len(r.Hosts) > MaxGrantHosts || len(r.Windows) > MaxWindows {
 		return errTooMany
+	}
+	for i := range r.Windows {
+		if err := r.Windows[i].Check(); err != nil {
+			return err
+		}
 	}
 	if len(r.Key) > MaxName || len(r.User) > MaxName || len(r.From) > MaxTime || len(r.Until) > MaxTime {
 		return errTooLong
@@ -532,18 +581,26 @@ func (r *PreapproveRequest) Check() error {
 	return nil
 }
 
-// MarshalJSON writes a nil list as [].
+// MarshalJSON writes a nil list as [], and no field "windows" for nil
+// windows.
 func (r PreapproveRequest) MarshalJSON() ([]byte, error) {
 	type plain PreapproveRequest
 	p := plain(r)
 	p.Secrets, p.Hosts = orEmpty(p.Secrets), orEmpty(p.Hosts)
+	if r.Windows == nil {
+		// The shallower field wins over the one in plain.
+		return json.Marshal(struct {
+			plain
+			Windows *struct{} `json:"windows,omitempty"`
+		}{plain: p})
+	}
 	return json.Marshal(p)
 }
 
 // UnmarshalJSON decodes strictly, and checks the caps.
 func (r *PreapproveRequest) UnmarshalJSON(data []byte) error {
 	var v PreapproveRequest
-	err := decodeObject(data, map[string]field{
+	err := decodeObjectOptional(data, map[string]field{
 		"secrets": textList(&v.Secrets, MaxSecrets),
 		"key":     text(&v.Key),
 		"user":    text(&v.User),
@@ -552,9 +609,13 @@ func (r *PreapproveRequest) UnmarshalJSON(data []byte) error {
 		"until":   text(&v.Until),
 		"uses":    integer(&v.Uses),
 		"reason":  text(&v.Reason),
-	})
+		"windows": list(&v.Windows, MaxWindows, object[Window]()),
+	}, map[string]bool{"windows": true})
 	if err != nil {
 		return err
+	}
+	if v.Windows != nil && len(v.Windows) == 0 {
+		return errType // an empty list of windows is not a request
 	}
 	if err := v.Check(); err != nil {
 		return err
@@ -571,16 +632,56 @@ type PreapproveAnswer struct {
 	// broker's local time.
 	From  string `json:"from"`
 	Until string `json:"until"`
+	// GrantToken is the token of a standing grant, in the answer to
+	// a request with windows, and only there. It is a secret: never print
+	// or log it. The client checks it with grantkey.Parse.
+	GrantToken string `json:"grant_token"`
 }
 
-// UnmarshalJSON decodes strictly.
+// String returns the answer without the token.
+func (a PreapproveAnswer) String() string {
+	t := "no token"
+	if a.GrantToken != "" {
+		t = "token hidden"
+	}
+	return "PreapproveAnswer{" + a.ID + ", " + a.From + ", " + a.Until + ", " + t + "}"
+}
+
+// GoString returns the same text as String.
+func (a PreapproveAnswer) GoString() string { return a.String() }
+
+// Format prints the same text as String for every verb.
+func (a PreapproveAnswer) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, a.String()) }
+
+// LogValue returns a text without the token, so slog never logs it.
+func (a PreapproveAnswer) LogValue() slog.Value { return slog.StringValue(a.String()) }
+
+// MarshalJSON writes no field "grant_token" when there is no token.
+func (a PreapproveAnswer) MarshalJSON() ([]byte, error) {
+	type plain PreapproveAnswer
+	if a.GrantToken == "" {
+		return json.Marshal(struct {
+			plain
+			GrantToken *struct{} `json:"grant_token,omitempty"`
+		}{plain: plain(a)})
+	}
+	return json.Marshal(plain(a))
+}
+
+// MaxGrantToken is the most bytes of GrantToken that the client reads.
+// A token is shorter (grantkey.Length).
+const MaxGrantToken = 128
+
+// UnmarshalJSON decodes strictly. grant_token may be missing.
 func (a *PreapproveAnswer) UnmarshalJSON(data []byte) error {
 	var v PreapproveAnswer
-	err := decodeObject(data, map[string]field{"id": text(&v.ID), "from": text(&v.From), "until": text(&v.Until)})
+	err := decodeObjectOptional(data, map[string]field{
+		"id": text(&v.ID), "from": text(&v.From), "until": text(&v.Until), "grant_token": text(&v.GrantToken),
+	}, map[string]bool{"grant_token": true})
 	if err != nil {
 		return err
 	}
-	if len(v.ID) > MaxName || len(v.From) > MaxTime || len(v.Until) > MaxTime {
+	if len(v.ID) > MaxName || len(v.From) > MaxTime || len(v.Until) > MaxTime || len(v.GrantToken) > MaxGrantToken {
 		return errTooLong
 	}
 	*a = v
@@ -642,5 +743,107 @@ func (a *ErrorAnswer) UnmarshalJSON(data []byte) error {
 		return errTooLong
 	}
 	*a = v
+	return nil
+}
+
+// The kinds of a Window.
+const (
+	WindowDaily  = "daily"
+	WindowWeekly = "weekly"
+)
+
+// Weekdays are the day names of a weekly Window, in the order of the week.
+var Weekdays = [7]string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+// Window is one daily or weekly window of a standing grant, in the local
+// time of the broker. It does not pass midnight: From is before To.
+type Window struct {
+	// Kind is WindowDaily or WindowWeekly.
+	Kind string `json:"kind"`
+	// Days are the day names of a weekly window (Weekdays), 1 to 7, each
+	// once. Empty for a daily window.
+	Days []string `json:"days"`
+	// From and To are "HH:MM", 24 hours. To is after From.
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// Check checks the caps and the form of the window.
+func (w *Window) Check() error {
+	if len(w.Days) > len(Weekdays) {
+		return errTooMany
+	}
+	if len(w.Kind) > MaxName || len(w.From) > MaxTime || len(w.To) > MaxTime {
+		return errTooLong
+	}
+	switch w.Kind {
+	case WindowDaily:
+		if len(w.Days) != 0 {
+			return errBadWindow
+		}
+	case WindowWeekly:
+		if len(w.Days) == 0 {
+			return errBadWindow
+		}
+		seen := make(map[string]bool, len(w.Days))
+		for _, d := range w.Days {
+			if !slices.Contains(Weekdays[:], d) || seen[d] {
+				return errBadWindow
+			}
+			seen[d] = true
+		}
+	default:
+		return errBadWindow
+	}
+	from, ok1 := ParseClock(w.From)
+	to, ok2 := ParseClock(w.To)
+	if !ok1 || !ok2 || from >= to {
+		return errBadWindow
+	}
+	return nil
+}
+
+// ParseClock reads "HH:MM" (two digits each, 00:00 to 23:59) and returns
+// the minutes since midnight.
+func ParseClock(s string) (int, bool) {
+	if len(s) != 5 || s[2] != ':' {
+		return 0, false
+	}
+	for _, i := range []int{0, 1, 3, 4} {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	h, m := int(s[0]-'0')*10+int(s[1]-'0'), int(s[3]-'0')*10+int(s[4]-'0')
+	if h > 23 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
+}
+
+// MarshalJSON writes nil days as [].
+func (w Window) MarshalJSON() ([]byte, error) {
+	type plain Window
+	p := plain(w)
+	p.Days = orEmpty(p.Days)
+	return json.Marshal(p)
+}
+
+// UnmarshalJSON decodes strictly, and checks the caps and the form.
+func (w *Window) UnmarshalJSON(data []byte) error {
+	var v Window
+	err := decodeObject(data, map[string]field{
+		"kind": text(&v.Kind),
+		"days": textList(&v.Days, len(Weekdays)),
+		"from": text(&v.From),
+		"to":   text(&v.To),
+	})
+	if err != nil {
+		return err
+	}
+	if err := v.Check(); err != nil {
+		return err
+	}
+	*w = v
 	return nil
 }

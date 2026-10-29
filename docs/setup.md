@@ -1374,6 +1374,10 @@ Things to know:
 - Anything on that machine can use the grant inside its time, not only
   the job. Keep the span short and the uses few. If something else uses
   the grant up, the real job fails, and that shows it.
+- If you use a token file (`--grant-token`), keep it in a private folder,
+  such as the home folder of the job user. Do not put it in a shared
+  folder like `/tmp`: another user there could delete the file or block
+  its update.
 - For a key, use `--key`, `--user` and `--host` as for `nodkey ssh-grant`.
   **Each SSH connection takes one use.** A tool that opens many
   connections, such as Ansible, needs more uses, or `ControlPersist` in

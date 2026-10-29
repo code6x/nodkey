@@ -43,3 +43,19 @@ func (c *Core) Uses(client string, key bool, name string, at time.Time) int {
 	}
 	return c.uses[useKey{client, ref{key: key, name: name}}].on(useDay(rule, at))
 }
+
+// StandingGrants returns the token hash and the number of old hashes of
+// each live standing grant of client, with its windows and uses per window.
+func (c *Core) StandingGrants(client string) (hashes [][32]byte, oldHashes []int, windows []int, perWindow []int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, g := range c.grants {
+		if g.standing() && g.client == client {
+			hashes = append(hashes, g.tokenHash)
+			oldHashes = append(oldHashes, len(g.oldHashes))
+			windows = append(windows, len(g.windows))
+			perWindow = append(perWindow, g.perWindow)
+		}
+	}
+	return
+}

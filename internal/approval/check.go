@@ -42,7 +42,7 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = false
 	}
 	switch r.Kind {
-	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant, audit.KindPreapprove:
+	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant, audit.KindPreapprove, audit.KindStanding:
 		p.kind = r.Kind
 		p.subject.Kind = r.Kind
 	default:
@@ -58,6 +58,8 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = c.checkGrant(r, p) && ok
 	case audit.KindPreapprove:
 		ok = c.checkPreapprove(r, p) && ok
+	case audit.KindStanding:
+		ok = c.checkStanding(r, p) && ok
 	}
 	return ok
 }
@@ -281,7 +283,7 @@ func (c *Core) checkPreapprove(r *Request, p *pending) bool {
 	p.subject.NotBefore = r.NotBefore.UTC().Format(time.RFC3339)
 	p.subject.NotAfter = r.NotAfter.UTC().Format(time.RFC3339)
 	p.plan = &grant{
-		client: p.client, refs: refs, hostKeys: hostKeys, user: p.user,
+		kind: kindScheduled, client: p.client, refs: refs, hostKeys: hostKeys, user: p.user,
 		start: r.NotBefore, end: moment{wall: r.NotAfter}, uses: r.Uses,
 	}
 	return true

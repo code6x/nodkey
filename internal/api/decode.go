@@ -20,6 +20,7 @@ var (
 	errTrailing  = errors.New("api: more data after the JSON value")
 	errTooMany   = errors.New("api: a list has more items than its cap")
 	errTooLong   = errors.New("api: a value is longer than its cap")
+	errBadWindow = errors.New("api: a window is not valid")
 	errBadVar    = errors.New("api: a variable name is not valid")
 	errRead      = errors.New("api: the answer could not be read")
 	errTooLarge  = errors.New("api: the answer is larger than api.MaxAnswer")
@@ -34,6 +35,12 @@ type field func(raw json.RawMessage) error
 // null, and data must have no other field. Names must match exactly; Go's
 // usual decoding would also take a name in another case.
 func decodeObject(data []byte, fields map[string]field) error {
+	return decodeObjectOptional(data, fields, nil)
+}
+
+// decodeObjectOptional is decodeObject, but the fields named in optional
+// may be missing. When present, they are checked as the others are.
+func decodeObjectOptional(data []byte, fields map[string]field, optional map[string]bool) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
 		return errNotObject
@@ -73,8 +80,10 @@ func decodeObject(data []byte, fields map[string]field) error {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return errTrailing
 	}
-	if len(seen) != len(fields) {
-		return errMissing
+	for name := range fields {
+		if !seen[name] && !optional[name] {
+			return errMissing
+		}
 	}
 	return nil
 }

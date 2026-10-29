@@ -14,6 +14,7 @@ import (
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
+	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/sshauth"
 	"github.com/code6x/nodkey/internal/transport"
 )
@@ -32,7 +33,17 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 		return
 	}
 	cl := approval.Claim{Reason: freeText(req.Reason, maxReasonRunes)}
-	sub, from, until, ok := rq.s.checkPreapprove(rq.client, req)
+	standing := len(req.Windows) > 0
+	var sub audit.Subject
+	var from, until time.Time
+	var ok bool
+	var specs []approval.WindowSpec
+	if standing {
+		rq.kind = audit.KindStanding
+		sub, from, until, specs, ok = rq.s.checkStanding(rq.client, req)
+	} else {
+		sub, from, until, ok = rq.s.checkPreapprove(rq.client, req)
+	}
 	sub.Reason = cl.Reason
 	rq.pre = sub
 	rq.releaseBody()
@@ -40,10 +51,24 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 		rq.deny(sub, audit.CauseNotAllowed, "", http.StatusForbidden)
 		return
 	}
-	res, _, ok := rq.decide(ctx, &approval.Request{
+	ar := &approval.Request{
 		Client: rq.client, Kind: audit.KindPreapprove, Secrets: sub.Secrets, Key: sub.Key,
 		RemoteUser: sub.RemoteUser, Hosts: sub.Hosts, Uses: int(req.Uses), NotBefore: from, NotAfter: until, Claim: cl,
-	})
+	}
+	var token grantkey.Token
+	if standing {
+		// The broker makes the token now; the core keeps its hash only.
+		// The token goes into the answer once, and nowhere else.
+		var err error
+		if token, err = grantkey.New(); err != nil {
+			rq.s.log.Error("broker: cannot make a grant token; the request is denied")
+			rq.recordDenied(sub, audit.CauseError, audit.CodeApproverFailed, false)
+			rq.answer(http.StatusServiceUnavailable)
+			return
+		}
+		ar.Kind, ar.Windows, ar.TokenHash = audit.KindStanding, specs, grantkey.Hash(token)
+	}
+	res, _, ok := rq.decide(ctx, ar)
 	if !ok {
 		return
 	}
@@ -83,9 +108,13 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 		return
 	}
 	rq.answered = true
-	err = transport.WriteJSON(rq.w, http.StatusOK, api.PreapproveAnswer{
+	ans := api.PreapproveAnswer{
 		ID: res.GrantID, From: res.GrantFrom.Format(time.RFC3339), Until: res.GrantUntil.Format(time.RFC3339),
-	})
+	}
+	if standing {
+		ans.GrantToken = token.Reveal()
+	}
+	err = transport.WriteJSON(rq.w, http.StatusOK, ans)
 	if err == nil {
 		// writeBody does not flush; a hang-up shows here, not at Write.
 		if err = http.NewResponseController(rq.w).Flush(); errors.Is(err, http.ErrNotSupported) {
@@ -97,6 +126,66 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		rq.dropGrant(res.GrantID)
 	}
+}
+
+// checkStanding checks the names, the times and the windows of a request
+// for a standing grant: secrets only, each in the config and allowed for
+// client. From and until are read as for a scheduled grant. The approval
+// core checks the rules, the limits and the windows against [standing].
+func (s *Service) checkStanding(client string, req *api.PreapproveRequest) (sub audit.Subject, from, until time.Time, specs []approval.WindowSpec, ok bool) {
+	ok = req.Uses >= 1 && req.Uses <= maxPreapproveUses && len(req.Secrets) > 0 &&
+		req.Key == "" && req.User == "" && len(req.Hosts) == 0
+	var err1, err2 error
+	from, err1 = api.ParseTime(req.From, time.Local)
+	until, err2 = api.ParseTime(req.Until, time.Local)
+	if err1 != nil || err2 != nil {
+		ok = false
+	}
+	seen := make(map[string]bool, len(req.Secrets))
+	for _, name := range req.Secrets {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		sec, known := s.cfg.Secrets[name]
+		if !known || !slices.Contains(sec.Clients, client) {
+			ok = false
+			continue
+		}
+		sub.Secrets = append(sub.Secrets, sec.Name)
+	}
+	for _, w := range req.Windows {
+		spec, valid := windowSpec(w)
+		ok = ok && valid
+		specs = append(specs, spec)
+	}
+	return sub, from, until, specs, ok
+}
+
+// windowSpec reads a window of the request. It reports false for a window
+// that does not have the form that api.Window.Check allows.
+func windowSpec(w api.Window) (approval.WindowSpec, bool) {
+	from, ok1 := api.ParseClock(w.From)
+	to, ok2 := api.ParseClock(w.To)
+	spec := approval.WindowSpec{From: time.Duration(from) * time.Minute, To: time.Duration(to) * time.Minute}
+	ok := ok1 && ok2
+	switch w.Kind {
+	case api.WindowDaily:
+		ok = ok && len(w.Days) == 0
+	case api.WindowWeekly:
+		ok = ok && len(w.Days) > 0
+		for _, d := range w.Days {
+			i := slices.Index(api.Weekdays[:], d)
+			if i < 0 {
+				ok = false
+				continue
+			}
+			spec.Days = append(spec.Days, time.Weekday((i+1)%7)) // api.Weekdays starts on Monday
+		}
+	default:
+		ok = false
+	}
+	return spec, ok
 }
 
 // dropGrant cancels the grant id of this client in the core, and writes its
