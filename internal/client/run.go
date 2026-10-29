@@ -673,7 +673,21 @@ func readGrantToken(path string) (grantkey.Token, error) {
 	if err := CheckGrantTokenFile(path); err != nil {
 		return grantkey.Token{}, err
 	}
-	data, err := os.ReadFile(path) //nolint:gosec,forbidigo // G304: the path is the person's; CheckGrantTokenFile checked owner and mode above.
+	// Open without following a link, then check the open file, so a link put
+	// in place after the check above is not read.
+	f, err := os.OpenFile(path, os.O_RDONLY|noFollow, 0) //nolint:gosec,forbidigo // G304: the path is the person's; the open file is checked below.
+	if err != nil {
+		return grantkey.Token{}, fmt.Errorf("%w: cannot read %q: %s", ErrTokenFile, path, errText(err))
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return grantkey.Token{}, fmt.Errorf("%w: cannot look at %q: %s", ErrTokenFile, path, errText(err))
+	}
+	if err := checkTokenFileInfo(path, fi); err != nil {
+		return grantkey.Token{}, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 4096))
 	if err != nil {
 		return grantkey.Token{}, fmt.Errorf("%w: cannot read %q: %s", ErrTokenFile, path, errText(err))
 	}

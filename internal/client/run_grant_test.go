@@ -240,3 +240,29 @@ func TestRunGrantTokenCancel(t *testing.T) {
 	}
 	mustNotLeak(t, oldTok, stderr)
 }
+
+// TestRunGrantTokenSymlink: a symbolic link is not read, even when the file
+// it points to is a good token file. Nothing is sent and no command runs.
+func TestRunGrantTokenSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := writeToken(t, dir, newToken(t).Reveal())
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	gb := newGrantRunBroker(t, newToken(t).Reveal())
+	fx := &fakeExec{}
+	code, stderr := runGrant(t, gb, fx, "--grant-token", link)
+	if code == exitOK || len(fx.ran()) != 0 || len(gb.seen()) != 0 {
+		t.Errorf("exit %d, %d requests, %d commands; stderr %q", code, len(gb.seen()), len(fx.ran()), safe(stderr))
+	}
+	if _, err := readGrantToken(link); err == nil {
+		t.Error("readGrantToken read through a link")
+	}
+	// The open itself refuses a link, with no check before it.
+	if f, err := os.OpenFile(link, os.O_RDONLY|noFollow, 0); err == nil { //nolint:gosec,forbidigo // G304: the test's own link.
+		_ = f.Close()
+		t.Error("the open followed a link")
+	}
+}
