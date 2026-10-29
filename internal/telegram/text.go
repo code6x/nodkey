@@ -93,7 +93,7 @@ const (
 	// dataRenew is the Renew button of the warning before the end of a
 	// standing grant. It carries the ID of the request that made the grant.
 	dataRenew = "n:"
-	dataLen    = 2 + requestIDLen
+	dataLen   = 2 + requestIDLen
 )
 
 // validRequestID reports whether id is a request ID: 22 characters of

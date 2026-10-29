@@ -199,8 +199,8 @@ func (c *Core) renew(a Answer) error {
 		Secrets: slices.Clone(n.origin.Secrets), Uses: g.perWindow, From: now.wall.In(loc), Until: end.In(loc),
 		Windows: slices.Clone(g.origin.Windows)}
 	ev := audit.Decision{Subject: n.origin, UserID: a.UserID, Answer: audit.AnswerRenew, RenewOf: g.id}
-	ev.Subject.Secrets = slices.Clone(n.origin.Secrets)
-	ev.Subject.Windows = slices.Clone(n.origin.Windows)
+	ev.Secrets = slices.Clone(n.origin.Secrets)
+	ev.Windows = slices.Clone(n.origin.Windows)
 	f := c.onRenewed
 	g.renewing = true // a second tap waits for nothing: it is refused
 	c.mu.Unlock()
