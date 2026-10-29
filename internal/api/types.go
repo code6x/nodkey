@@ -164,6 +164,10 @@ func (s *SecretRef) UnmarshalJSON(data []byte) error {
 // of its pool, which nobody clears.
 type SecretsAnswer struct {
 	Secrets []SecretValue `json:"secrets"`
+	// GrantToken is the new token of a standing grant (DESIGN.md section
+	// 8), in the answer to a request with the header GrantTokenHeader, and
+	// only there. It is a secret: never print or log it.
+	GrantToken string `json:"grant_token"`
 }
 
 // Check checks the caps of the answer: at most MaxSecrets values, each at
@@ -171,6 +175,9 @@ type SecretsAnswer struct {
 func (a *SecretsAnswer) Check() error {
 	if len(a.Secrets) > MaxSecrets {
 		return errTooMany
+	}
+	if len(a.GrantToken) > MaxGrantToken {
+		return errTooLong
 	}
 	total := 0
 	for _, s := range a.Secrets {
@@ -182,12 +189,26 @@ func (a *SecretsAnswer) Check() error {
 	return nil
 }
 
+// MarshalJSON writes no field "grant_token" when there is no token. The
+// broker writes the answer with Encode; this is for tests.
+func (a SecretsAnswer) MarshalJSON() ([]byte, error) {
+	type plain SecretsAnswer
+	if a.GrantToken == "" {
+		return json.Marshal(struct {
+			plain
+			GrantToken *struct{} `json:"grant_token,omitempty"`
+		}{plain: plain(a)})
+	}
+	return json.Marshal(plain(a))
+}
+
 // UnmarshalJSON decodes strictly, and checks the caps.
 func (a *SecretsAnswer) UnmarshalJSON(data []byte) error {
 	var v SecretsAnswer
-	err := decodeObject(data, map[string]field{
-		"secrets": list(&v.Secrets, MaxSecrets, object[SecretValue]()),
-	})
+	err := decodeObjectOptional(data, map[string]field{
+		"secrets":     list(&v.Secrets, MaxSecrets, object[SecretValue]()),
+		"grant_token": text(&v.GrantToken),
+	}, map[string]bool{"grant_token": true})
 	if err != nil {
 		return err
 	}
@@ -216,7 +237,16 @@ func (a *SecretsAnswer) Encode() ([]byte, error) {
 		tail  = `"}`
 		end   = `]}`
 	)
+	const tokenKey = `],"grant_token":"`
 	n := len(head) + len(end)
+	if a.GrantToken != "" {
+		for _, c := range []byte(a.GrantToken) {
+			if c != '_' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+				return nil, errBadVar // a token needs no escaping in JSON
+			}
+		}
+		n += len(tokenKey) + len(a.GrantToken) + len(`"}`) - len(end)
+	}
 	for i, s := range a.Secrets {
 		if !ValidVar(s.Var) {
 			return nil, errBadVar
@@ -240,6 +270,11 @@ func (a *SecretsAnswer) Encode() ([]byte, error) {
 		b = base64.StdEncoding.AppendEncode(b, s.Value)
 		b = append(b, tail...)
 	}
+	if a.GrantToken != "" {
+		b = append(b, tokenKey...)
+		b = append(b, a.GrantToken...)
+		return append(b, `"}`...), nil
+	}
 	return append(b, end...), nil
 }
 
@@ -253,6 +288,9 @@ func (a *SecretsAnswer) Clear() {
 
 // String returns a text without the values.
 func (a SecretsAnswer) String() string {
+	if a.GrantToken != "" {
+		return fmt.Sprintf("api.SecretsAnswer{%d values, token hidden}", len(a.Secrets))
+	}
 	return fmt.Sprintf("api.SecretsAnswer{%d values}", len(a.Secrets))
 }
 

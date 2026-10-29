@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -233,6 +234,15 @@ func Post[T any, P interface {
 	*T
 	json.Unmarshaler
 }](ctx context.Context, b *Broker, path string, body []byte, onCode func(code string)) (*T, error) {
+	return postWith[T, P](ctx, b, path, body, onCode, nil)
+}
+
+// postWith is Post with more request headers: extra, if not nil, may set
+// them. They are secrets: Post never shows them.
+func postWith[T any, P interface {
+	*T
+	json.Unmarshaler
+}](ctx context.Context, b *Broker, path string, body []byte, onCode func(code string), extra http.Header) (*T, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 	tr := &trace{onCode: onCode}
@@ -252,6 +262,9 @@ func Post[T any, P interface {
 	req.GetBody = nil
 	req.Close = true
 	req.Header.Set("Content-Type", api.ContentType)
+	for k, v := range extra {
+		req.Header[k] = slices.Clone(v)
+	}
 	b.versions.setVersion(req.Header)
 	defer b.client.CloseIdleConnections()
 	resp, err := b.client.Do(req)

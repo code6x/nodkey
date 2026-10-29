@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/code6x/nodkey/internal/api"
+	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/transport"
 )
 
@@ -35,7 +37,7 @@ const (
 )
 
 // runUsage is the help of nodkey run.
-const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
+const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] -- COMMAND [ARGS...]
 
 Ask the broker for secrets, and wait until a person approves the request
 on the phone. Then run COMMAND, with the value of the secret NAME in the
@@ -45,6 +47,11 @@ environment variable VAR. nodkey never prints a value.
                      [A-Z_][A-Z0-9_]{0,63}, and must not be a name whose
                      value programs show or run, such as PATH, LD_PRELOAD
                      or GIT_SSH_COMMAND. NAME is a secret of the broker.
+  --grant-token FILE the token file of a standing grant (nodkey preapprove).
+                     With it, no tap is needed inside a window of the grant.
+                     nodkey replaces the token in FILE with a new one before
+                     it runs COMMAND, and never prints it. If FILE cannot be
+                     saved, COMMAND does not run (exit 77).
   --reason TEXT      why COMMAND needs the secrets. Without it, the reason
                      is the environment variable NODKEY_REASON.
 
@@ -158,6 +165,15 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 	if err != nil {
 		return fail(stderr, exitUsage, err.Error())
 	}
+	// Check the token file before any request, so a bad file asks no one.
+	var hdr http.Header
+	if o.grantToken != "" {
+		tok, err := readGrantToken(o.grantToken)
+		if err != nil {
+			return fail(stderr, exitUsage, err.Error())
+		}
+		hdr = http.Header{api.GrantTokenHeader: {tok.Reveal()}}
+	}
 	configPath, err := r.configPath()
 	if err != nil {
 		return fail(stderr, exitUnavailable, err.Error())
@@ -173,11 +189,21 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 	if err := r.notDumpable(); err != nil {
 		return fail(stderr, exitUnavailable, "cannot mark nodkey as not dumpable: "+err.Error())
 	}
-	ans, err := Post[api.SecretsAnswer](ctx, b, api.PathSecrets, body, func(code string) {
+	// A request with a token is never sent again (postWith sends once).
+	ans, err := postWith[api.SecretsAnswer](ctx, b, api.PathSecrets, body, func(code string) {
 		_, _ = fmt.Fprintf(stderr, "nodkey: waiting for approval (request %s)\n", code)
-	})
+	}, hdr)
 	if err != nil {
 		return requestFailed(ctx, stderr, err)
+	}
+	// The new token is saved before the values are used (DESIGN.md section
+	// 8). If it cannot be, the command does not run.
+	if err := rotateToken(o.grantToken, ans.GrantToken); err != nil {
+		ans.Clear()
+		if errors.Is(err, ErrTokenFile) {
+			return fail(stderr, exitDenied, err.Error()) // DESIGN.md section 15: exit 77
+		}
+		return fail(stderr, exitUnavailable, err.Error())
 	}
 	envv, err := commandEnv(env, o.secrets, ans)
 	ans.Clear() // best effort: envv holds the values as Go strings
@@ -275,7 +301,9 @@ type runOptions struct {
 	secrets   []api.SecretRef
 	reason    string
 	reasonSet bool
-	command   []string
+	// grantToken is the file of --grant-token ("" for none).
+	grantToken string
+	command    []string
 }
 
 // parseArgs reads the arguments of nodkey run: the options, "--", and the
@@ -306,7 +334,7 @@ func parseArgs(args []string) (*runOptions, error) {
 		}
 		name, value, hasValue := splitOption(arg)
 		switch name {
-		case "secret", "reason":
+		case "secret", "reason", "grant-token":
 		case "h", "help":
 			// With other arguments, help would exit with 0 and run
 			// nothing, which looks like a command that ran.
@@ -323,6 +351,16 @@ func parseArgs(args []string) (*runOptions, error) {
 				return nil, fmt.Errorf("--%s needs a value", name)
 			}
 			value, rest = rest[0], rest[1:]
+		}
+		if name == "grant-token" {
+			if o.grantToken != "" {
+				return nil, errors.New("--grant-token is given twice")
+			}
+			if value == "" {
+				return nil, errors.New("--grant-token needs a file")
+			}
+			o.grantToken = value
+			continue
 		}
 		if name == "reason" {
 			if o.reasonSet {
@@ -627,4 +665,44 @@ func (in *interrupts) stop() {
 		default:
 		}
 	})
+}
+
+// readGrantToken checks the token file and reads the token from it. The
+// errors never hold the token.
+func readGrantToken(path string) (grantkey.Token, error) {
+	if err := CheckGrantTokenFile(path); err != nil {
+		return grantkey.Token{}, err
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is the one that the person gave.
+	if err != nil {
+		return grantkey.Token{}, fmt.Errorf("%w: cannot read %q: %s", ErrTokenFile, path, errText(err))
+	}
+	tok, err := grantkey.Parse(strings.TrimSuffix(string(data), "\n"))
+	if err != nil {
+		return grantkey.Token{}, fmt.Errorf("%w: %q does not hold a token", ErrTokenFile, path)
+	}
+	return tok, nil
+}
+
+// rotateToken saves the new token raw of the answer to the file path. With
+// a file, the answer must have a valid new token. Without one, the answer
+// must have none. The errors never hold the token.
+func rotateToken(path, raw string) error {
+	if path == "" {
+		if raw != "" {
+			return errors.New("the answer of the broker is not valid: it has a token for a request without one")
+		}
+		return nil
+	}
+	if raw == "" {
+		return errors.New("the answer of the broker is not valid: it has no new token; the command does not run")
+	}
+	tok, err := grantkey.Parse(raw)
+	if err != nil {
+		return errors.New("the answer of the broker is not valid: its new token is not a token; the command does not run")
+	}
+	if err := SaveGrantToken(path, tok); err != nil {
+		return fmt.Errorf("%w; the command does not run", err)
+	}
+	return nil
 }
