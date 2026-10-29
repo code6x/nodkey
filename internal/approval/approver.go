@@ -143,6 +143,9 @@ type Prompt struct {
 	// RemoteUser or Secrets say what it covers.
 	Uses        int
 	From, Until time.Time
+	// Windows are the windows of a KindStanding request, such as
+	// "daily 03:00-05:00". Uses is then the number of uses in each.
+	Windows []string
 	// GrantID and UsesLeft are set only in the notice that a scheduled
 	// grant ended with uses left: the grant's ID and the uses it had left.
 	GrantID  string

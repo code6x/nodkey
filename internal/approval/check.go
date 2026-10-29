@@ -42,7 +42,7 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = false
 	}
 	switch r.Kind {
-	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant, audit.KindPreapprove:
+	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant, audit.KindPreapprove, audit.KindStanding:
 		p.kind = r.Kind
 		p.subject.Kind = r.Kind
 	default:
@@ -58,6 +58,8 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = c.checkGrant(r, p) && ok
 	case audit.KindPreapprove:
 		ok = c.checkPreapprove(r, p) && ok
+	case audit.KindStanding:
+		ok = c.checkStanding(r, p) && ok
 	}
 	return ok
 }

@@ -163,6 +163,8 @@ type clientState struct {
 	// preapproving counts the preapprove requests that wait for a tap or
 	// are being decided.
 	preapproving int
+	// standingPending is the same for standing grants.
+	standingPending int
 	// denied holds the number of the newest Deny for each secret or key
 	// (see Core.decisions). A grant from an earlier tap does not start.
 	denied map[ref]uint64
@@ -313,7 +315,7 @@ func (c *Core) neverApplies(client string, it item, now moment) bool {
 // scheduled grant is never covered: it asks for new grants. A scheduled
 // grant is not looked at here (findScheduled).
 func (c *Core) covered(p *pending, now moment) ([]audit.Via, bool) {
-	if p.kind == audit.KindSSHGrant || p.kind == audit.KindPreapprove || len(p.items) == 0 {
+	if p.kind == audit.KindSSHGrant || p.kind.IsPreapprove() || len(p.items) == 0 {
 		return nil, false
 	}
 	vias := make([]audit.Via, len(p.items))

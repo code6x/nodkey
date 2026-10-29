@@ -67,6 +67,11 @@ type grant struct {
 	// the uses in it. A later opening starts the count again.
 	winKey  windowKey
 	winUsed int
+	// tokenHash is the SHA-256 hash of the current token of a standing
+	// grant, and oldHashes are the hashes of the tokens that it had
+	// before: one for each use. The grant never holds a token.
+	tokenHash [32]byte
+	oldHashes [][32]byte
 }
 
 // grantKind is the kind of a grant (DESIGN.md section 8, "The grant core").
@@ -561,6 +566,18 @@ func (c *Core) scheduledCount(client string) int {
 	return n
 }
 
+// standingCount returns how many standing grants client has. Core.mu must
+// be held.
+func (c *Core) standingCount(client string) int {
+	n := 0
+	for _, g := range c.grants {
+		if g.standing() && g.client == client {
+			n++
+		}
+	}
+	return n
+}
+
 // findScheduled returns the scheduled grant that p uses now: of the same
 // client, live, with a use left, and covering every item of p. A request
 // that has an item outside one grant is not covered by it at all; grants
@@ -620,12 +637,23 @@ func (c *Core) startScheduled(r *Result, now moment) {
 		return
 	}
 	c.sweepGrants(now)
-	if !now.before(g.end) || c.scheduledCount(g.client) >= c.cfg.Preapprove.MaxGrants {
+	if !now.before(g.end) {
 		return
 	}
-	for _, ref := range g.refs {
-		if c.client(g.client).denied[ref] > r.seq {
-			return // a Deny came after the tap
+	if g.standing() {
+		// A Deny of another request does not touch a standing grant
+		// (DESIGN.md section 8).
+		if c.standingCount(g.client) >= c.cfg.Standing.MaxGrants {
+			return
+		}
+	} else {
+		if c.scheduledCount(g.client) >= c.cfg.Preapprove.MaxGrants {
+			return
+		}
+		for _, ref := range g.refs {
+			if c.client(g.client).denied[ref] > r.seq {
+				return // a Deny came after the tap
+			}
 		}
 	}
 	c.grants = append(c.grants, g)

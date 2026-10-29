@@ -45,6 +45,13 @@ type Request struct {
 	Uses                int
 	NotBefore, NotAfter time.Time
 
+	// Windows and TokenHash are for a KindStanding request, which names
+	// secrets only. Uses is then the number of uses in each window.
+	// TokenHash is the SHA-256 hash of the token that the broker made for
+	// the grant (grantkey.Hash); the core never sees the token.
+	Windows   []WindowSpec
+	TokenHash [32]byte
+
 	// Claim is the claimed text, made safe by the caller (see Claim).
 	Claim Claim
 
@@ -53,6 +60,15 @@ type Request struct {
 	// or its message is about to be sent. The client prints the code. It
 	// must not block for long.
 	OnWait func(shortCode string)
+}
+
+// WindowSpec is one daily or weekly window of a KindStanding request, in
+// the broker's local time. It does not pass midnight: From is before To,
+// and To is at most 24 hours.
+type WindowSpec struct {
+	// Days are the weekdays of a weekly window. Empty means every day.
+	Days     []time.Weekday
+	From, To time.Duration // time of day
 }
 
 // Result is the decision about one request. Anything that is not a clear

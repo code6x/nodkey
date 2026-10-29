@@ -1485,7 +1485,37 @@ of grants), with the limits of `[standing]` (section 14):
 
 A config without `[standing]` allows no standing grant. The message is
 that of a scheduled grant, with the windows, the uses per window and the
-end date, and the buttons **Approve** and **Deny**.
+end date, and the buttons **Approve** and **Deny**. It says that a Deny of
+other requests does not end the grant. The reason is the claimed job name.
+For `nodkey preapprove --secret backup-token --daily 03:00-05:00 --weekly
+mon,thu 10:30-11:00 --until 2026-12-31 --reason "job nightly-backup"` it
+is:
+
+```
+🗓 Standing grant · request m4k2
+✅ machine: laptop
+✅ secrets: backup-token
+✅ window: daily 03:00-05:00
+✅ window: mon,thu 10:30-11:00
+✅ uses in each window: 1
+✅ from: 2026-10-28 03:00:00 UTC
+✅ until: 2026-12-31 00:00:00 UTC
+A Deny of other requests does not end this grant. Use Revoke to end it.
+— claimed by the agent —
+reason: job nightly-backup
+expires 14:07:00 (120 s)
+[ Approve ] [ Deny ]
+```
+
+The broker denies the request before any message when `[standing]` is
+missing, when a secret has no `standing = true`, when the end is not set
+or is more than `max_days` away, when a window is longer than
+`max_window`, when the uses in a window are more than `max_uses`, when the
+client already has `max_grants` live standing grants, or when a window is
+not valid. Windows must not overlap. After **Approve** the broker makes the token and keeps its
+hash only (`grant_id`, the windows and the uses in each window go with
+it). The audit entry of the decision has the kind `standing`, with
+`not_before`, `not_after`, `windows` and `uses`.
 
 **The token.** After the tap, the broker makes a token: `nkg_`, 32 random
 bytes in base62, and a CRC32 checksum, as GitHub does. The broker keeps
@@ -1624,10 +1654,12 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
 
 The request fields are `request_id`, `client`, `kind` (`secrets`,
-`ssh_login`, `ssh_grant` or `preapprove`), `secrets`, `key`, `hosts`,
+`ssh_login`, `ssh_grant`, `preapprove` or `standing`), `secrets`, `key`, `hosts`,
 `host_key` (a SHA256 fingerprint), `remote_user`, and the claimed
 `command` and `reason`. A `preapprove` request that was approved also has
-`grant_id`, `uses`, `not_before` and `not_after` (UTC, RFC 3339); the
+`grant_id`, `uses`, `not_before` and `not_after` (UTC, RFC 3339). A
+`standing` request that was approved also has `windows` (such as
+`daily 03:00-05:00`), and its `uses` are the uses in each window; the
 entries of a use and of an end have `grant_id`.
 
 The broker writes `broker_started` when it has passed every check of its

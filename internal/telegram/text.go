@@ -57,6 +57,9 @@ const claimedHead = "— claimed by the agent —"
 const (
 	noticeLine          = `allowed by a "never ask" rule, without a tap`
 	scheduledNoticeLine = `allowed by a scheduled grant, without a tap`
+	// standingDenyLine is in the message of a standing grant. A Deny of
+	// another request does not end the grant (DESIGN.md section 8).
+	standingDenyLine = `A Deny of other requests does not end this grant. Use Revoke to end it.`
 )
 
 // maxWindowMinutes is the longest "Approve N min" (DESIGN.md section 8).
@@ -64,7 +67,10 @@ const maxWindowMinutes = int(config.MaxWindow / time.Minute)
 
 // Patterns for the checked fields of a prompt, as in package audit.
 var (
-	namePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	// windowPattern is the form of a window of a standing grant, as
+	// the core shows it: "daily 03:00-05:00" or "mon,thu 03:00-05:00".
+	windowPattern     = regexp.MustCompile(`^(daily|(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun)){0,6}) ([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$`)
 	remoteUserPattern = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$`)
 	hostKeyPattern    = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 	// shortCodePattern: 4 characters of 23456789abcdefghjkmnpqrstuvwxyz.
@@ -240,9 +246,12 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	case !namePattern.MatchString(p.Client):
 		return bad("the client name")
 	}
-	if p.Kind != audit.KindPreapprove && (p.Uses != 0 || !p.From.IsZero() || !p.Until.IsZero() ||
+	if !p.Kind.IsPreapprove() && (p.Uses != 0 || !p.From.IsZero() || !p.Until.IsZero() ||
 		p.GrantID != "" || p.UsesLeft != 0) {
 		return bad("a span of uses outside a scheduled grant")
+	}
+	if p.Kind != audit.KindStanding && len(p.Windows) != 0 {
+		return bad("windows outside a standing grant")
 	}
 	switch {
 	case notice && p.Via != "" && p.Via != audit.ViaScheduled, !notice && p.Via != "":
@@ -278,6 +287,19 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 		if notice != validRequestID(p.GrantID) || (notice && (p.UsesLeft < 1 || p.UsesLeft > p.Uses)) ||
 			(!notice && (p.GrantID != "" || p.UsesLeft != 0 || !p.Once)) {
 			return bad("the fields of a scheduled grant")
+		}
+	case audit.KindStanding:
+		if notice || len(p.Secrets) == 0 || !allNames(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 ||
+			p.RemoteUser != "" || p.HostKey != "" || !p.GrantEnds.IsZero() || p.WindowMinutes != 0 ||
+			p.Uses < 1 || p.From.IsZero() || !p.From.Before(p.Until) || p.Via != "" ||
+			p.GrantID != "" || p.UsesLeft != 0 || !p.Once || len(p.Windows) < 1 ||
+			len(p.Windows) > approval.MaxStandingWindows {
+			return bad("the fields of a standing grant")
+		}
+		for _, w := range p.Windows {
+			if !windowPattern.MatchString(w) {
+				return bad("a window")
+			}
 		}
 	default:
 		return bad("the kind")
@@ -316,6 +338,8 @@ func title(p approval.Prompt, notice bool) string {
 		icon, name = "🔐", "SSH grant"
 	case audit.KindPreapprove:
 		icon, name = "🗓", "Pre-approval"
+	case audit.KindStanding:
+		icon, name = "🗓", "Standing grant"
 	}
 	if notice {
 		icon = "🔔"
@@ -393,6 +417,15 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		verified("uses", strconv.Itoa(p.Uses))
 		verified("from", p.From.Format(dateTimeFormat))
 		verified("until", p.Until.Format(dateTimeFormat))
+	case audit.KindStanding:
+		verified("secrets", strings.Join(p.Secrets, ", "))
+		for _, w := range p.Windows {
+			verified("window", w)
+		}
+		verified("uses in each window", strconv.Itoa(p.Uses))
+		verified("from", p.From.Format(dateTimeFormat))
+		verified("until", p.Until.Format(dateTimeFormat))
+		t.write("\n" + standingDenyLine)
 	}
 	fields := []struct {
 		label, value string
@@ -439,7 +472,7 @@ func keyboard(p approval.Prompt) inlineKeyboard {
 	var row []inlineButton
 	if p.Once {
 		label := "Approve once"
-		if p.Kind == audit.KindPreapprove {
+		if p.Kind.IsPreapprove() {
 			label = "Approve"
 		}
 		row = append(row, inlineButton{Text: label, CallbackData: dataOnce + p.RequestID})
@@ -488,7 +521,7 @@ func expiryLine(p approval.Prompt) string {
 // p. The last lines need room: one, or for a scheduled grant two, because
 // its message ends with the line of its approval and the line of its end.
 func bodyLimit(p approval.Prompt) int {
-	if p.Kind == audit.KindPreapprove {
+	if p.Kind.IsPreapprove() {
 		return maxTextUnits - 2*lastLineRoom
 	}
 	return maxTextUnits - lastLineRoom
@@ -532,6 +565,10 @@ func resultLine(p approval.Prompt, e approval.Ending) string {
 	}
 	switch e.Answer {
 	case audit.AnswerApproveOnce:
+		if p.Kind == audit.KindStanding {
+			return "👍 approved by you at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) in each window until " +
+				p.Until.Format(dateTimeFormat)
+		}
 		if p.Kind == audit.KindPreapprove {
 			return "👍 approved by you at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) until " +
 				p.Until.Format(dateTimeFormat)
@@ -562,6 +599,9 @@ func grantEndLines(p approval.Prompt, e approval.Ending) string {
 	approved := resultLine(p, approval.Ending{Answer: e.Answer, At: e.Approved})
 	at := e.At.Format(dateTimeFormat)
 	var end string
+	if p.Kind == audit.KindStanding {
+		return approved + "\n" + standingEndLine(e.GrantEnd, at)
+	}
 	switch e.GrantEnd {
 	case audit.EndUsedUp:
 		end = "✅ all " + strconv.Itoa(p.Uses) + " use(s) used; the grant ended at " + at
@@ -585,4 +625,22 @@ func noticeText(p approval.Prompt) (*text, error) {
 		return nil, err
 	}
 	return fitBody(p, true, maxTextUnits)
+}
+
+// standingEndLine says how and when a standing grant ended. It has no
+// uses left to show: it counts its uses in each window.
+func standingEndLine(cause audit.EndCause, at string) string {
+	switch cause {
+	case audit.EndEnded:
+		return "⌛ ended at " + at
+	case audit.EndRevoked:
+		return "⛔ revoked by you at " + at
+	case audit.EndAlarm:
+		return "🚨 ended by an alarm at " + at
+	case audit.EndRenewed:
+		return "🔁 renewed at " + at + "; a new grant replaced this one"
+	case audit.EndStopped:
+		return "⛔ dropped: the broker stopped at " + at
+	}
+	return "⛔ ended at " + at
 }
