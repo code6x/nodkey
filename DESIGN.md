@@ -1554,7 +1554,7 @@ send, the next request tries again.
 | an old token | denied | **ends** (`alarm`) | `old_token` |
 | more uses in a window than allowed | denied | **ends** (`alarm`) | `over_uses` |
 | a valid token outside the windows | denied | stays | `outside_window` |
-| a token of another client's grant, current or old | denied | **ends that grant** (`alarm`) | `old_token`, with the ID of that grant |
+| a token of another client's grant, current or old | denied | **ends that grant** (`alarm`) | `old_token`, with the ID of that grant; the message names the machine of that grant |
 | an unknown token | denied | none | `unknown_token` (rate limited) |
 | a window ended with no use | none | stays | `missed_window` |
 

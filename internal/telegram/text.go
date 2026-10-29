@@ -667,6 +667,8 @@ func alarmText(a approval.Alarm) (*text, error) {
 		return nil, bad("the secrets")
 	case (a.GrantID == "") != (a.Cause == audit.AlarmUnknownToken) || (a.GrantID != "" && !validRequestID(a.GrantID)):
 		return nil, bad("the grant ID")
+	case a.Owner != "" && (a.GrantID == "" || a.Owner == a.Client || !namePattern.MatchString(a.Owner)):
+		return nil, bad("the owner")
 	}
 	var what string
 	switch a.Cause {
@@ -692,6 +694,9 @@ func alarmText(a approval.Alarm) (*text, error) {
 	}
 	if a.GrantID != "" {
 		t.write("\n✅ grant: " + a.GrantID)
+	}
+	if a.Owner != "" {
+		t.write("\n⚠️ the grant is of machine " + a.Owner + ": its token left that machine")
 	}
 	return t, nil
 }

@@ -87,14 +87,19 @@ func TestAlarm(t *testing.T) {
 func TestAlarmRefusals(t *testing.T) {
 	e := newEnv(t)
 	for name, change := range map[string]func(*approval.Alarm){
-		"a bad request ID":      func(a *approval.Alarm) { a.RequestID = "x" },
-		"a bad short code":      func(a *approval.Alarm) { a.ShortCode = "<b>" },
-		"a bad client":          func(a *approval.Alarm) { a.Client = "a b" },
-		"a bad secret":          func(a *approval.Alarm) { a.Secrets = []string{"<i>"} },
-		"unknown with a grant":  func(a *approval.Alarm) { a.Cause, a.Ended = audit.AlarmUnknownToken, false },
-		"no grant":              func(a *approval.Alarm) { a.GrantID = "" },
-		"an unknown cause":      func(a *approval.Alarm) { a.Cause = "x" },
-		"ended, but not ending": func(a *approval.Alarm) { a.Cause = audit.AlarmOutsideWindow },
+		"a bad request ID":        func(a *approval.Alarm) { a.RequestID = "x" },
+		"a bad short code":        func(a *approval.Alarm) { a.ShortCode = "<b>" },
+		"a bad client":            func(a *approval.Alarm) { a.Client = "a b" },
+		"a bad secret":            func(a *approval.Alarm) { a.Secrets = []string{"<i>"} },
+		"unknown with a grant":    func(a *approval.Alarm) { a.Cause, a.Ended = audit.AlarmUnknownToken, false },
+		"no grant":                func(a *approval.Alarm) { a.GrantID = "" },
+		"an unknown cause":        func(a *approval.Alarm) { a.Cause = "x" },
+		"ended, but not ending":   func(a *approval.Alarm) { a.Cause = audit.AlarmOutsideWindow },
+		"a bad owner":             func(a *approval.Alarm) { a.Owner = "a b" },
+		"the owner is the client": func(a *approval.Alarm) { a.Owner = "laptop" },
+		"an owner, no grant": func(a *approval.Alarm) {
+			a.Owner, a.Cause, a.GrantID, a.Ended = "ci", audit.AlarmUnknownToken, "", false
+		},
 	} {
 		a := alarmOf(audit.AlarmOldToken)
 		change(&a)
@@ -104,5 +109,22 @@ func TestAlarmRefusals(t *testing.T) {
 	}
 	if n := len(e.f.allCalls()); n != 0 {
 		t.Errorf("%d calls", n)
+	}
+}
+
+// TestAlarmOwner: an alarm for a token of another machine's grant names
+// that machine.
+func TestAlarmOwner(t *testing.T) {
+	a := alarmOf(audit.AlarmOldToken)
+	a.Client, a.Owner = "ci", "laptop"
+	txt, err := alarmText(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := txt.plain.String(); !strings.Contains(s, "machine: ci") || !strings.Contains(s, "machine laptop") {
+		t.Errorf("text: %q", s)
+	}
+	if s := alarmOf(audit.AlarmOldToken); s.Owner != "" {
+		t.Fatal("alarmOf has an owner")
 	}
 }

@@ -14,5 +14,6 @@ func ownedByUser(fi fs.FileInfo) bool {
 	return ok && int(st.Uid) == os.Geteuid()
 }
 
-// noFollow makes open refuse a symbolic link.
-const noFollow = syscall.O_NOFOLLOW
+// noFollow makes open refuse a symbolic link, and not wait on a named
+// pipe that was put in place of the file.
+const noFollow = syscall.O_NOFOLLOW | syscall.O_NONBLOCK

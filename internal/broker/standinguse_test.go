@@ -427,7 +427,7 @@ func TestStandingForeignToken(t *testing.T) {
 		if len(al) != 1 || al[0].Cause != audit.AlarmOldToken || al[0].GrantID != id {
 			t.Fatalf("old=%v alarms: %+v", old, al)
 		}
-		if as := e.approver.Alarms(); len(as) != 1 || !as[0].Ended || as[0].GrantID != id {
+		if as := e.approver.Alarms(); len(as) != 1 || !as[0].Ended || as[0].GrantID != id || as[0].Owner != "laptop" {
 			t.Errorf("old=%v the alarm: %+v", old, as)
 		}
 		var ended bool

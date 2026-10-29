@@ -23,7 +23,10 @@ type Alarm struct {
 	Secrets              []string
 	// GrantID is "" for an unknown token.
 	GrantID string
-	Cause   audit.AlarmCause
+	// Owner is the machine of the grant when it is not Client: Client sent
+	// a token of another machine's grant.
+	Owner string
+	Cause audit.AlarmCause
 	// Ended says that the alarm ended the grant.
 	Ended bool
 }
@@ -55,6 +58,7 @@ type standingUse struct {
 	token    grantkey.Token
 	alarm    audit.AlarmCause
 	grantID  string // of the alarm
+	owner    string // of the grant, when it is not the client's
 	ended    bool
 	// markG is the grant whose daily outside_window mark this use took, and
 	// markPrev the mark before. SendAlarm gives the mark back if the alarm
@@ -127,6 +131,9 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 		su := &standingUse{p: p, alarm: cause}
 		if g != nil {
 			su.grantID, res.Subject.GrantID = g.id, g.id
+			if g.client != p.client {
+				su.owner = g.client
+			}
 		}
 		if end {
 			su.ended = true
@@ -259,7 +266,7 @@ func (r *Result) SendAlarm(ctx context.Context) {
 	defer cancel()
 	err := al.Alarm(actx, Alarm{
 		RequestID: r.RequestID, ShortCode: r.ShortCode, Client: r.Subject.Client,
-		Secrets: slices.Clone(r.Subject.Secrets), GrantID: su.grantID, Cause: su.alarm, Ended: su.ended,
+		Secrets: slices.Clone(r.Subject.Secrets), GrantID: su.grantID, Owner: su.owner, Cause: su.alarm, Ended: su.ended,
 	})
 	if err != nil {
 		c.giveBackMark(su)
