@@ -210,7 +210,7 @@ func TestStandingOutsideWindow(t *testing.T) {
 }
 
 // TestStandingUnknownToken: no grant, an alarm with sound, rate limited;
-// a bad format is the same; a token of another client is the same.
+// a bad format is the same.
 func TestStandingUnknownToken(t *testing.T) {
 	e, tok0, _ := useEnv(t)
 	other, err := grantkey.New()
@@ -221,8 +221,8 @@ func TestStandingUnknownToken(t *testing.T) {
 	mustStatus(t, res, http.StatusForbidden)
 	res, _ = e.useToken("laptop", "not a token")
 	mustStatus(t, res, http.StatusForbidden)
-	// The token of laptop's grant, sent by ci.
-	res, _ = e.useToken("ci", tok0)
+	// A token that no grant has, sent by ci.
+	res, _ = e.useToken("ci", other.Reveal())
 	mustStatus(t, res, http.StatusForbidden)
 	al := e.alarmEntries()
 	if len(al) != 3 || al[2].Cause != audit.AlarmUnknownToken || al[2].Client != "ci" || al[0].Cause != audit.AlarmUnknownToken || al[0].GrantID != "" {
@@ -406,5 +406,81 @@ func TestStandingCancelAfterRotation(t *testing.T) {
 	}
 	if len(e.alarmEntries()) != 0 || len(e.approver.Alarms()) != 0 {
 		t.Error("an alarm after a cancel")
+	}
+}
+
+// TestStandingForeignToken: the token of a grant of another client, current
+// or old, has left its machine. The request is denied and the grant ends,
+// with an alarm that names it.
+func TestStandingForeignToken(t *testing.T) {
+	for _, old := range []bool{false, true} {
+		e, tok0, id := useEnv(t)
+		tok := tok0
+		if old {
+			_, ans := e.useToken("laptop", tok0)
+			tok = tok0
+			tok0 = ans.GrantToken
+		}
+		res, _ := e.useToken("ci", tok)
+		mustStatus(t, res, http.StatusForbidden)
+		al := e.alarmEntries()
+		if len(al) != 1 || al[0].Cause != audit.AlarmOldToken || al[0].GrantID != id {
+			t.Fatalf("old=%v alarms: %+v", old, al)
+		}
+		if as := e.approver.Alarms(); len(as) != 1 || !as[0].Ended || as[0].GrantID != id {
+			t.Errorf("old=%v the alarm: %+v", old, as)
+		}
+		var ended bool
+		for _, ev := range e.audit.all() {
+			if g, ok := ev.(audit.GrantEnded); ok && g.GrantID == id && g.Cause == audit.EndAlarm {
+				ended = true
+			}
+		}
+		if !ended {
+			t.Errorf("old=%v: no grant_ended:alarm", old)
+		}
+		res, _ = e.useToken("laptop", tok0)
+		mustStatus(t, res, http.StatusForbidden)
+		e.noToken(tok, tok0)
+	}
+}
+
+// TestStandingOutsideWindowAlarmFails: the daily mark is set only by an
+// alarm that went out. After a failed send the next request tries again.
+func TestStandingOutsideWindowAlarmFails(t *testing.T) {
+	e, tok0, id := useEnv(t)
+	e.clock.Advance(3 * time.Hour) // 15:00
+	e.approver.FailAlarm(errors.New("made-up: the alarm cannot be sent"))
+	res, _ := e.useToken("laptop", tok0)
+	mustStatus(t, res, http.StatusForbidden)
+	if n := len(e.approver.Alarms()); n != 0 {
+		t.Fatalf("%d alarms went out", n)
+	}
+	e.approver.FailAlarm(nil)
+	for range 2 {
+		res, _ = e.useToken("laptop", tok0)
+		mustStatus(t, res, http.StatusForbidden)
+	}
+	if as := e.approver.Alarms(); len(as) != 1 || as[0].Cause != audit.AlarmOutsideWindow || as[0].GrantID != id {
+		t.Errorf("the alarms: %+v", as)
+	}
+}
+
+// TestStandingBeforeStart: a valid token before the start of the grant is
+// denied, with an outside_window alarm, and the grant stays.
+func TestStandingBeforeStart(t *testing.T) {
+	e := newEnv(t, envOptions{config: standingOn})
+	r := standReq("github-token")
+	r.From = "2026-10-14T20:00:00Z"
+	r.Windows = []api.Window{{Kind: api.WindowDaily, From: "11:00", To: "13:00"}}
+	ans := e.preapprove(e.httpClient("laptop"), r, 1)
+	res, _ := e.useToken("laptop", ans.GrantToken)
+	mustStatus(t, res, http.StatusForbidden)
+	al := e.alarmEntries()
+	if len(al) != 1 || al[0].Cause != audit.AlarmOutsideWindow || al[0].GrantID != ans.ID {
+		t.Fatalf("alarms: %+v", al)
+	}
+	if as := e.approver.Alarms(); len(as) != 1 || as[0].Ended {
+		t.Errorf("the alarms: %+v", as)
 	}
 }

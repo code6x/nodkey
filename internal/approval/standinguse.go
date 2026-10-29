@@ -56,6 +56,12 @@ type standingUse struct {
 	alarm    audit.AlarmCause
 	grantID  string // of the alarm
 	ended    bool
+	// markG is the grant whose daily outside_window mark this use took, and
+	// markPrev the mark before. SendAlarm gives the mark back if the alarm
+	// is not sent.
+	markG    *grant
+	markPrev string
+	markNow  string
 }
 
 // UseStanding decides a request with a token: the use path of a standing
@@ -89,18 +95,29 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 	c.sweepGrants(now)
 	cs := c.client(p.client)
 	// Every grant and hash is compared, with no early exit.
-	var cur, old *grant
+	// A token of a grant of another client has left its machine: that grant
+	// is the one that is named and ended (foreign).
+	var cur, old, foreign *grant
 	if r.Token != nil {
 		for _, g := range c.grants {
-			if !g.standing() || g.client != p.client {
+			if !g.standing() {
 				continue
 			}
+			mine := g.client == p.client
 			if grantkey.Equal(g.tokenHash, *r.Token) {
-				cur = g
+				if mine {
+					cur = g
+				} else {
+					foreign = g
+				}
 			}
 			for _, h := range g.oldHashes {
 				if grantkey.Equal(h, *r.Token) {
-					old = g
+					if mine {
+						old = g
+					} else {
+						foreign = g
+					}
 				}
 			}
 		}
@@ -124,6 +141,8 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 		return res
 	}
 	switch {
+	case cur == nil && old == nil && foreign != nil:
+		return deny(foreign, audit.AlarmOldToken, true)
 	case cur == nil && old == nil:
 		if cs.unknown.recent(now.mono) >= MaxUnknownTokensPerMinute {
 			return c.denied(p, audit.CauseLimit)
@@ -145,8 +164,11 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 	case useOutsideWindow:
 		res := deny(g, audit.AlarmOutsideWindow, false)
 		if mark := now.wall.Format("2006-01-02"); g.alarmMark == mark {
-			res.su.alarm = "" // one alarm in a window
+			res.su.alarm = "" // one alarm in a day
 		} else {
+			// The mark is taken now, so a second request does not send a
+			// second alarm. SendAlarm gives it back if the alarm is not sent.
+			res.su.markG, res.su.markPrev, res.su.markNow = g, g.alarmMark, mark
 			g.alarmMark = mark
 		}
 		return res
@@ -230,6 +252,7 @@ func (r *Result) SendAlarm(ctx context.Context) {
 	c, su := r.core, r.su
 	al, ok := c.approver.(Alarmer)
 	if !ok {
+		c.giveBackMark(su)
 		return
 	}
 	actx, cancel := c.callContext(context.WithoutCancel(ctx), endTimeout)
@@ -239,8 +262,23 @@ func (r *Result) SendAlarm(ctx context.Context) {
 		Secrets: slices.Clone(r.Subject.Secrets), GrantID: su.grantID, Cause: su.alarm, Ended: su.ended,
 	})
 	if err != nil {
+		c.giveBackMark(su)
 		c.logger.LogAttrs(actx, slog.LevelWarn, "approval: cannot send the alarm of a standing grant",
 			slog.String("request_id", r.RequestID), slog.String("cause", string(su.alarm)), slog.Any("error", err))
+	}
+}
+
+// giveBackMark takes back the daily outside_window mark that su took, because
+// its alarm was not sent: the next request may send one. A later mark of the
+// same grant is left alone.
+func (c *Core) giveBackMark(su *standingUse) {
+	if su.markG == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if su.markG.alarmMark == su.markNow {
+		su.markG.alarmMark = su.markPrev
 	}
 }
 

@@ -182,6 +182,13 @@ func (a *Approver) FailNotify(err error) {
 	a.notifyErr = err
 }
 
+// FailAlarm makes Alarm fail with err. nil makes it work again.
+func (a *Approver) FailAlarm(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.alarmErr = err
+}
+
 // FailEnd makes End return err. nil makes it work again.
 func (a *Approver) FailEnd(err error) {
 	a.mu.Lock()

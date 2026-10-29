@@ -181,8 +181,8 @@ func TestStandingUseNotYetStartedAndNoWindows(t *testing.T) {
 	w := []window{{days: anyDay, from: 0, to: 24 * time.Hour}}
 	g := standingGrant(w, 1, end)
 	g.start = time.Date(2026, 11, 10, 0, 0, 0, 0, utc)
-	if g.live(at(time.Date(2026, 11, 9, 12, 0, 0, 0, utc))) || g.tryUse(at(time.Date(2026, 11, 9, 12, 0, 0, 0, utc))) != useNone {
-		t.Error("a grant before its start must not be live or usable")
+	if g.live(at(time.Date(2026, 11, 9, 12, 0, 0, 0, utc))) || g.tryUse(at(time.Date(2026, 11, 9, 12, 0, 0, 0, utc))) != useOutsideWindow {
+		t.Error("a grant before its start must not be live, and a use is outside the windows")
 	}
 	// No windows: live, but never usable as a standing grant (fail closed).
 	n := standingGrant(nil, 1, end)

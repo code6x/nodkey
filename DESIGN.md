@@ -1545,14 +1545,17 @@ grant ends, to know the old tokens.
 **Alarms.** An alarm is a Telegram message with sound, and a `grant_alarm`
 entry with a cause. It counts toward the limit of 20 notices in all. One
 grant sends at most one alarm in a window. For a valid token outside the
-windows, the limit is one alarm in a calendar day.
+windows (also before the start of the grant), the limit is one alarm in a
+calendar day. The day counts only when the alarm was sent: after a failed
+send, the next request tries again.
 
 | case | request | grant | cause |
 |---|---|---|---|
 | an old token | denied | **ends** (`alarm`) | `old_token` |
 | more uses in a window than allowed | denied | **ends** (`alarm`) | `over_uses` |
 | a valid token outside the windows | denied | stays | `outside_window` |
-| an unknown token, or the token of another client | denied | none | `unknown_token` (rate limited) |
+| a token of another client's grant, current or old | denied | **ends that grant** (`alarm`) | `old_token`, with the ID of that grant |
+| an unknown token | denied | none | `unknown_token` (rate limited) |
 | a window ended with no use | none | stays | `missed_window` |
 
 An old token is taken as stolen. A retry after a lost answer looks the

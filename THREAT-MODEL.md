@@ -1046,7 +1046,10 @@ each use. The token is in a file on the client.
   the client saves the new token before it uses the secrets and never
   retries by itself. A new grant is one tap, so there is no pause state.
 - A valid token outside the windows is denied with an alarm, and the grant
-  stays. An unknown token, or the token of another client, is denied with
+  stays; this holds also before the start of the grant, and the day's
+  alarm counts only if it was sent. The current or old token of another
+  client's grant has left its machine: the request is denied and that
+  grant ends, with an alarm that names it. An unknown token is denied with
   a rate-limited alarm; it may be a guess. Alarms have sound, count toward
   the 20 notices in all, and one grant sends at most one in a window.
 - Run the job as its own system user, so an agent that runs as another

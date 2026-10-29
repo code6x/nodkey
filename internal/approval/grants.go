@@ -147,8 +147,11 @@ func (g *grant) live(now moment) bool {
 // this window are spent, for the alarms. A standing grant without a valid
 // window cannot be used.
 func (g *grant) tryUse(now moment) useResult {
-	if !g.standing() || len(g.windows) == 0 || now.wall.Before(g.start) || !now.before(g.end) {
+	if !g.standing() || len(g.windows) == 0 || !now.before(g.end) {
 		return useNone
+	}
+	if now.wall.Before(g.start) {
+		return useOutsideWindow // a valid token before the start is outside the windows
 	}
 	key, _, in := windowAt(g.windows, now.wall)
 	if !in {
