@@ -186,3 +186,25 @@ func TestNoMissedAlarmAfterTheGrantEnds(t *testing.T) {
 		}
 	})
 }
+
+// TestOneMissedAlarmAfterAWallClockJump: a wall clock that jumps days
+// ahead queues one alarm for the grant, not one for each skipped window.
+func TestOneMissedAlarmAfterAWallClockJump(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, _, entries := missedEnv(t)
+		defer e.stop()
+		e.clock.JumpWall(72 * time.Hour)
+		e.pass(17 * time.Hour) // the timer wakes; three or more windows passed with no use
+		if n := len(e.fake.Alarms()); n != 1 {
+			t.Errorf("%d alarms after the jump, want 1", n)
+		}
+		if n := len(entries()); n != 1 {
+			t.Errorf("%d entries after the jump, want 1", n)
+		}
+		// The next window still gives its own.
+		e.pass(24 * time.Hour)
+		if n := len(e.fake.Alarms()); n != 2 {
+			t.Errorf("%d alarms after the next window, want 2", n)
+		}
+	})
+}

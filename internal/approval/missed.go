@@ -77,9 +77,10 @@ func nextWindowEnd(g *grant, wall time.Time) (time.Duration, bool) {
 }
 
 // scanMissed finds the windows of standing grants that ended since the
-// last scan with no use in them, and queues one alarm for each. The grant
-// stays. Each opening is looked at once, because scanned only moves
-// forward. Core.mu must be held.
+// last scan with no use in them, and queues an alarm for them: at most
+// one for each grant in one scan, so that a long jump of the clock does
+// not queue many. The grant stays. Each opening is looked at once,
+// because scanned only moves forward. Core.mu must be held.
 func (c *Core) scanMissed(now moment) {
 	for _, g := range c.grants {
 		if !g.standing() || g.pendingRenewal() || !now.wall.After(g.scanned) {
@@ -87,14 +88,16 @@ func (c *Core) scanMissed(now moment) {
 		}
 		from := g.scanned
 		g.scanned = now.wall
+		queued := false
 		eachWindowEnd(g.windows, from, now.wall, func(k windowKey, end time.Time) {
 			if g.used[k] {
 				delete(g.used, k)
 				return
 			}
-			if !end.Before(g.end.wall) {
-				return // the grant ended before this window did
+			if queued || !end.Before(g.end.wall) {
+				return // one alarm in this scan, or the grant ended before this window did
 			}
+			queued = true
 			sub := g.origin
 			sub.Secrets = slices.Clone(g.origin.Secrets)
 			sub.Hosts = slices.Clone(g.origin.Hosts)

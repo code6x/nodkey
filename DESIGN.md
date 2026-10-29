@@ -1609,7 +1609,8 @@ else is ignored without an answer.
 the broker sends the alarm `missed_window`. The grant stays. A window that
 ended before the grant started does not count. A window in the hour that a
 clock change skips does not open, so it also gives this alarm. Each grant
-sends at most one alarm in a window.
+sends at most one alarm in a window. If the wall clock jumps ahead over
+many windows, the grant sends one alarm for all of them.
 
 **End.** A standing grant ends when its end date comes, on Revoke, on an
 alarm that ends it, on a renewal, on a cancel by its own client (`nodkey
