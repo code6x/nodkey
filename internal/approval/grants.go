@@ -74,6 +74,18 @@ type grant struct {
 	oldHashes [][32]byte
 	// alarmMark is the day of the last alarm outside the windows.
 	alarmMark string
+	// code is the short code of the request that made the grant, for its
+	// alarms.
+	code string
+	// scanned is the wall time up to which the windows of a standing grant
+	// were checked for a missed window. It starts at the later of the start
+	// and the approval, and never goes back.
+	scanned time.Time
+	// used holds the openings of windows that had a use and have not been
+	// checked yet.
+	used map[windowKey]bool
+	// marked is the opening that the last use marked in used.
+	marked windowKey
 }
 
 // grantKind is the kind of a grant (DESIGN.md section 8, "The grant core").
@@ -166,6 +178,10 @@ func (g *grant) tryUse(now moment) useResult {
 		return useOverUses
 	}
 	g.winUsed++
+	if g.used == nil {
+		g.used = make(map[windowKey]bool)
+	}
+	g.used[key], g.marked = true, key
 	return useOK
 }
 
@@ -174,6 +190,9 @@ func (g *grant) tryUse(now moment) useResult {
 func (g *grant) giveBackUse() {
 	if g.standing() {
 		g.winUsed = max(g.winUsed-1, 0)
+		if g.winUsed == 0 {
+			delete(g.used, g.marked)
+		}
 		return
 	}
 	g.uses++
@@ -403,10 +422,13 @@ func (c *Core) deliverEnded() {
 func (c *Core) watchGrants(ctx context.Context) {
 	for {
 		c.mu.Lock()
-		c.sweepGrants(c.now())
+		now := c.now()
+		c.sweepGrants(now)
+		c.scanMissed(now)
 		next, ok := c.nextEnd()
 		c.mu.Unlock()
 		c.deliverEnded()
+		c.deliverAlarms()
 		c.deliverMessages(c.stopCtx)
 		var timer <-chan time.Time
 		var t Timer
@@ -431,9 +453,9 @@ func (c *Core) watchGrants(ctx context.Context) {
 
 // nextEnd returns the earliest time that watchGrants must wake for, on
 // the monotonic clock: the end of an audited grant, or the end of the
-// current window of a standing grant (the missed-window alarm of part 2
-// reads it). The end of a window is the wall clock time left in it, added
-// to the monotonic clock; if the clocks change inside the window, the wake
+// next window of a standing grant (scanMissed looks for a missed
+// window then). The end of a window is the wall clock time left until it,
+// added to the monotonic clock; if the clocks change inside the window, the wake
 // is early or late, and the one who reads it looks again. Core.mu must be
 // held.
 func (c *Core) nextEnd() (time.Time, bool) {
@@ -451,7 +473,7 @@ func (c *Core) nextEnd() (time.Time, bool) {
 		}
 		take(g.end.mono)
 		if g.standing() && now.before(g.end) {
-			if _, left, in := windowAt(g.windows, now.wall); in {
+			if left, ok := nextWindowEnd(g, now.wall); ok {
 				take(now.mono.Add(left))
 			}
 		}
@@ -659,6 +681,12 @@ func (c *Core) startScheduled(r *Result, now moment) {
 			if c.client(g.client).denied[ref] > r.seq {
 				return // a Deny came after the tap
 			}
+		}
+	}
+	if g.standing() {
+		g.scanned = now.wall
+		if g.start.After(g.scanned) {
+			g.scanned = g.start
 		}
 	}
 	c.grants = append(c.grants, g)

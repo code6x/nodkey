@@ -117,6 +117,10 @@ type Core struct {
 	// watchGrants hands them to onEnded.
 	endedQueue []audit.GrantEnded
 	onEnded    func(audit.GrantEnded)
+	// alarmQueue holds the missed-window alarms, until watchGrants writes
+	// and sends them.
+	alarmQueue []missedAlarm
+	onAlarm    func(audit.GrantAlarm)
 	// msgQueue holds the updates of the messages of scheduled grants that
 	// ended, until watchGrants makes them.
 	msgQueue  []msgUpdate

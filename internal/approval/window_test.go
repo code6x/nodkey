@@ -291,10 +291,10 @@ func TestNextEndWakesAtTheEndOfTheWindow(t *testing.T) {
 	if !ok || !next.Equal(now.Add(time.Hour)) {
 		t.Errorf("nextEnd = %v, %v; want the window end %v", next, ok, now.Add(time.Hour))
 	}
-	clock.now = time.Date(2026, 11, 2, 6, 0, 0, 0, berlin) // outside: the end date
+	clock.now = time.Date(2026, 11, 2, 6, 0, 0, 0, berlin) // outside: the end of the next window
 	next, ok = c.nextEnd()
-	if !ok || !next.Equal(end) {
-		t.Errorf("nextEnd outside = %v, %v; want %v", next, ok, end)
+	if want := time.Date(2026, 11, 3, 5, 0, 0, 0, berlin); !ok || !next.Equal(want) {
+		t.Errorf("nextEnd outside = %v, %v; want %v", next, ok, want)
 	}
 	c.grants = c.grants[:1]
 	if _, ok := c.nextEnd(); ok {

@@ -405,6 +405,11 @@ func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc,
 		}
 		dropped.note(ev)
 	})
+	core.OnGrantAlarm(func(ev audit.GrantAlarm) {
+		if _, err := s.append(ev); err != nil {
+			s.log.Warn("broker: cannot write the grant_alarm entry of a missed window")
+		}
+	})
 	err := core.Run(ctx)
 	s.coreStopped.Store(true) // first: deny every request from now on
 	// The grants are dropped by now. Their messages are updated, and one

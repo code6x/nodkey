@@ -680,6 +680,8 @@ func alarmText(a approval.Alarm) (*text, error) {
 		what = "a valid token was used outside the windows. The request was denied; the grant stays."
 	case audit.AlarmUnknownToken:
 		what = "a token that no grant of this machine has. The request was denied."
+	case audit.AlarmMissedWindow:
+		what = "a window ended and the grant was not used in it. The grant stays."
 	default:
 		return nil, bad("the cause")
 	}

@@ -661,7 +661,7 @@ func (c *Core) makeGrantID(p *pending) error {
 func (c *Core) approvePlan(p *pending, res *Result) {
 	res.Subject.GrantID = p.plan.id
 	g := *p.plan
-	g.reqID = p.id
+	g.reqID, g.code = p.id, p.code
 	g.origin = res.Subject
 	g.origin.Secrets = slices.Clone(res.Subject.Secrets)
 	g.origin.Hosts = slices.Clone(res.Subject.Hosts)

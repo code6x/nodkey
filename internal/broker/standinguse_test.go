@@ -192,11 +192,12 @@ func TestStandingOutsideWindow(t *testing.T) {
 		res, _ := e.useToken("laptop", tok0)
 		mustStatus(t, res, http.StatusForbidden)
 	}
+	// The window of 11:00-13:00 ended with no use: that is the first alarm.
 	al := e.alarmEntries()
-	if len(al) != 1 || al[0].Cause != audit.AlarmOutsideWindow || al[0].GrantID != id {
+	if len(al) != 2 || al[0].Cause != audit.AlarmMissedWindow || al[1].Cause != audit.AlarmOutsideWindow || al[1].GrantID != id {
 		t.Fatalf("alarms: %+v", al)
 	}
-	if as := e.approver.Alarms(); len(as) != 1 || as[0].Ended {
+	if as := e.approver.Alarms(); len(as) != 2 || as[0].Ended || as[1].Ended {
 		t.Errorf("the alarms: %+v", as)
 	}
 	e.clock.Advance(20 * time.Hour) // 11:00 the next day
