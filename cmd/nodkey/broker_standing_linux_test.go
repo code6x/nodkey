@@ -21,14 +21,18 @@ func TestBrokerStandingAlarmThroughTelegram(t *testing.T) {
 	e.stderr.wait(t, lineListening)
 	c := e.httpClient()
 
-	// Three windows that cover the whole day, in the broker's local time.
+	// Three windows that cover the whole day, in the broker's local time,
+	// but the last minute: To is at most 23:59 and not part of the window.
+	if now := time.Now(); now.Hour() == 23 && now.Minute() >= 58 {
+		t.Skip("too close to midnight, outside the windows")
+	}
 	grant := api.PreapproveRequest{
 		Secrets: []string{"github-token"}, Uses: 1, Reason: "job nightly-backup",
 		From:  time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
 		Until: time.Now().AddDate(0, 0, 30).UTC().Format(time.RFC3339),
 		Windows: []api.Window{
-			{Kind: api.WindowDaily, From: "00:00", To: "07:59"},
-			{Kind: api.WindowDaily, From: "08:00", To: "15:59"},
+			{Kind: api.WindowDaily, From: "00:00", To: "08:00"},
+			{Kind: api.WindowDaily, From: "08:00", To: "16:00"},
 			{Kind: api.WindowDaily, From: "16:00", To: "23:59"},
 		},
 	}
