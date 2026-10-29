@@ -408,3 +408,22 @@ func TestRenewKeepsToMaxDaysAndMaxGrants(t *testing.T) {
 		}
 	})
 }
+
+// TestRenewalWaitingPastItsWarningDoesNotSpin: a renewal that still waits
+// for its handover when its own warning time comes must not wake the
+// timer again and again. With a loop, synctest.Wait in pass never returns.
+func TestRenewalWaitingPastItsWarningDoesNotSpin(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, _, _, _, _ := renewEnv(t, func(c *config.Broker) { c.Standing.WarnDays = 20 })
+		defer e.stop()
+		e.pass(10*day + time.Hour) // the warning of the 30-day grant came
+		if err := e.renewTap(e.warning()); err != nil {
+			t.Fatalf("Renew: %v", err)
+		}
+		synctest.Wait()
+		e.pass(11 * day) // past the warning time of the renewal, before the old end
+		if n := len(e.fake.Warnings()); n != 1 {
+			t.Errorf("%d warnings, want 1", n)
+		}
+	})
+}

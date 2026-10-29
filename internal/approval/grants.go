@@ -524,7 +524,7 @@ func (c *Core) nextEnd() (time.Time, bool) {
 			continue
 		}
 		take(g.end.mono)
-		if g.standing() && !g.warned && !g.warnAt.IsZero() {
+		if g.standing() && !g.warned && !g.warnAt.IsZero() && !g.pendingRenewal() && now.before(g.end) {
 			take(now.mono.Add(max(g.warnAt.Sub(now.wall), 0)))
 		}
 		if g.standing() && !g.pendingRenewal() && now.before(g.end) {
