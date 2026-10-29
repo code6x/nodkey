@@ -340,3 +340,71 @@ func TestStandingStoreFailure(t *testing.T) {
 		t.Error("an alarm after a failed fetch")
 	}
 }
+
+// TestStandingSecretSentFailure: if secret_sent cannot be written, no value
+// and no new token are sent, and the use is undone: the old token is valid
+// again, with all its uses.
+func TestStandingSecretSentFailure(t *testing.T) {
+	e, tok0, _ := useEnv(t)
+	e.audit.setFail(func(ev audit.Event) error {
+		if _, ok := ev.(audit.SecretSent); ok {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	res, _ := e.useToken("laptop", tok0)
+	mustStatus(t, res, http.StatusServiceUnavailable)
+	if strings.Contains(string(res.body), "nkg_") || strings.Contains(string(res.body), e.values["github-token"]) {
+		t.Error("a token or a value in a failed answer")
+	}
+	e.audit.setFail(nil)
+	for range 2 { // both uses of the window are still there
+		res, ans := e.useToken("laptop", tok0)
+		mustStatus(t, res, http.StatusOK)
+		tok0 = ans.GrantToken
+	}
+	if len(e.alarmEntries()) != 0 || len(e.approver.Alarms()) != 0 {
+		t.Error("an alarm after a failed write")
+	}
+}
+
+// TestStandingCancelAfterRotation: the client hangs up after the broker made
+// the new token, so it never gets it. Nothing is sent, and the old token
+// stays valid with all its uses (DESIGN.md section 8).
+func TestStandingCancelAfterRotation(t *testing.T) {
+	e, tok0, _ := useEnv(t)
+	e.main.set(func(f *fakeStore) { f.block = true }) // the fetch comes after the rotation
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	data, _ := json.Marshal(secretsRequest("GH_TOKEN", "github-token"))
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+e.addr+api.PathSecrets, bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hr.Header.Set("Content-Type", api.ContentType)
+	hr.Header.Set(api.GrantTokenHeader, tok0)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := e.httpClient("laptop").Do(hr); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-e.main.started:
+	case <-time.After(waitLimit):
+		t.Fatal("no fetch")
+	}
+	cancel()
+	<-done
+	e.svc.waitIdle(t, "laptop")
+	e.main.set(func(f *fakeStore) { f.block = false })
+	for range 2 { // the cancelled use did not count
+		res, ans := e.useToken("laptop", tok0)
+		mustStatus(t, res, http.StatusOK)
+		tok0 = ans.GrantToken
+	}
+	if len(e.alarmEntries()) != 0 || len(e.approver.Alarms()) != 0 {
+		t.Error("an alarm after a cancel")
+	}
+}

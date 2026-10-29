@@ -1,12 +1,15 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/code6x/nodkey/internal/api"
 )
@@ -73,7 +76,7 @@ func TestRunGrantToken(t *testing.T) {
 	var inFile string
 	r := testRunner(gb.b, nil, fx)
 	r.exec = func(path string, argv, envv []string) error {
-		data, _ := os.ReadFile(f)
+		data, _ := os.ReadFile(f) //nolint:gosec // G304: the test's own file.
 		inFile = string(data)
 		return fx.exec(path, argv, envv)
 	}
@@ -108,10 +111,10 @@ func TestRunGrantTokenDeny(t *testing.T) {
 		{"bad new token", func() string { return "nkg_" + strings.Repeat("a", 10) }, nil, exitUnavailable},
 		{"save fails", func() string { return newToken(t).Reveal() }, func(t *testing.T, dir, f string) {
 			// The directory cannot take a new file; reading still works.
-			if err := os.Chmod(dir, 0o500); err != nil {
+			if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // G302: a directory that cannot take a new file.
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: a directory.
 		}, exitDenied},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,7 +141,7 @@ func TestRunGrantTokenDeny(t *testing.T) {
 			if nt != "" {
 				mustNotLeak(t, nt, stderr)
 			}
-			if data, _ := os.ReadFile(f); string(data) != oldTok+"\n" {
+			if data, _ := os.ReadFile(f); string(data) != oldTok+"\n" { //nolint:gosec // G304: the test's own file.
 				t.Error("the token file changed")
 			}
 		})
@@ -153,7 +156,7 @@ func TestRunGrantTokenBadFile(t *testing.T) {
 	if err := os.WriteFile(open, []byte(newToken(t).Reveal()+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(open, 0o640); err != nil {
+	if err := os.Chmod(open, 0o640); err != nil { //nolint:gosec // G302: the test needs a file that the group can read.
 		t.Fatal(err)
 	}
 	junk := writeToken(t, dir, "not a token")
@@ -187,4 +190,53 @@ func TestRunTokenWithoutFlag(t *testing.T) {
 	if h := gb.seen(); len(h) != 1 || h[0] != "" {
 		t.Error("the request had a token header, or was sent again")
 	}
+}
+
+// TestRunGrantTokenCancel: a SIGINT while the broker works on a request with
+// a token. The broker may have rotated the token already, but the client
+// has no answer, so it keeps its token file as it is, starts no command,
+// and never sends the request again (the broker gives the use back when the
+// client hangs up).
+func TestRunGrantTokenCancel(t *testing.T) {
+	t.Parallel()
+	oldTok := newToken(t).Reveal()
+	f := writeToken(t, t.TempDir(), oldTok)
+	entered := make(chan struct{}, 1)
+	fb := newFakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done() // the broker works until the client hangs up
+	})
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	fx := &fakeExec{}
+	done := make(chan int, 1)
+	var stderr string
+	go func() {
+		var code int
+		code, stderr = runIn(ctx, testRunner(fb.b, nil, fx),
+			"--secret", "GH_TOKEN=github-token", "--grant-token", f, "--", self(t))
+		done <- code
+	}()
+	select {
+	case <-entered:
+	case <-time.After(waitLimit):
+		t.Fatal("the broker got no request")
+	}
+	cancel(interrupted{sig: syscall.SIGINT})
+	if code := <-done; code != 130 || lastLine(stderr) != "nodkey: cancelled by SIGINT (exit 130)" {
+		t.Errorf("exit code %d, stderr %q", code, safe(stderr))
+	}
+	if len(fx.ran()) != 0 {
+		t.Error("the command started")
+	}
+	if n := fb.requests.Load(); n != 1 {
+		t.Errorf("%d requests, want 1 (no retry)", n)
+	}
+	if data, _ := os.ReadFile(f); string(data) != oldTok+"\n" { //nolint:gosec // G304: the test's own file.
+		t.Error("the token file changed")
+	}
+	mustNotLeak(t, oldTok, stderr)
 }

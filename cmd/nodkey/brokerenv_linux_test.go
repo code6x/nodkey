@@ -331,6 +331,8 @@ type brokerOptions struct {
 	newestRelease string
 	// updatesOff adds [updates] check = false to the config.
 	updatesOff bool
+	// standing adds [standing] and standing = true for github-token.
+	standing bool
 }
 
 // brokerEnv is nodkey broker in a child process, with its files and the
@@ -493,6 +495,9 @@ clients = ["laptop"]
 ask = "always"
 hosts = ["db-1"]
 `
+	}
+	if opts.standing {
+		cfg = strings.Replace(cfg, "[secret.github-token]\n", "[secret.github-token]\nstanding = true\n", 1) + "\n[standing]\n"
 	}
 	if opts.updatesOff {
 		cfg += "\n[updates]\ncheck = false\n"
@@ -770,6 +775,12 @@ type brokerAnswer struct {
 // post sends body to path as JSON, and returns the answer. It does not
 // fail the test, so it may run in its own goroutine.
 func (e *brokerEnv) post(c *http.Client, path string, body any) brokerAnswer {
+	return e.postWithToken(c, path, body, "")
+}
+
+// postWithToken is post with the header of a standing grant token, if
+// token is not empty.
+func (e *brokerEnv) postWithToken(c *http.Client, path string, body any, token string) brokerAnswer {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return brokerAnswer{err: err}
@@ -781,6 +792,9 @@ func (e *brokerEnv) post(c *http.Client, path string, body any) brokerAnswer {
 		return brokerAnswer{err: err}
 	}
 	req.Header.Set("Content-Type", api.ContentType)
+	if token != "" {
+		req.Header.Set(api.GrantTokenHeader, token)
+	}
 	resp, err := c.Do(req)
 	if err != nil {
 		return brokerAnswer{err: err}

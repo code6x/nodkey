@@ -237,7 +237,7 @@ func (a *SecretsAnswer) Encode() ([]byte, error) {
 		tail  = `"}`
 		end   = `]}`
 	)
-	const tokenKey = `],"grant_token":"`
+	const tokenKey = `],"grant_token":"` //nolint:gosec // G101: a JSON key, not a credential.
 	n := len(head) + len(end)
 	if a.GrantToken != "" {
 		for _, c := range []byte(a.GrantToken) {

@@ -673,7 +673,7 @@ func readGrantToken(path string) (grantkey.Token, error) {
 	if err := CheckGrantTokenFile(path); err != nil {
 		return grantkey.Token{}, err
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is the one that the person gave.
+	data, err := os.ReadFile(path) //nolint:gosec,forbidigo // G304: the path is the person's; CheckGrantTokenFile checked owner and mode above.
 	if err != nil {
 		return grantkey.Token{}, fmt.Errorf("%w: cannot read %q: %s", ErrTokenFile, path, errText(err))
 	}
