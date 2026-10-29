@@ -28,6 +28,8 @@ Planned. Each v1 issue adds its part.
   - `internal/version/` - versions of nodkey: the rule of a version that
     the other side sends, release versions, and how two compare (DESIGN.md
     section 10).
+  - `internal/grantkey/` - the token of a standing grant: make, parse,
+    hash, and hide it in every format (DESIGN.md section 8).
   - `internal/release/` - the newest release of nodkey on GitHub: the
     lookup for `nodkey version`, and the broker's check for a newer
     release, with its notice (DESIGN.md section 15). Its tests use a fake
