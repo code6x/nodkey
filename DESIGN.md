@@ -1565,12 +1565,21 @@ normal way, with a tap.
 
 **On the phone.** The message of the grant has a **Revoke** button, as in
 a scheduled grant. Within `warn_days` of the end, a warning comes with a
-**Renew** button. A tap on Renew, after the full checks of section 7, makes
-a new grant (new ID, new end, the same scope). The next use of the old
-token gets the token of the new grant, and the old grant ends with cause
-`renewed`. Once a week (`summary`) a message lists each standing grant: the
-client, the secrets, the windows, the last use and the end date. The bot
-command `/grants` from the approver shows the same list.
+**Renew** button. The warning is sent `warn_days` before the end (default
+7), once per grant. A tap on Renew, after the full checks of section 7,
+makes a new grant: a new ID, a new end (the same length as the old grant,
+counted from now, and not more than `max_days`), and the same scope. The
+next use of the old token gets the token of the new grant, and the old
+grant ends with cause `renewed`. Once a week (`summary`, broker local
+time) a message lists each standing grant: the client, the secrets, the
+windows, the last use and the end date. The bot command `/grants` from the
+approver shows the same list. The list never shows a token or a hash.
+
+**Missed window.** When a window of a live grant ends with no use in it,
+the broker sends the alarm `missed_window`. The grant stays. A window that
+ended before the grant started does not count. A window in the hour that a
+clock change skips does not open, so it also gives this alarm. Each grant
+sends at most one alarm in a window.
 
 **End.** A standing grant ends when its end date comes, on Revoke, on an
 alarm that ends it, on a renewal, on a cancel by its own client (`nodkey
