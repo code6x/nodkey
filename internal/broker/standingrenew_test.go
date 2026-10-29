@@ -72,18 +72,14 @@ func TestStandingRenew(t *testing.T) {
 	if tok1 == "" || tok1 == tok0 {
 		t.Fatal("the use did not return a new token")
 	}
+	// The end entry of the old grant is written by the core's own
+	// goroutine, so it may come a little after the answer.
 	var ended, used = -1, -1
-	all := e.audit.all()
-	for i, ev := range all[before:] {
-		switch x := ev.(type) {
-		case audit.GrantEnded:
-			if x.GrantID == oldID && x.Cause == audit.EndRenewed {
-				ended = before + i
-			}
-		case audit.GrantUsed:
-			if x.GrantID == newID && x.NewTokenHash == hashHex(tok1) {
-				used = before + i
-			}
+	var all []audit.Event
+	for wait := time.Now().Add(waitLimit); ; time.Sleep(10 * time.Millisecond) {
+		ended, used, all = renewedEntries(e.audit.all(), before, oldID, newID, hashHex(tok1))
+		if (ended >= 0 && used >= 0) || time.Now().After(wait) {
+			break
 		}
 	}
 	if ended < 0 || used < 0 {
@@ -127,4 +123,23 @@ func TestStandingRenewAfterRevoke(t *testing.T) {
 			t.Error("the token of a revoked grant was used")
 		}
 	}
+}
+
+// renewedEntries finds, from index before on, the end entry of the old
+// grant with cause renewed and the use entry of the new grant.
+func renewedEntries(all []audit.Event, before int, oldID, newID, newHash string) (ended, used int, _ []audit.Event) {
+	ended, used = -1, -1
+	for i, ev := range all[before:] {
+		switch x := ev.(type) {
+		case audit.GrantEnded:
+			if x.GrantID == oldID && x.Cause == audit.EndRenewed {
+				ended = before + i
+			}
+		case audit.GrantUsed:
+			if x.GrantID == newID && x.NewTokenHash == newHash {
+				used = before + i
+			}
+		}
+	}
+	return ended, used, all
 }
