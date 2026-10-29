@@ -565,6 +565,12 @@ except on a message whose request may still wait: there it is refused
 as a changed message, with the alert. The alert still comes from the
 other taps.
 
+The warning before the end of a standing grant (section 8) has one
+**Renew** button. Its data is `n:` and the ID of the request that made
+the grant. A Renew gives a right, so it passes every check of an Approve,
+also the check of a changed message. A Renew on a warning that is already
+the message of the new grant is refused as a late tap.
+
 A notice of a "never ask" use (section 12) has no buttons and no expiry.
 A notice of a use of a scheduled grant is the same, with the second line
 `allowed by a scheduled grant, without a tap`. It goes to the notice chat
@@ -1566,11 +1572,27 @@ normal way, with a tap.
 **On the phone.** The message of the grant has a **Revoke** button, as in
 a scheduled grant. Within `warn_days` of the end, a warning comes with a
 **Renew** button. The warning is sent `warn_days` before the end (default
-7), once per grant. A tap on Renew, after the full checks of section 7,
-makes a new grant: a new ID, a new end (the same length as the old grant,
-counted from now, and not more than `max_days`), and the same scope. The
-next use of the old token gets the token of the new grant, and the old
-grant ends with cause `renewed`. Once a week (`summary`, broker local
+7), once per grant, to the private chat with the approver, with sound. A
+grant that is not longer than `warn_days` gets no warning. A warning that
+cannot be sent is logged and not sent again. A tap on Renew, after the
+full checks of section 7 (as for an Approve: the approver, the private
+chat, the button data, the warning message as the broker sent it, and in
+the core the grant of the request ID with this very warning), makes a new
+grant: a new ID, a new request ID, a new end (the same length as the old
+grant, counted from now, and not more than `max_days`), and the same
+scope. The new grant takes the place of the old one: the two count as one
+for `max_grants`, and a grant can be renewed once. Its `decision` entry,
+with answer `renew` and `renew_of` (the old grant's ID), is on disk
+before the new grant exists; if it cannot be written, the Renew does not
+count. The warning message then becomes the message of the new grant, with
+its Revoke button. The new grant has no token. The next use of the old
+token gets the token of the new grant, and the old grant ends with cause
+`renewed`. If the old grant reaches its end first, it ends with cause
+`renewed` then, and its token passes to the new grant. The old tokens pass
+too, so an old token is still an alarm. If the old grant ends in another
+way before that (Revoke, an alarm, a cancel, a stop), the new grant ends
+with it, with the same cause: it has no token of its own. Until the
+handover, the list and `/grants` show the old grant only. Once a week (`summary`, broker local
 time) a message lists each standing grant: the client, the secrets, the
 windows, the last use and the end date. The bot command `/grants` from the
 approver shows the same list. The list never shows a token or a hash.
@@ -1663,7 +1685,7 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `broker_started` | `version` |
 | `broker_stopped` | none |
 | `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
-| `decision` | the request fields; `user_id`: the Telegram user that answered; `answer`: `approve_once`, `approve_window` or `deny`; `window_minutes` for `approve_window` |
+| `decision` | the request fields; `user_id`: the Telegram user that answered; `answer`: `approve_once`, `approve_window`, `deny` or `renew`; `window_minutes` for `approve_window`; for `renew`, the fields of the new standing grant (a new `request_id` and `grant_id`, `not_before` the time of the tap) and `renew_of`, the ID of the grant it renews |
 | `grant_used` | the request fields; `via`: `grant`, `never_rule`, `scheduled` or `standing` (then `grant_id` is in the request fields); for `standing` also `new_token_hash` |
 | `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked`, `stopped`, `alarm` or `renewed`; `uses_left` |
 | `grant_alarm` | the request fields; `grant_id` (none for an unknown token); `cause`: `old_token`, `over_uses`, `outside_window`, `unknown_token` or `missed_window` |

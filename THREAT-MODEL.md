@@ -1061,6 +1061,15 @@ each use. The token is in a file on the client.
   list of all standing grants on the phone.
 - A Deny of another request does not end a standing grant, so a Deny
   cannot be used to break the job. The person ends it with **Revoke**.
+- **Renew** gives a right, so a Renew tap has every check of an Approve
+  (T6): the approver's user ID, the private chat, strict button data, a
+  warning message that nobody changed, and in the core the grant of the
+  request ID with that very warning. Its `decision` entry is on disk before
+  the new grant exists. The new grant has no token: only the next use of
+  the old grant's token, which the job holds, gets one. So a forged Renew
+  cannot give a new token to anyone who does not hold the old one. The old
+  tokens pass to the new grant, so a stolen old token is still an alarm,
+  and an alarm or Revoke of the old grant also ends a renewal that waits.
 - Standing grants live in memory and are dropped at a broker stop. The
   stop notice lists them (T35).
 
