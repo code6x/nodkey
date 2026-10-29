@@ -281,7 +281,7 @@ func (c *Core) checkPreapprove(r *Request, p *pending) bool {
 	p.subject.NotBefore = r.NotBefore.UTC().Format(time.RFC3339)
 	p.subject.NotAfter = r.NotAfter.UTC().Format(time.RFC3339)
 	p.plan = &grant{
-		client: p.client, refs: refs, hostKeys: hostKeys, user: p.user,
+		kind: kindScheduled, client: p.client, refs: refs, hostKeys: hostKeys, user: p.user,
 		start: r.NotBefore, end: moment{wall: r.NotAfter}, uses: r.Uses,
 	}
 	return true

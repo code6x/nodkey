@@ -272,7 +272,10 @@ func (c *Core) deny(cs *clientState, p *pending, res *Result, now moment, seq ui
 	// A scheduled grant ends too, also one that has not started yet; its
 	// entry follows the entries of res.
 	res.ended = append(res.ended, c.endWhere(func(g *grant) audit.EndCause {
-		if g.client == p.client && g.touches(p.items) {
+		// A standing grant stays: it lasts for weeks, and a Deny at noon
+		// must not break the night job. Only Revoke, an alarm, a renewal
+		// and its end date end it (DESIGN.md section 8).
+		if g.client == p.client && !g.standing() && g.touches(p.items) {
 			return audit.EndDenied
 		}
 		return ""

@@ -667,7 +667,7 @@ func (c *Core) uncount(p *pending) {
 	}
 	p.counted = nil
 	if g := p.used; g != nil && slices.Contains(c.grants, g) {
-		g.uses++ // the use did not happen
+		g.giveBackUse() // the use did not happen
 	}
 	p.used = nil
 }
