@@ -1459,3 +1459,110 @@ func TestLoadBrokerPreapproveLimits(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadBrokerStandingFlag: standing is off by default, it is allowed
+// for "always" and "window" rules, and it is refused on a "never" rule.
+func TestLoadBrokerStandingFlag(t *testing.T) {
+	e := newBrokerEnv(t)
+	b, err := LoadBroker(e.write(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, s := range b.Secrets {
+		if s.Rule.Standing {
+			t.Errorf("secret %s: Standing is on by default", name)
+		}
+	}
+	for name, k := range b.Keys {
+		if k.Rule.Standing {
+			t.Errorf("key %s: Standing is on by default", name)
+		}
+	}
+	b, err = LoadBroker(e.write(t,
+		edit{"ask = \"window\"\nwindow = \"15m\"\n", "ask = \"window\"\nwindow = \"15m\"\nstanding = true\n"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := b.Secrets["github-token"].Rule
+	if !r.Standing || r.Preapprove {
+		t.Errorf("window rule: Standing = %v, Preapprove = %v, want true and false", r.Standing, r.Preapprove)
+	}
+	b, err = LoadBroker(e.write(t,
+		edit{"ask = \"window\"\nwindow = \"15m\"\n", "ask = \"window\"\nwindow = \"15m\"\nstanding = false\npreapprove = true\n"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := b.Secrets["github-token"].Rule; r.Standing || !r.Preapprove {
+		t.Errorf("standing = false: Standing = %v, Preapprove = %v", r.Standing, r.Preapprove)
+	}
+	_, err = LoadBroker(e.write(t,
+		edit{"ask = \"never\"", "ask = \"never\"\nstanding = true"}))
+	if err == nil || !strings.Contains(err.Error(), `is not allowed with ask = "never"`) {
+		t.Errorf("standing on a never rule: error %v, want it refused", err)
+	}
+	if _, err := LoadBroker(e.write(t,
+		edit{"ask = \"window\"\nwindow = \"15m\"\n", "ask = \"window\"\nwindow = \"15m\"\nstanding = \"yes\"\n"})); err == nil {
+		t.Error("standing = \"yes\" was accepted")
+	}
+}
+
+// TestLoadBrokerStandingLimits: without the section no standing grant is
+// allowed, an empty section has the defaults, each key is read, and a
+// value out of its bounds is refused.
+func TestLoadBrokerStandingLimits(t *testing.T) {
+	e := newBrokerEnv(t)
+	b, err := LoadBroker(e.write(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Standing != (StandingLimits{}) || b.Standing.Enabled {
+		t.Errorf("no section: %+v, want the zero value", b.Standing)
+	}
+	with := func(body string) edit { return edit{"[client.laptop]", "[standing]\n" + body + "\n\n[client.laptop]"} }
+	b, err = LoadBroker(e.write(t, with("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := StandingLimits{
+		Enabled: true, MaxDays: 90, MaxWindow: 8 * time.Hour, MaxUses: 1, MaxGrants: 3, WarnDays: 7,
+		SummaryDay: time.Monday, SummaryMinute: 9 * 60,
+	}
+	if b.Standing != want || DefaultStanding() != want {
+		t.Errorf("defaults = %+v, want %+v", b.Standing, want)
+	}
+	b, err = LoadBroker(e.write(t, with(
+		"max_days = 366\nmax_window = \"90m\"\nmax_uses = 10\nmax_grants = 20\nwarn_days = 365\nsummary = \"sun 23:59\"")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = StandingLimits{
+		Enabled: true, MaxDays: 366, MaxWindow: 90 * time.Minute, MaxUses: 10, MaxGrants: 20, WarnDays: 365,
+		SummaryDay: time.Sunday, SummaryMinute: 23*60 + 59,
+	}
+	if b.Standing != want {
+		t.Errorf("limits = %+v, want %+v", b.Standing, want)
+	}
+	for _, line := range []string{
+		"max_days = 0", "max_days = -1", "max_days = 367", "max_days = \"90\"",
+		"max_window = \"0s\"", "max_window = \"30s\"", "max_window = \"8h1m\"", "max_window = \"-1h\"", "max_window = \"long\"",
+		"max_uses = 0", "max_uses = -1", "max_uses = 11",
+		"max_grants = 0", "max_grants = -1", "max_grants = 21",
+		"warn_days = 0", "warn_days = -1", "warn_days = 90", "warn_days = 91",
+		"max_days = 7", "max_days = 5\nwarn_days = 5",
+		"summary = \"\"", "summary = \"mon\"", "summary = \"09:00\"", "summary = \"Mon 09:00\"", "summary = \"monday 09:00\"",
+		"summary = \"mon 9:00\"", "summary = \"mon 24:00\"", "summary = \"mon 09:60\"", "summary = \"mon  09:00\"",
+		"summary = \"mon 09:00 \"", "summary = \"mon 0a:00\"", "summary = \"mon 09-00\"", "summary = \"xyz 09:00\"",
+		"summary = 9", "extra = 1",
+	} {
+		if _, err := LoadBroker(e.write(t, with(line))); err == nil {
+			t.Errorf("%q: the config was accepted", line)
+		}
+	}
+	// A small max_days is fine when warn_days is below it.
+	if _, err := LoadBroker(e.write(t, with("max_days = 8"))); err != nil {
+		t.Errorf("max_days = 8: %v", err)
+	}
+	if _, err := LoadBroker(e.write(t, with("max_days = 3\nwarn_days = 2"))); err != nil {
+		t.Errorf("max_days = 3, warn_days = 2: %v", err)
+	}
+}
