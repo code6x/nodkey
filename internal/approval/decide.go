@@ -531,6 +531,9 @@ func (c *Core) waitLook(ctx context.Context, p *pending) *Result {
 //   - ErrNotApprover, ErrWrongMessage, ErrExpired, ErrNotAllowed or
 //     ErrStopped.
 func (c *Core) Answer(a Answer) error {
+	if a.Action == audit.AnswerRenew {
+		return c.renew(a) // it writes an entry, so it takes the lock itself
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.stopped {
@@ -661,7 +664,7 @@ func (c *Core) makeGrantID(p *pending) error {
 func (c *Core) approvePlan(p *pending, res *Result) {
 	res.Subject.GrantID = p.plan.id
 	g := *p.plan
-	g.reqID = p.id
+	g.reqID, g.code = p.id, p.code
 	g.origin = res.Subject
 	g.origin.Secrets = slices.Clone(res.Subject.Secrets)
 	g.origin.Hosts = slices.Clone(res.Subject.Hosts)

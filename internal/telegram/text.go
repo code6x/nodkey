@@ -90,7 +90,10 @@ const (
 	// dataRevoke is the Revoke button of a scheduled grant. It carries the
 	// ID of the request that made the grant.
 	dataRevoke = "r:"
-	dataLen    = 2 + requestIDLen
+	// dataRenew is the Renew button of the warning before the end of a
+	// standing grant. It carries the ID of the request that made the grant.
+	dataRenew = "n:"
+	dataLen   = 2 + requestIDLen
 )
 
 // validRequestID reports whether id is a request ID: 22 characters of
@@ -113,7 +116,7 @@ func isBase64URL(c byte) bool {
 	return 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-' || c == '_'
 }
 
-// parseData reads button data strictly: "o:", "w:", "d:" or "r:", and a
+// parseData reads button data strictly: "o:", "w:", "d:", "r:" or "n:", and a
 // request ID. Anything else is not valid.
 func parseData(data string) (audit.Answer, string, bool) {
 	if len(data) != dataLen {
@@ -129,6 +132,8 @@ func parseData(data string) (audit.Answer, string, bool) {
 		action = audit.AnswerDeny
 	case dataRevoke:
 		action = audit.AnswerRevoke
+	case dataRenew:
+		action = audit.AnswerRenew
 	default:
 		return "", "", false
 	}
@@ -680,6 +685,8 @@ func alarmText(a approval.Alarm) (*text, error) {
 		what = "a valid token was used outside the windows. The request was denied; the grant stays."
 	case audit.AlarmUnknownToken:
 		what = "a token that no grant of this machine has. The request was denied."
+	case audit.AlarmMissedWindow:
+		what = "a window ended and the grant was not used in it. The grant stays."
 	default:
 		return nil, bad("the cause")
 	}

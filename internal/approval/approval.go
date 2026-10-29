@@ -117,6 +117,14 @@ type Core struct {
 	// watchGrants hands them to onEnded.
 	endedQueue []audit.GrantEnded
 	onEnded    func(audit.GrantEnded)
+	// alarmQueue holds the missed-window alarms, until watchGrants writes
+	// and sends them.
+	alarmQueue []missedAlarm
+	onAlarm    func(audit.GrantAlarm)
+	// warnQueue holds the warnings before the end of standing grants,
+	// until watchGrants sends them. onRenewed writes the entry of a Renew.
+	warnQueue []warnItem
+	onRenewed func(audit.Decision) error
 	// msgQueue holds the updates of the messages of scheduled grants that
 	// ended, until watchGrants makes them.
 	msgQueue  []msgUpdate
@@ -180,14 +188,23 @@ func (c *Core) Run(ctx context.Context) error {
 	if !c.start() {
 		return errors.New("approval: Run can run only once")
 	}
+	if gl, ok := c.approver.(GrantLister); ok {
+		gl.SetGrantSource(c.ListStanding)
+	}
 	watched := make(chan struct{})
 	go func() {
 		defer close(watched)
 		c.watchGrants(ctx)
 	}()
+	summed := make(chan struct{})
+	go func() {
+		defer close(summed)
+		c.watchSummary(ctx)
+	}()
 	defer func() {
 		c.stopAll()
 		<-watched
+		<-summed
 		c.dropScheduled()
 	}()
 	if err := c.approver.Run(ctx, c.Answer); err != nil {

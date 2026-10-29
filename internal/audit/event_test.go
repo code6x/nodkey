@@ -224,6 +224,14 @@ func TestStandingEvents(t *testing.T) {
 	good("an unknown token alarm", GrantAlarm{Subject: noID, Cause: AlarmUnknownToken})
 	bad("an unknown token alarm with a grant", GrantAlarm{Subject: ok, Cause: AlarmUnknownToken})
 	bad("an alarm with a cause that is not known", GrantAlarm{Subject: ok, Cause: "x"})
+	old := testRequestID(9)
+	good("a renew decision", Decision{Subject: ok, UserID: 1, Answer: AnswerRenew, RenewOf: old})
+	bad("a renew decision without renew_of", Decision{Subject: ok, UserID: 1, Answer: AnswerRenew})
+	bad("renew_of on an approval", Decision{Subject: ok, UserID: 1, Answer: AnswerApproveOnce, RenewOf: old})
+	bad("a renew decision of the same grant", Decision{Subject: ok, UserID: 1, Answer: AnswerRenew, RenewOf: ok.GrantID})
+	bad("a renew decision with renew_of that is not an ID", Decision{Subject: ok, UserID: 1, Answer: AnswerRenew, RenewOf: "x"})
+	bad("a renew decision without a grant", Decision{Subject: noID, UserID: 1, Answer: AnswerRenew, RenewOf: old})
+	bad("a renew decision of a scheduled grant", Decision{Subject: preapproveSubject(), UserID: 1, Answer: AnswerRenew, RenewOf: old})
 	for _, c := range []EndCause{EndAlarm, EndRenewed, EndRevoked, EndStopped, EndEnded} {
 		good("grant_ended "+string(c), GrantEnded{Subject: ok, Cause: c})
 	}

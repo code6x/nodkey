@@ -181,7 +181,17 @@ Risk that remains: none known.
 **T5. Someone else presses the button.**
 The broker accepts only the configured Telegram user ID, in the private
 chat with that user.
-Risk that remains: see T7.
+The bot also reads text messages, for the command `/grants` only
+(DESIGN.md section 8). It answers only the text `/grants` (or `/grants@`
+and a name) from the approver, in the private chat with the
+approver, at most 3 times in any 60 seconds, and only in that chat. The
+answer lists the standing grants: the machine, the secrets, the windows,
+the last use and the end. It never has a token or a hash. Any other text,
+and any text from another user or chat, is ignored without an answer, so
+nobody else learns of the grants, and nobody can make the bot send many
+messages. A command can approve, renew or end nothing.
+Risk that remains: see T7. Someone who can use the approver's account
+can read the list.
 
 **T6. The bot token is stolen.**
 With the token, an attacker can read updates before the broker does, send
@@ -1061,6 +1071,15 @@ each use. The token is in a file on the client.
   list of all standing grants on the phone.
 - A Deny of another request does not end a standing grant, so a Deny
   cannot be used to break the job. The person ends it with **Revoke**.
+- **Renew** gives a right, so a Renew tap has every check of an Approve
+  (T6): the approver's user ID, the private chat, strict button data, a
+  warning message that nobody changed, and in the core the grant of the
+  request ID with that very warning. Its `decision` entry is on disk before
+  the new grant exists. The new grant has no token: only the next use of
+  the old grant's token, which the job holds, gets one. So a forged Renew
+  cannot give a new token to anyone who does not hold the old one. The old
+  tokens pass to the new grant, so a stolen old token is still an alarm,
+  and an alarm or Revoke of the old grant also ends a renewal that waits.
 - Standing grants live in memory and are dropped at a broker stop. The
   stop notice lists them (T35).
 

@@ -577,6 +577,65 @@ Expected:
   scheduled grant(s) ...`, with the grant ID, `test`, `demo-always` and
   the uses left. The broker still stops within a few seconds.
 
+### Check 15: Standing grants (optional)
+
+This checks a standing grant: a use with the token file, the alarm of an
+old token, `/grants` and Revoke. In `$T/broker.toml`, add `standing =
+true` to the section of `demo-always`, add an empty `[standing]`
+section, and start the broker again. Then, terminal 2, with `START` and
+`END` as a window that starts in 2 minutes and ends 10 minutes later
+(for example `14:05` and `14:15`, in the local time of the broker), and
+`UNTIL` as tomorrow (for example `2026-10-30T00:00`):
+
+```sh
+HOME="$T/home" "$T/nodkey" preapprove --secret demo-always \
+  --daily START-END --until UNTIL \
+  --grant-token "$T/home/token" --reason "check 15"
+```
+
+1. Tap **Approve**. Then `ls -l "$T/home/token"`.
+2. Send `/grants` to the bot, in your private chat with it.
+3. Save a copy of the token, and wait until `START`:
+   `cp -p "$T/home/token" "$T/home/token.old"`. Then use the grant:
+
+   ```sh
+   HOME="$T/home" "$T/nodkey" run --grant-token "$T/home/token" \
+     --secret DEMO_TOKEN=demo-always --reason "check 15, use" -- \
+     sh -c 'echo "the command got ${#DEMO_TOKEN} characters"'
+   echo "exit code: $?"
+   cmp "$T/home/token" "$T/home/token.old"
+   ```
+
+4. Use the old copy: the same `nodkey run` command, with
+   `--grant-token "$T/home/token.old"`.
+5. Do step 1 again, with `--grant-token "$T/home/token2"`. Tap
+   **Revoke**. Send `/grants` again.
+6. Remove the token files: `rm -f "$T/home/token" "$T/home/token.old"
+   "$T/home/token2"`.
+
+Expected:
+
+- Step 1: the message `🗓 Standing grant · request XXXX` has the lines
+  `✅ window: daily START-END`, `✅ uses in each window: 1` and `A Deny of
+  other requests does not end this grant. Use Revoke to end it.`. After
+  the tap it has `👍 approved by you at ...` and one **Revoke** button.
+  Terminal 2 prints the ID of the grant, and no token. The token file
+  has mode `-rw-------`.
+- Step 2: a message `📋 Standing grants · 1` comes, with `machine: test`,
+  `secrets: demo-always`, `windows: daily START-END`, `last use: never`
+  and the end. It has no token.
+- Step 3: no tap. Terminal 2 prints `the command got 15 characters` and
+  `exit code: 0`. A silent notice comes: `🔔 Standing grant · request
+  ...` with `allowed by a standing grant, without a tap`. `cmp` says
+  that the files differ: the token was changed.
+- Step 4: exit code 77, and no tap. An alarm comes, with sound: `🚨
+  Standing grant alarm · request ...` with `an old token was used again;
+  it may be stolen. The grant is ended.` and the grant ID. The message
+  of the grant has no button, and a line `🚨 ended by an alarm at ...`.
+- Step 5: the phone shows `Revoked.`. The message has no button, and a
+  line `⛔ revoked by you at ...`. `/grants` answers `No standing
+  grants.`.
+
 ## Clean up
 
 1. Terminal 1: stop the broker with Ctrl-C, if it still runs.
@@ -621,3 +680,8 @@ raw answer of the Bot API, and the lines of the log with `user_id` or
 | 14 | Revoke on a scheduled grant | `Revoked.`; button gone; `revoked by you` | | |
 | 14 | grant ends with uses left | `ended at ... with 2 of 2 use(s) left`; silent notice `not used` | | |
 | 14 | stop with a scheduled grant | `dropped: the broker stopped`; one notice that lists the grant | | |
+| 15 | a standing grant | Approve; the ID, no token; token file `-rw-------`; one **Revoke** button | | |
+| 15 | `/grants` | the list with `test`, `demo-always`, the window; no token; after Revoke `No standing grants.` | | |
+| 15 | a use with the token file | no tap; exit 0; silent notice; the token file changed | | |
+| 15 | the old token again | exit 77; alarm with sound; `ended by an alarm` | | |
+| 15 | Revoke on a standing grant | `Revoked.`; button gone; `revoked by you` | | |

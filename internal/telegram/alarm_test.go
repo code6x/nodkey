@@ -51,13 +51,13 @@ func alarmOf(cause audit.AlarmCause) approval.Alarm {
 // counts toward the notices per minute.
 func TestAlarm(t *testing.T) {
 	e := newEnv(t)
-	for _, cause := range []audit.AlarmCause{audit.AlarmOldToken, audit.AlarmOverUses, audit.AlarmOutsideWindow, audit.AlarmUnknownToken} {
+	for _, cause := range []audit.AlarmCause{audit.AlarmOldToken, audit.AlarmOverUses, audit.AlarmOutsideWindow, audit.AlarmUnknownToken, audit.AlarmMissedWindow} {
 		if err := e.a.Alarm(context.Background(), alarmOf(cause)); err != nil {
 			t.Fatalf("%s: %v", cause, err)
 		}
 	}
 	calls := e.f.callsOf("sendMessage")
-	if len(calls) != 4 {
+	if len(calls) != 5 {
 		t.Fatalf("%d messages", len(calls))
 	}
 	for _, c := range calls {
@@ -70,7 +70,7 @@ func TestAlarm(t *testing.T) {
 		t.Errorf("texts: %q, %q", calls[0].str("text"), calls[3].str("text"))
 	}
 	// The same budget as Notify: 20 in all.
-	for i := 4; i < NoticesPerMinute; i++ {
+	for i := 5; i < NoticesPerMinute; i++ {
 		if err := e.a.Alarm(context.Background(), alarmOf(audit.AlarmOldToken)); err != nil {
 			t.Fatal(err)
 		}

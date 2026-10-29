@@ -157,13 +157,12 @@ func TestScheduledNotice(t *testing.T) {
 // designStanding is the example of a standing grant in DESIGN.md section
 // 8, as the person sees it. It is the message of
 //
-//	nodkey preapprove --secret backup-token --daily 03:00-05:00 --weekly mon,thu 10:30-11:00 \
+//	nodkey preapprove --secret backup-token --daily 03:00-05:00 \
 //	                  --until 2026-12-31 --uses 1 --reason "job nightly-backup"
 const designStanding = `🗓 Standing grant · request m4k2
 ✅ machine: laptop
 ✅ secrets: backup-token
 ✅ window: daily 03:00-05:00
-✅ window: mon,thu 10:30-11:00
 ✅ uses in each window: 1
 ✅ from: 2026-10-28 03:00:00 UTC
 ✅ until: 2026-12-31 00:00:00 UTC
@@ -176,7 +175,7 @@ expires 14:07:00 (120 s)
 func standingPrompt() approval.Prompt {
 	p := preapprovePrompt()
 	p.Kind = audit.KindStanding
-	p.Windows = []string{"daily 03:00-05:00", "mon,thu 10:30-11:00"}
+	p.Windows = []string{"daily 03:00-05:00"}
 	p.Until = time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
 	return p
 }

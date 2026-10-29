@@ -55,6 +55,10 @@ const (
 	// has a decision entry: its result is a grant_ended entry with cause
 	// revoked.
 	AnswerRevoke Answer = "revoke"
+	// AnswerRenew is the Renew button of the warning before the end of a
+	// standing grant (DESIGN.md section 8). Its decision entry has the
+	// Subject of the new grant, and RenewOf names the old one.
+	AnswerRenew Answer = "renew"
 )
 
 // Via says what allowed a request without a tap.
@@ -221,6 +225,9 @@ type Decision struct {
 	// WindowMinutes is the length of the grant, for AnswerApproveWindow
 	// only.
 	WindowMinutes int `json:"window_minutes,omitempty"`
+	// RenewOf is the ID of the standing grant that a renewal replaces, for
+	// AnswerRenew only.
+	RenewOf string `json:"renew_of,omitempty"`
 }
 
 // GrantUsed records a request that a grant or a "never ask" rule allowed
@@ -488,7 +495,15 @@ func (e Decision) validate() error {
 	if e.UserID <= 0 {
 		return errors.New("user_id must be a Telegram user ID")
 	}
+	if (e.Answer == AnswerRenew) != (e.RenewOf != "") {
+		return errors.New("renew_of is for a renew answer, and a renew answer needs it")
+	}
 	switch e.Answer {
+	case AnswerRenew:
+		if e.Kind != KindStanding || e.WindowMinutes != 0 || !requestIDPattern.MatchString(e.GrantID) ||
+			!requestIDPattern.MatchString(e.RenewOf) || e.RenewOf == e.GrantID {
+			return errors.New("a renew answer needs a standing request, its new grant_id and the renew_of grant")
+		}
 	case AnswerApproveOnce, AnswerDeny:
 		if e.WindowMinutes != 0 {
 			return errors.New("window_minutes is only for approve_window")
