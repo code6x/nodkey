@@ -1498,8 +1498,7 @@ A config without `[standing]` allows no standing grant. The message is
 that of a scheduled grant, with the windows, the uses per window and the
 end date, and the buttons **Approve** and **Deny**. It says that a Deny of
 other requests does not end the grant. The reason is the claimed job name.
-For `nodkey preapprove --secret backup-token --daily 03:00-05:00 --weekly
-mon,thu 10:30-11:00 --until 2026-12-31 --reason "job nightly-backup"` it
+For `nodkey preapprove --secret backup-token --daily 03:00-05:00 --until 2026-12-31 --reason "job nightly-backup"` it
 is:
 
 ```
@@ -1507,7 +1506,6 @@ is:
 ✅ machine: laptop
 ✅ secrets: backup-token
 ✅ window: daily 03:00-05:00
-✅ window: mon,thu 10:30-11:00
 ✅ uses in each window: 1
 ✅ from: 2026-10-28 03:00:00 UTC
 ✅ until: 2026-12-31 00:00:00 UTC
