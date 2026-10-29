@@ -180,7 +180,10 @@ func (a *Approver) handle(ctx context.Context, u update, answer func(approval.An
 	}
 	q := u.CallbackQuery
 	if q == nil {
-		return // not a button press: allowed_updates asks for no other kind
+		if u.Message != nil {
+			a.command(ctx, u.Message)
+		}
+		return
 	}
 	tctx, cancel := context.WithTimeout(ctx, tapTimeout)
 	defer cancel()

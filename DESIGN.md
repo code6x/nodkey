@@ -1574,6 +1574,10 @@ grant ends with cause `renewed`. Once a week (`summary`, broker local
 time) a message lists each standing grant: the client, the secrets, the
 windows, the last use and the end date. The bot command `/grants` from the
 approver shows the same list. The list never shows a token or a hash.
+For `/grants` the bot also asks Telegram for `message` updates. Only the
+exact text `/grants` from the approver in the private chat with the approver
+gets an answer, at most 3 in a minute. A message from anyone or anywhere
+else is ignored without an answer.
 
 **Missed window.** When a window of a live grant ends with no use in it,
 the broker sends the alarm `missed_window`. The grant stays. A window that

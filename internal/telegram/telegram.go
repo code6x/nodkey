@@ -161,6 +161,10 @@ type Approver struct {
 	// notices holds when the newest notices of Notify were sent, and
 	// informs those of Inform.
 	notices, informs []time.Time
+	// listed holds when the newest answers to /grants were sent, and
+	// source lists the standing grants (SetGrantSource).
+	listed []time.Time
+	source func() []approval.GrantInfo
 	// reports counts the reports of refused taps of other users in the
 	// current minute, and ownReports those of the approver's own taps.
 	// Each is a budget of its own, so the taps of others cannot crowd out

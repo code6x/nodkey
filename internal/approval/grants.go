@@ -86,6 +86,9 @@ type grant struct {
 	used map[windowKey]bool
 	// marked is the opening that the last use marked in used.
 	marked windowKey
+	// lastUse is the wall time of the last use of a standing grant, and
+	// prevUse the one before it (giveBackUse restores it). Zero: never.
+	lastUse, prevUse time.Time
 }
 
 // grantKind is the kind of a grant (DESIGN.md section 8, "The grant core").
@@ -178,6 +181,7 @@ func (g *grant) tryUse(now moment) useResult {
 		return useOverUses
 	}
 	g.winUsed++
+	g.prevUse, g.lastUse = g.lastUse, now.wall
 	if g.used == nil {
 		g.used = make(map[windowKey]bool)
 	}
@@ -190,6 +194,7 @@ func (g *grant) tryUse(now moment) useResult {
 func (g *grant) giveBackUse() {
 	if g.standing() {
 		g.winUsed = max(g.winUsed-1, 0)
+		g.lastUse = g.prevUse
 		if g.winUsed == 0 {
 			delete(g.used, g.marked)
 		}

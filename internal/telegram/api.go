@@ -496,11 +496,14 @@ func emptyKeyboard() inlineKeyboard {
 
 // The parts of updates that this package reads. Other fields are ignored.
 type (
-	// update is one update from getUpdates. Only button presses
-	// (callback_query) are asked for.
+	// update is one update from getUpdates. Button presses
+	// (callback_query) and messages (for /grants) are asked for.
 	update struct {
 		UpdateID      int64          `json:"update_id"`
 		CallbackQuery *callbackQuery `json:"callback_query"`
+		// Message is a message to the bot. Only the command /grants is
+		// read from it.
+		Message *message `json:"message"`
 		// malformed: the update does not have the expected form. Only its
 		// ID is kept.
 		malformed bool
@@ -525,6 +528,9 @@ type (
 	message struct {
 		MessageID int64 `json:"message_id"`
 		Chat      chat  `json:"chat"`
+		// From and Text are read only for the command /grants.
+		From user   `json:"from"`
+		Text string `json:"text"`
 		// EditDate is set when the message was edited. The broker edits a
 		// message only after its request ended.
 		EditDate int64 `json:"edit_date"`
@@ -548,7 +554,7 @@ func (c *client) getUpdates(ctx context.Context, offset int64) ([]update, *apiEr
 		Offset:         offset,
 		Limit:          pollLimit,
 		Timeout:        int(pollTimeout / time.Second),
-		AllowedUpdates: []string{"callback_query"},
+		AllowedUpdates: []string{"callback_query", "message"},
 	}
 	var raws []json.RawMessage
 	if e := c.callOnce(ctx, "getUpdates", params, &raws, c.pollTimeout); e != nil {

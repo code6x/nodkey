@@ -184,6 +184,9 @@ func (c *Core) Run(ctx context.Context) error {
 	if !c.start() {
 		return errors.New("approval: Run can run only once")
 	}
+	if gl, ok := c.approver.(GrantLister); ok {
+		gl.SetGrantSource(c.ListStanding)
+	}
 	watched := make(chan struct{})
 	go func() {
 		defer close(watched)

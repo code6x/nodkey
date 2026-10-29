@@ -273,7 +273,7 @@ func TestPolling(t *testing.T) {
 	for i, want := range []int64{0, 7, 8} {
 		c := calls[i]
 		if c.num("offset") != want || c.num("timeout") != 50 || c.num("limit") != pollLimit ||
-			c.field("allowed_updates") != `["callback_query"]` {
+			c.field("allowed_updates") != `["callback_query","message"]` {
 			t.Errorf("getUpdates %d: %s, want offset %d", i, c.Raw, want)
 		}
 	}
