@@ -261,7 +261,7 @@ func TestRunGrantTokenSymlink(t *testing.T) {
 		t.Error("readGrantToken read through a link")
 	}
 	// The open itself refuses a link, with no check before it.
-	if f, err := os.OpenFile(link, os.O_RDONLY|noFollow, 0); err == nil { //nolint:gosec,forbidigo // G304: the test's own link.
+	if f, err := os.OpenFile(link, os.O_RDONLY|noFollow, 0); err == nil { //nolint:gosec // G304: the test's own link.
 		_ = f.Close()
 		t.Error("the open followed a link")
 	}

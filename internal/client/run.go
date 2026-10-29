@@ -675,7 +675,7 @@ func readGrantToken(path string) (grantkey.Token, error) {
 	}
 	// Open without following a link, then check the open file, so a link put
 	// in place after the check above is not read.
-	f, err := os.OpenFile(path, os.O_RDONLY|noFollow, 0) //nolint:gosec,forbidigo // G304: the path is the person's; the open file is checked below.
+	f, err := os.OpenFile(path, os.O_RDONLY|noFollow, 0) //nolint:gosec // G304: the path is the person's; the open file is checked below.
 	if err != nil {
 		return grantkey.Token{}, fmt.Errorf("%w: cannot read %q: %s", ErrTokenFile, path, errText(err))
 	}
