@@ -42,6 +42,7 @@ const (
 	tapCountedApprove = "Approved."
 	tapCountedDeny    = "Denied."
 	tapCountedRevoke  = "Revoked."
+	tapCountedRenew   = "Renewed."
 	tapTooEarly       = "Not ready yet. Tap again in a moment."
 	tapEnded          = "This request has ended."
 	tapExpired        = "This request has expired."
@@ -245,6 +246,8 @@ func tapResult(action audit.Answer, err error) (string, audit.TapCause) {
 		return tapCountedDeny, ""
 	case err == nil && action == audit.AnswerRevoke:
 		return tapCountedRevoke, ""
+	case err == nil && action == audit.AnswerRenew:
+		return tapCountedRenew, ""
 	case err == nil:
 		return tapCountedApprove, ""
 	case errors.Is(err, approval.ErrTooEarly):
@@ -318,6 +321,13 @@ func (a *Approver) changed(ctx context.Context, q *callbackQuery, ans approval.A
 			return true, false
 		}
 		return false, false
+	}
+	if ans.Action == audit.AnswerRenew && known && sent.held {
+		// A Renew made this message the message of the new grant, with its
+		// Revoke button: a second Renew is a late tap.
+		a.answerTap(ctx, q, tapEnded)
+		a.report(ctx, q, audit.TapUnknownRequest)
+		return true, false
 	}
 	if known && sent.final == "" && sent.held {
 		// The request of this message is decided; End gave it a Revoke

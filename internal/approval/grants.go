@@ -265,6 +265,12 @@ func (c *Core) endWhere(cause func(*grant) audit.EndCause) []audit.GrantEnded {
 		if g.audited() {
 			ended = append(ended, audit.GrantEnded{Subject: g.origin, Cause: w, UsesLeft: max(g.uses, 0)})
 			c.queueMessage(g, w)
+			if g.warnMsg != "" {
+				// The warning loses its Renew button.
+				x := *g
+				x.msg = g.warnMsg
+				c.queueMessage(&x, w)
+			}
 		}
 		return true
 	})

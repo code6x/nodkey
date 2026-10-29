@@ -362,6 +362,16 @@ func TestRenewRefused(t *testing.T) {
 		rec.mu.Lock()
 		rec.fail = nil
 		rec.mu.Unlock()
+		synctest.Wait()
+		var last approval.Ending
+		for _, u := range e.fake.Ended() {
+			if u.Message == w.Message {
+				last = u.Ending
+			}
+		}
+		if last.GrantEnd != audit.EndCancelled || last.Revoke {
+			t.Errorf("the warning was not updated at the end of its grant: %+v", last)
+		}
 		if err := e.renewTap(w); !errors.Is(err, approval.ErrUnknownRequest) {
 			t.Errorf("Renew of an ended grant: %v", err)
 		}
