@@ -248,7 +248,7 @@ func TestVersionNoticeOncePerClient(t *testing.T) {
 	notices := e.waitNotices()
 	want := []string{
 		"The client laptop says that it runs nodkey 0.1.0, which is older than nodkey 0.2.0 on the broker. " +
-			"To update it, run there: sudo nodkey update",
+			"To update it, run as root there: nodkey update",
 		"The client ci sent no version of nodkey, so it may run an older nodkey. The broker runs nodkey 0.2.0. " +
 			"To update ci, follow section 13 of docs/setup.md.",
 	}
@@ -654,7 +654,7 @@ func TestVersionNoticeForEveryClient(t *testing.T) {
 	var want []string
 	for _, name := range clients {
 		want = append(want, "The client "+name+" says that it runs nodkey 0.1.0, which is older than nodkey 0.2.0 "+
-			"on the broker. To update it, run there: sudo nodkey update")
+			"on the broker. To update it, run as root there: nodkey update")
 	}
 	slices.Sort(got)
 	slices.Sort(want)

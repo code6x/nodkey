@@ -42,8 +42,11 @@ Commands:
             time span, for a number of uses
   audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
             check the hash chain of an audit log, and its anchors
-  update [--version X.Y.Z] [--gh PATH] [--reinstall]
-            install a release in place of this nodkey; run it as root
+  update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]
+            install a release in place of this nodkey, or with --notes
+            only print its changes; run it as root
+  changes --since X.Y.Z
+            print the changes after X.Y.Z from the built-in changelog
   version [--offline]
             print the version; on a terminal, also say if a newer
             release is out
@@ -95,6 +98,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runPreapprove(rest, stdout, stderr)
 	case "update":
 		return runUpdate(rest, stdout, stderr)
+	case "changes":
+		return runChanges(rest, stdout, stderr)
 	case "version":
 		return runVersion(rest, version, stdout, stderr, realVersionCheck)
 	case "help":
@@ -150,7 +155,7 @@ func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 // commands are the commands of nodkey that "nodkey help COMMAND" knows.
 // Each must handle --help before it does any work.
-var commands = []string{"broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "version"}
+var commands = []string{"broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "changes", "version"}
 
 // recordingWriter keeps the first write error, because the usage
 // functions of the commands ignore it.

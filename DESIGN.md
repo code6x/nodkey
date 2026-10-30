@@ -607,7 +607,7 @@ in each start of the broker, rarely more than once (see "Telegram
 details" below), in one of these forms:
 
 ```
-ℹ️ nodkey: The client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker. To update it, run there: sudo nodkey update
+ℹ️ nodkey: The client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker. To update it, run there as root: nodkey update
 ℹ️ nodkey: The client laptop says that it runs nodkey 0.4.0, which is newer than nodkey 0.3.0 on the broker. To update the broker, run as root on the broker host: nodkey update
 ℹ️ nodkey: The client laptop sent no version of nodkey, so it may run an older nodkey. The broker runs nodkey 0.3.0. To update laptop, follow section 13 of docs/setup.md.
 ```
@@ -622,15 +622,45 @@ A notice about a newer release of nodkey (section 15) has no buttons
 either. It goes to the notice chat without a sound, once for each newer
 release in each start of the broker, rarely more than once (see
 "Telegram details" below). The first check comes 10 minutes after the
-start, so a broker that ends sooner sends none. The notice:
+start, so a broker that ends sooner sends none. The notice of a
+security release is different and follows below. The notice:
 
 ```
-ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: sudo nodkey update. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. What is new: nodkey update --notes. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
 ```
 
 Both versions are release versions: digits and dots. The broker makes
 the link from the version, and ends the text with it, so no dot follows
 it. It takes no text and no link from the answer of GitHub.
+
+A notice about a security release (section 15) has no buttons either,
+but it makes a sound. It goes to the notice chat at each daily check,
+until the broker runs that release or a newer one. It shares the limit of
+3 notices a minute with the other notices. It starts with `SECURITY
+UPDATE`, names the security releases that are newer than the broker,
+lists at most 3 advisory IDs in the strict GHSA form, says that the flag
+comes from GitHub's answer and is not checked, and points to the checked
+notes. The link is made from the newest version and ends the text. A
+try that times out after Telegram took the message is tried again 1 hour
+later, so the phone rarely rings more than once in one daily check:
+
+```
+⚠️ SECURITY UPDATE: <security releases>. The broker runs nodkey 0.2.0. Advisories: GHSA-xxxx-xxxx-xxxx. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1
+```
+
+When a client claims a release older than a security release that the
+broker knows (section 10), the broker also sends a notice that names the
+client. This notice is silent, so a false answer of GitHub still rings
+the phone at most once a day. It comes at most once for each client in
+each round. A round starts with each daily check, which comes at least 23
+hours after the last one, or at once for a newer security release. A
+client whose version is unknown (`dev`, or none) gets no such notice,
+because its version cannot be compared. The name is the name of the
+`[client.*]` section:
+
+```
+ℹ️ nodkey: SECURITY UPDATE: the client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.1, a security release. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update laptop, run there as root: nodkey update. This notice comes again after the next daily check while laptop runs an older nodkey.
+```
 
 - The host key shows only `SHA256:` and its first 4 characters. The
   broker has checked the key against its own `known_hosts`, and the host
@@ -2126,6 +2156,20 @@ when they differ.
   from 0 to 999999 and no leading zeros. Any other version, such as
   `dev`, a commit or `1.2.0-rc.1`, is a build from the source: when either
   side is one, neither side says anything.
+- Each answer to a client that claims a release older than the newest
+  security release that the broker knows has the header
+  `Nodkey-Security-Update` with that release version. Other answers do
+  not have it. The header comes from GitHub's answer and is not checked.
+  The client takes it only when it is one header with a value that is a
+  release version and newer than its own version. Anything else is
+  ignored and never printed. Then the client prints one fixed line on
+  stderr, once in each process. A client with an unknown version (`dev`)
+  sends no claim to compare, so it gets no header:
+
+  ```
+  SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.2.0. Ask the owner of the broker host to update this host: run nodkey update as root.
+  ```
+
 - The client's version is a claim: anyone with the client's key can send
   any value (THREAT-MODEL.md T33). It changes no answer, no check and no
   audit entry, and the request never waits for what the broker does with
@@ -2138,7 +2182,7 @@ when they differ.
 
   ```
   nodkey: warning: the broker runs nodkey 0.2.0, which is older than nodkey 0.3.0 on this machine; to update the broker, run "nodkey update" as root on the broker host
-  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "sudo nodkey update"
+  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "nodkey update" as root
   nodkey: warning: the broker runs an older nodkey that does not send its version, and this machine runs nodkey 0.3.0; to update the broker, follow section 13 of docs/setup.md
   ```
 
@@ -2958,9 +3002,17 @@ release (section 10) and `--offline` is not given, it asks GitHub for the
 newest release, for at most 10 seconds, and prints one line on stderr:
 
 ```
-nodkey: a newer release is out: nodkey 0.3.0; to update, run "sudo nodkey update"; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root; what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
 nodkey: this is the newest release
 nodkey: cannot check for a newer release: cannot reach GitHub: the lookup timed out
+```
+
+When a security release is newer than this nodkey, also one that is
+older than the newest release, it prints this red line instead (no
+colour when `NO_COLOR` is set and not empty):
+
+```
+SECURITY UPDATE: <security releases>. This is nodkey 0.3.0. Update now: run nodkey update as root. Checked notes: nodkey update --notes.
 ```
 
 A newest release that is older than this nodkey gives "this is the
@@ -2973,8 +3025,9 @@ cannot write to stdout.
 
 The lookup, of `nodkey version` and of the broker (step 10 of the start):
 
-- `GET https://api.github.com/repos/code6x/nodkey/releases/latest`,
-  without a login, with the headers `Accept: application/vnd.github+json`,
+- `GET https://api.github.com/repos/code6x/nodkey/releases?per_page=20`:
+  one call for the list of the last 20 releases, without a login, with
+  the headers `Accept: application/vnd.github+json`,
   `X-GitHub-Api-Version: 2022-11-28` and `User-Agent: nodkey/<version>`.
   So GitHub learns the address and the version (THREAT-MODEL.md T34).
 - It uses the proxy from the environment, as the Telegram code does
@@ -2986,10 +3039,22 @@ The lookup, of `nodkey version` and of the broker (step 10 of the start):
 - The TCP connection, the TLS handshake and the headers of the answer
   each have 10 seconds, and the whole lookup 30 seconds. The answer is
   at most 1 MiB; a larger one is an error.
-- It reads only `tag_name`, `draft` and `prerelease`, with exactly these
-  names, and ignores the other keys. A draft, a prerelease, a missing
-  key, or a tag that is not `v` and a release version, such as `v0.3.0`,
-  is an error.
+- The answer must be a JSON list of at most 20 objects. Of each one it
+  reads only `tag_name`, `draft`, `prerelease` and `body`, with exactly
+  these names, and ignores the other keys. A missing key (other than `body`), or
+  a key of a wrong type in any release, is an error. `body` may be a
+  string, `null` or missing. Drafts, prereleases and tags that are not
+  `v` and a release version, such as `v0.3.0`, do not count. The newest
+  release is the highest version that counts; a list without one is an
+  error.
+- A release that counts is a security release when its notes have the
+  line `### Security` (trailing spaces and `\r` do not matter). Only the
+  first 64 KiB of the notes are read: the Security section comes first.
+  Under that line, up to the next line that starts with `#`, it takes at
+  most 3 advisory IDs in the strict form `GHSA-xxxx-xxxx-xxxx`, where
+  each `x` is one of `23456789cfghjmpqrvwx`, as words of their own. It
+  finds every security release newer than this nodkey among the last 20
+  releases, so a skipped one is not lost. Nothing else of the notes is ever used.
 - 403 and 429 mean that GitHub limits the calls without a login from
   this address for now. Any other status but 200 is an error with only
   the status.
@@ -3100,10 +3165,10 @@ text of a line. It exits with:
 | 65 | the log failed: a broken link, a line that is not a valid entry, a torn line without its `log_recovered` entry, an anchor that does not match or whose entry is not in the log, or two anchors for one entry that differ |
 | 66 | the log or the anchors file cannot be opened or read |
 
-`nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]` installs a
+`nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]` installs a
 release in place of the file that it runs from: the newest release, or
 `X.Y.Z`, also an older one. It runs only as root. Otherwise it prints
-`nodkey: nodkey update must run as root: run sudo nodkey update (exit 1)`.
+`nodkey: nodkey update must run as root: run it as root (exit 1)`.
 It runs the install script that is built into the binary (`install.sh`,
 section 18) with `/bin/sh`. The script gets `--bin-dir` with the
 directory of the file of nodkey, after links, and the flags that are
@@ -3114,6 +3179,23 @@ build that is installed and was checked, not fresh from the network. A
 file that is not named `nodkey` is refused: the script would replace
 another file. `--version` must be `X.Y.Z`, such as `0.2.0`, and `--gh`
 an absolute path; each may be given once.
+
+`--notes` installs nothing. The script makes all the same checks (steps 1
+to 8 of section 18), then runs the new, checked binary from its temporary
+directory: first `nodkey version`, which must say the release, then
+`nodkey changes --since X.Y.Z` with the installed version. A failed check
+runs nothing. `--notes` needs root, as the update does, and does not go
+with `--reinstall`. A normal `nodkey update` to a newer version prints the
+same changes after it installs. If that fails, it prints the link of the
+release notes and still succeeds, because the new file is in place.
+
+`nodkey changes --since X.Y.Z` prints the entries of the CHANGELOG.md
+that is built into the binary (`go:embed`) for the releases newer than
+`X.Y.Z`, with the security fixes of all of them first. It exits with 0,
+with 64 on wrong usage, such as an `X.Y.Z` that is not a release version,
+and with 1 on any other error. Control and direction characters in the
+text print as `?`. The text comes from the attested release, not from
+GitHub's API.
 
 The script gets a fixed environment: `PATH=/usr/sbin:/usr/bin:/sbin:/bin`,
 `LC_ALL=C` and `HOME=/root`, and `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`
@@ -3439,6 +3521,11 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
 - GitHub Actions are pinned to a commit SHA.
 - Pull request titles follow Conventional Commits. Pull requests are squash
   merged.
+- Pull request titles may use the type `security` (also `security(deps)`)
+  for a real security fix. It puts a `### Security` section first in
+  CHANGELOG.md and in the release notes; a line may name advisory IDs
+  (`GHSA-...`). nodkey reads this line to flag security releases
+  (section 15). See docs/releasing.md.
 - release-please keeps a release pull request open. Merging it tags the
   version and creates the GitHub Release. A job then builds static Linux
   binaries (`CGO_ENABLED=0`, amd64 and arm64, `-trimpath`), a
@@ -3517,6 +3604,10 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
       ends all grants) and each `nodkey ssh-agent`. It restarts nothing
       itself;
   12. removes the temporary directory, also after a failure or a signal.
+
+  With `--notes`, the script does steps 1 to 8, then runs the new binary
+  from the temporary directory to print its changes (section 15), and
+  installs nothing (steps 9 to 11 do not run).
 
   Any failed step stops the script with a clear last line, and nothing
   is installed. All the work is in functions, and only the last line

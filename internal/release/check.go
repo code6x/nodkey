@@ -3,6 +3,7 @@ package release
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/code6x/nodkey/internal/version"
@@ -38,29 +39,43 @@ const (
 type Check struct {
 	own    version.Release
 	first  time.Duration // the wait before the first check
-	latest func(ctx context.Context) (version.Release, error)
+	lookup func(ctx context.Context) (Info, error)
 	notice func(ctx context.Context, msg string) error
-	log    *slog.Logger
+	// loud sends the notice about a security release, with a sound.
+	loud func(ctx context.Context, msg string) error
+	log  *slog.Logger
+	// share gets the newest security release after each lookup that
+	// worked (OnSecurity); nil for none.
+	share func(newest version.Release, ok bool)
 	// wait waits for d, or until ctx ends. It is a field only so that a
 	// test can use a fake.
 	wait func(ctx context.Context, d time.Duration) error
 }
 
 // NewCheck returns the check of a broker whose version is own. Its first
-// check comes after first, such as FirstWait. latest finds the newest
-// release, such as Client.Latest. notice sends the notice to the
+// check comes after first, such as FirstWait. lookup finds the newest
+// release, such as Client.Lookup. notice sends the notice to the
 // approver, such as telegram.Approver.Inform: it makes one try, and its
 // ctx has a deadline. log gets a line for each newer release, each
 // notice, each failed lookup and each failed notice, with fixed texts and
 // release versions only; it may be nil.
-func NewCheck(own version.Release, first time.Duration, latest func(ctx context.Context) (version.Release, error),
-	notice func(ctx context.Context, msg string) error, log *slog.Logger,
+func NewCheck(own version.Release, first time.Duration, lookup func(ctx context.Context) (Info, error),
+	notice, loud func(ctx context.Context, msg string) error, log *slog.Logger,
 ) *Check {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Check{own: own, first: first, latest: latest, notice: notice, log: log, wait: sleep}
+	return &Check{own: own, first: first, lookup: lookup, notice: notice, loud: loud, log: log, wait: sleep}
 }
+
+// OnSecurity makes the check give share the newest security release that
+// each lookup that worked found, also one that is not newer than the
+// broker, with ok set; or ok false when the list has none. A failed lookup
+// changes nothing, so share keeps what it has. share runs in the goroutine
+// of Run, and must not block. nodkey broker passes the broker's
+// Service.SetSecurity, which tells the clients (DESIGN.md section 10).
+// Call it before Run.
+func (c *Check) OnSecurity(share func(newest version.Release, ok bool)) { c.share = share }
 
 // Run checks for a newer release until ctx ends. It never stops on its
 // own. The wait, a lookup or a notice that runs when ctx ends is
@@ -77,7 +92,7 @@ func (c *Check) Run(ctx context.Context) {
 
 // once makes one check, and returns the time until the next one.
 func (c *Check) once(ctx context.Context, noticed, logged *version.Release) time.Duration {
-	newest, err := c.latest(ctx)
+	info, err := c.lookup(ctx)
 	if ctx.Err() != nil {
 		return 0 // the broker stops
 	}
@@ -86,6 +101,17 @@ func (c *Check) once(ctx context.Context, noticed, logged *version.Release) time
 			slog.String("error", err.Error()))
 		return retry
 	}
+	if c.share != nil {
+		if n := len(info.Security); n > 0 {
+			c.share(info.Security[n-1].Version, true)
+		} else {
+			c.share(version.Release{}, false)
+		}
+	}
+	if fixes, ids := info.SecurityNewer(c.own); len(fixes) > 0 {
+		return c.security(ctx, fixes, ids)
+	}
+	newest := info.Newest
 	if newest.Compare(*noticed) <= 0 {
 		return every // no newer release, or its notice went out
 	}
@@ -111,6 +137,47 @@ func (c *Check) once(ctx context.Context, noticed, logged *version.Release) time
 	return every
 }
 
+// security sends the loud notice about the security releases fixes, which
+// are newer than the broker. It goes out at each check until the broker
+// runs one of them or a newer release: a security release does not get
+// only one notice, as a normal release does (DESIGN.md section 15).
+func (c *Check) security(ctx context.Context, fixes []version.Release, ids []string) time.Duration {
+	newest := fixes[len(fixes)-1]
+	c.log.Warn("release: GitHub lists a security release of nodkey; update the broker host and the agent machines",
+		slog.String("newest_security", newest.String()), slog.String("broker_version", c.own.String()))
+	nctx, cancel := context.WithTimeout(ctx, noticeTimeout)
+	err := c.loud(nctx, securityText(fixes, ids, c.own))
+	cancel()
+	if ctx.Err() != nil {
+		return 0
+	}
+	if err != nil {
+		c.log.Warn("release: the notice about a security release of nodkey did not go out; the next check is in 1 hour",
+			slog.String("newest_security", newest.String()), slog.String("error", err.Error()))
+		return retry
+	}
+	c.log.Info("release: the notice about a security release of nodkey went out", slog.String("newest_security", newest.String()))
+	return every
+}
+
+// securityText returns the text of the notice about the security releases
+// fixes, for a broker that runs own. It holds fixed text, release
+// versions, GHSA IDs in their strict form (at most 3), and the link made
+// from the newest of fixes. The text ends with the link.
+func securityText(fixes []version.Release, ids []string, own version.Release) string {
+	newest := fixes[len(fixes)-1]
+	adv := ""
+	if len(ids) > 0 {
+		adv = " Advisories: " + strings.Join(ids, ", ") + "."
+	}
+	return "SECURITY UPDATE: " + SecurityFixes(fixes) + ". The broker runs nodkey " + own.String() + "." + adv +
+		" This flag comes from GitHub's answer and is not checked: read the checked notes with " +
+		"nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. " +
+		"Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines " +
+		"too: run nodkey update as root. This notice comes again each day until the broker runs nodkey " +
+		newest.String() + " or newer. Release notes: " + PageURL(newest)
+}
+
 // noticeText returns the text of the notice about the release newest, for
 // a broker that runs own. Both are release versions, which hold only
 // digits and dots, and the link is made from newest. The text ends with
@@ -119,7 +186,7 @@ func noticeText(newest, own version.Release) string {
 	return "A newer release is out: nodkey " + newest.String() + ". The broker runs nodkey " + own.String() +
 		". To update the broker, run as root on the broker host: nodkey update. Then restart it: " +
 		"systemctl restart nodkey. The restart ends all grants. Update the agent machines too: " +
-		"sudo nodkey update. Release notes: " + PageURL(newest)
+		"run nodkey update as root. What is new: nodkey update --notes. Release notes: " + PageURL(newest)
 }
 
 // sleep waits for d, or until ctx ends. A ctx that has ended returns at

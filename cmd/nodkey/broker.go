@@ -372,7 +372,7 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 	b.started = true
 	b.startRun(core)
 	b.sendAlerts(tg.Alert)
-	b.startCheck(tg.Inform)
+	b.startCheck(tg.Inform, tg.InformLoud)
 	b.serve(srv, ln)
 	b.log.Info("nodkey broker: listening; the broker is ready", slog.String("address", ln.Addr().String()))
 	return nil
@@ -477,7 +477,7 @@ func (b *brokerParts) startRun(core *approval.Core) {
 // or a request. It is off when [updates] says check = false, and in a
 // build from the source, which has no release to compare. A panic in the
 // check ends only the check.
-func (b *brokerParts) startCheck(notice broker.NoticeFunc) {
+func (b *brokerParts) startCheck(notice, loud broker.NoticeFunc) {
 	own, isRelease := nodkeyversion.ParseRelease(version)
 	switch {
 	case !b.cfg.Updates.Check:
@@ -487,7 +487,9 @@ func (b *brokerParts) startCheck(notice broker.NoticeFunc) {
 		b.log.Info("nodkey broker: the check for a newer release is off: this is a build from the source")
 		return
 	}
-	check := release.NewCheck(own, releaseFirstWait, release.New(own).Latest, notice, b.log)
+	check := release.NewCheck(own, releaseFirstWait, release.New(own).Lookup, notice, loud, b.log)
+	// The service tells the clients about a newer security release.
+	check.OnSecurity(b.svc.SetSecurity)
 	ctx, cancel := context.WithCancel(context.Background())
 	b.stopCheck = cancel
 	b.checkDone = make(chan struct{})

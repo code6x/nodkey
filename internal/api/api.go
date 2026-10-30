@@ -70,6 +70,15 @@ const ShortCodeHeader = "Nodkey-Short-Code"
 // decides nothing with it. Read it with Version.
 const VersionHeader = "Nodkey-Version"
 
+// SecurityUpdateHeader holds a release version, such as "0.3.1", in the
+// answers of the broker: the newest security release that the broker's
+// check found, when it is newer than the release that the client claims
+// in VersionHeader (DESIGN.md section 10). It is a hint from GitHub's
+// answer, not checked. The client takes it only when
+// version.ParseRelease accepts it and it is newer than the client's own
+// release, and then prints one fixed line; it ignores any other value.
+const SecurityUpdateHeader = "Nodkey-Security-Update"
+
 // GrantTokenHeader holds the token of a standing grant (DESIGN.md
 // sections 8 and 10). nodkey run sends it with the request for secrets. The
 // value is a secret: never print or log it.

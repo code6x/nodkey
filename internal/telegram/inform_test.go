@@ -108,3 +108,25 @@ func TestInformLimit(t *testing.T) {
 		t.Errorf("after a minute, the second: %v, want ErrInformLimit", err)
 	}
 }
+
+// TestInformLoud: the notice about a security release goes to the notice
+// chat with a sound, and shares the count of Inform.
+func TestInformLoud(t *testing.T) {
+	e := newEnv(t)
+	if err := e.a.InformLoud(context.Background(), "SECURITY UPDATE: nodkey 0.3.1 <b>"); err != nil {
+		t.Fatal(err)
+	}
+	c := e.f.callsOf("sendMessage")[0]
+	if c.num("chat_id") != noticeChatID || c.has("disable_notification") || c.has("reply_markup") ||
+		c.str("text") != "⚠️ SECURITY UPDATE: nodkey 0.3.1 &lt;b&gt;" {
+		t.Errorf("notice %s", c.Raw)
+	}
+	for i := 1; i < InformsPerMinute; i++ {
+		if err := e.a.Inform(context.Background(), "a notice"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.a.InformLoud(context.Background(), "SECURITY UPDATE"); !errors.Is(err, ErrInformLimit) {
+		t.Errorf("a loud notice over the limit: %v, want ErrInformLimit", err)
+	}
+}

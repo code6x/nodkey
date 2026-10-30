@@ -52,7 +52,8 @@ func route(r *http.Request) (endpoint, int) {
 // ServeHTTP answers one request of a client (see the package comment for
 // the steps). Every answer goes through transport.WriteJSON,
 // transport.WriteError or transport.WriteProcessing, and has the broker's
-// version in its header.
+// version in its header, and for an older client the newest security
+// release that the check found (security.go).
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.version != "" {
 		// First, so that every answer has it, whatever its status.
@@ -64,6 +65,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.checkVersion(client, r.Header)
+	s.checkSecurity(client, w.Header(), r.Header)
 	ep, status := route(r)
 	if status != 0 {
 		if status == http.StatusMethodNotAllowed {

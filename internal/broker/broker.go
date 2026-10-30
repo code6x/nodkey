@@ -226,6 +226,17 @@ type Service struct {
 	// versionNotes holds where the broker is with the notice about the
 	// version of each client of the config, in this start (version.go).
 	versionNotes map[string]*versionNote
+	// securityGen counts the rounds of notices about a security release;
+	// securityNewest and securityAt are the release and the start of the
+	// last round. securityNotes holds where the broker is with that
+	// notice, for each client of the config (security.go).
+	securityGen    uint64
+	securityNewest version.Release
+	securityAt     time.Time
+	securityNotes  map[string]*securityNote
+	// security is the newest security release that the check found, or
+	// nil for none (SetSecurity). The handler reads it without mu.
+	security atomic.Pointer[securityInfo]
 
 	coreStopped atomic.Bool // the approval core's Run returned
 	broken      atomic.Bool // an audit write failed
@@ -281,6 +292,7 @@ func New(p Parts) (*Service, error) {
 		stop:           stop,
 		inflight:       make(map[string]int),
 		versionNotes:   make(map[string]*versionNote, len(cfg.Clients)),
+		securityNotes:  make(map[string]*securityNote, len(cfg.Clients)),
 		now:            time.Now,
 		taps:           make(chan audit.ForeignTap, tapQueue),
 		tapsStop:       make(chan struct{}),
@@ -290,6 +302,7 @@ func New(p Parts) (*Service, error) {
 	}
 	for name := range cfg.Clients {
 		s.versionNotes[name] = &versionNote{}
+		s.securityNotes[name] = &securityNote{}
 		s.clientBodies[name] = make(chan struct{}, maxBodiesPerClient)
 		s.refusedEntries[name] = newRateLimit(refusedEntriesPerMinute, func(n int) {
 			s.log.Warn("broker: did not write the audit entries of refused requests, to keep the log small",

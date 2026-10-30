@@ -1601,14 +1601,31 @@ writes a line in its journal, and sends you one silent notice in each
 start:
 
 ```text
-ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: sudo nodkey update. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. What is new: nodkey update --notes. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
 ```
 
 If the check or the notice fails, the journal says why, and the broker
 tries again after 1 hour. On a terminal, `nodkey version` says it too, on
 each machine. A build from the source never asks.
 
-1. Read the release notes.
+If the release fixes a security problem, the notice is different. It
+starts with `SECURITY UPDATE`, it makes a sound, and it comes again at
+each daily check until the broker runs that release or a newer one. It
+lists at most 3 advisory IDs. On a terminal, `nodkey version` prints a
+red `SECURITY UPDATE` line (no colour when `NO_COLOR` is set), also when
+the security release is older than the newest release. The flag comes
+from GitHub's answer and nodkey does not check it. So read the checked
+notes before you decide. An agent machine that is older than a security
+release prints a `SECURITY UPDATE` line when it uses the broker, and you
+get a silent notice that names that client.
+
+1. Read the changes. `nodkey update --notes`, as root, downloads the
+   release and checks it as `nodkey update` does, but installs nothing.
+   Then it prints the changes since your version, security fixes first.
+   `nodkey changes --since 0.2.0` prints the same from the changelog that
+   is built into the nodkey that you run. A normal `nodkey update` prints
+   the changes after it installs. A host on nodkey 0.2.0 has no
+   `--notes`: read the release notes on GitHub, and update once.
 2. On the broker host, as root, set `VERSION` to the new version, such
    as `0.2.0`, and install it:
 
@@ -1674,7 +1691,7 @@ nodkey 0.1 sends no version.
   you one silent notice for such a client:
 
   ```text
-  ℹ️ nodkey: The client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker. To update it, run there: sudo nodkey update
+  ℹ️ nodkey: The client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker. To update it, run there as root: nodkey update
   ```
 
   For a client of nodkey 0.1, the notice points to this section too. If

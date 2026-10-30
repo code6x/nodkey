@@ -329,6 +329,9 @@ type brokerOptions struct {
 	// newestRelease is the tag of the newest release at the fake GitHub;
 	// the default is v0.2.0, the version of seamReleaseVersion.
 	newestRelease string
+	// securityRelease gives the newest release at the fake GitHub the
+	// line "### Security" in its notes.
+	securityRelease bool
 	// updatesOff adds [updates] check = false to the config.
 	updatesOff bool
 	// standing adds [standing] and standing = true for github-token.
@@ -781,6 +784,17 @@ func (e *brokerEnv) post(c *http.Client, path string, body any) brokerAnswer {
 // postWithToken is post with the header of a standing grant token, if
 // token is not empty.
 func (e *brokerEnv) postWithToken(c *http.Client, path string, body any, token string) brokerAnswer {
+	return e.postWithHeader(c, path, body, api.GrantTokenHeader, token)
+}
+
+// postClaiming is post with claimed in the header api.VersionHeader.
+func (e *brokerEnv) postClaiming(c *http.Client, path string, body any, claimed string) brokerAnswer {
+	return e.postWithHeader(c, path, body, api.VersionHeader, claimed)
+}
+
+// postWithHeader is post with the header name set to value, if value is
+// not empty.
+func (e *brokerEnv) postWithHeader(c *http.Client, path string, body any, name, value string) brokerAnswer {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return brokerAnswer{err: err}
@@ -792,8 +806,8 @@ func (e *brokerEnv) postWithToken(c *http.Client, path string, body any, token s
 		return brokerAnswer{err: err}
 	}
 	req.Header.Set("Content-Type", api.ContentType)
-	if token != "" {
-		req.Header.Set(api.GrantTokenHeader, token)
+	if value != "" {
+		req.Header.Set(name, value)
 	}
 	resp, err := c.Do(req)
 	if err != nil {

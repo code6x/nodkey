@@ -272,7 +272,7 @@ func TestBrokerReleaseNotice(t *testing.T) {
 	}
 	want := "ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, " +
 		"run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends " +
-		"all grants. Update the agent machines too: sudo nodkey update. Release notes: " +
+		"all grants. Update the agent machines too: run nodkey update as root. What is new: nodkey update --notes. Release notes: " +
 		"https://github.com/code6x/nodkey/releases/tag/v0.3.0"
 	if notice.ChatID != approverID || notice.Text != want || notice.ParseMode != "HTML" || !notice.DisableNotification ||
 		!notice.LinkPreviewOptions.IsDisabled {
@@ -313,6 +313,57 @@ func TestBrokerReleaseNotice(t *testing.T) {
 	}
 	if github != 1 {
 		t.Errorf("the proxy was asked %d times for GitHub, want 1", github)
+	}
+	if strings.Contains(e.tg.bodies()+e.stderr.text(), "not this") {
+		t.Error("text of GitHub's answer reached Telegram or the journal")
+	}
+}
+
+// TestBrokerSecurityClient: once the check found a security release, the
+// broker puts it in the answers to a client that claims an older
+// release, and not to one on that release. The older client gets one
+// silent notice that names it, in the chat of the notices; the broker's
+// own security notice has the sound.
+func TestBrokerSecurityClient(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{newestRelease: "v0.3.0", securityRelease: true}, seamReleaseVersion,
+		seamFastReleaseCheck)
+	e.stderr.wait(t, lineListening)
+	e.tg.waitAlert("SECURITY UPDATE: nodkey 0.3.0 fixes a security problem")
+	e.stderr.wait(t, "release: the notice about a security release of nodkey went out")
+	c := e.httpClient()
+	for range 2 {
+		a := e.postClaiming(c, api.PathKeys, api.KeysRequest{}, "0.2.0")
+		mustStatus(t, a, http.StatusOK)
+		if got := a.header.Values(api.SecurityUpdateHeader); !slices.Equal(got, []string{"0.3.0"}) {
+			t.Errorf("the answer to a client on 0.2.0 has %q, want 0.3.0", got)
+		}
+	}
+	a := e.postClaiming(c, api.PathKeys, api.KeysRequest{}, "0.3.0")
+	mustStatus(t, a, http.StatusOK)
+	if got := a.header.Values(api.SecurityUpdateHeader); got != nil {
+		t.Errorf("the answer to a client on 0.3.0 has %q, want none", got)
+	}
+	var notice struct {
+		ChatID              int64  `json:"chat_id"`
+		Text                string `json:"text"`
+		DisableNotification bool   `json:"disable_notification"`
+	}
+	if err := json.Unmarshal([]byte(e.tg.waitAlert("SECURITY UPDATE: the client")), &notice); err != nil {
+		t.Fatal(err)
+	}
+	want := "ℹ️ nodkey: SECURITY UPDATE: the client laptop says that it runs nodkey 0.2.0, which is older than " +
+		"nodkey 0.3.0, a security release. This flag comes from GitHub's answer and is not checked: read the " +
+		"checked notes with nodkey update --notes. To update laptop, run there as root: nodkey update. This " +
+		"notice comes again after the next daily check while laptop runs an older nodkey."
+	if notice.ChatID != approverID || notice.Text != want || !notice.DisableNotification {
+		t.Errorf("the notice: %+v", notice)
+	}
+	e.stderr.wait(t, "broker: a client says that it runs a nodkey older than a security release")
+	e.signal(syscall.SIGTERM)
+	e.mustExit(exitOK)
+	if n := e.tg.alertCount("SECURITY UPDATE: the client"); n != 1 {
+		t.Errorf("%d notices about the client, want 1", n)
 	}
 	if strings.Contains(e.tg.bodies()+e.stderr.text(), "not this") {
 		t.Error("text of GitHub's answer reached Telegram or the journal")

@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/code6x/nodkey/internal/release"
@@ -33,18 +35,18 @@ when stdout cannot be written.
 // versionCheck is what the check of nodkey version for a newer release
 // uses. Tests use fakes, so that no test asks GitHub or needs a terminal.
 type versionCheck struct {
-	// isTerminal reports whether stdout is a terminal.
+	// isTerminal reports whether w (stdout or stderr) is a terminal.
 	isTerminal func(w io.Writer) bool
-	// newest asks GitHub for the newest release, for a nodkey whose
-	// version is own.
-	newest func(ctx context.Context, own nodkeyversion.Release) (nodkeyversion.Release, error)
+	// lookup asks GitHub for the newest release and the security releases,
+	// for a nodkey whose version is own.
+	lookup func(ctx context.Context, own nodkeyversion.Release) (release.Info, error)
 }
 
 // realVersionCheck asks GitHub, on a real terminal.
 var realVersionCheck = versionCheck{
 	isTerminal: isTerminal,
-	newest: func(ctx context.Context, own nodkeyversion.Release) (nodkeyversion.Release, error) {
-		return release.New(own).Latest(ctx)
+	lookup: func(ctx context.Context, own nodkeyversion.Release) (release.Info, error) {
+		return release.New(own).Lookup(ctx)
 	},
 }
 
@@ -77,26 +79,40 @@ func runVersion(args []string, own string, stdout, stderr io.Writer, check versi
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), versionCheckTimeout)
 	defer cancel()
-	newest, err := check.newest(ctx, r)
+	info, err := check.lookup(ctx, r)
+	line := releaseLine(r, info, err)
+	// A security release gets a red line, unless NO_COLOR is set
+	// (https://no-color.org) or stderr, where the line goes, is not a
+	// terminal.
+	if err == nil && strings.HasPrefix(line, "SECURITY UPDATE") && os.Getenv("NO_COLOR") == "" && check.isTerminal(stderr) {
+		line = "\x1b[31m" + line + "\x1b[0m"
+	}
 	// A failed write to stderr cannot be reported anywhere; stdout has the
 	// version.
-	_, _ = io.WriteString(stderr, releaseLine(r, newest, err)+"\n")
+	_, _ = io.WriteString(stderr, line+"\n")
 	return exitOK
 }
 
-// releaseLine returns the line of nodkey version about the newest release
-// newest, for a nodkey whose version is own, or about err. It holds only
+// releaseLine returns the line of nodkey version about the releases in
+// info, for a nodkey whose version is own, or about err. It holds only
 // fixed text, release versions, the link made from the version, and the
-// error, whose text is fixed too. A newest release that is not newer
-// than own, also an older one, is "the newest release": nodkey never
-// suggests a downgrade.
-func releaseLine(own, newest nodkeyversion.Release, err error) string {
-	switch {
-	case err != nil:
+// error, whose text is fixed too. A security release newer than own, also
+// one older than the newest release, gives the SECURITY UPDATE line
+// (DESIGN.md section 15). A newest release that is not newer than own,
+// also an older one, is "the newest release": nodkey never suggests a
+// downgrade.
+func releaseLine(own nodkeyversion.Release, info release.Info, err error) string {
+	if err != nil {
 		return "nodkey: cannot check for a newer release: " + err.Error()
-	case newest.Compare(own) > 0:
-		return "nodkey: a newer release is out: nodkey " + newest.String() +
-			`; to update, run "sudo nodkey update"; release notes: ` + release.PageURL(newest)
+	}
+	if fixes, _ := info.SecurityNewer(own); len(fixes) > 0 {
+		return "SECURITY UPDATE: " + release.SecurityFixes(fixes) + ". This is nodkey " + own.String() +
+			". Update now: run nodkey update as root. Checked notes: nodkey update --notes."
+	}
+	if info.Newest.Compare(own) > 0 {
+		return "nodkey: a newer release is out: nodkey " + info.Newest.String() +
+			"; to update, run nodkey update as root; what is new: nodkey update --notes; release notes: " +
+			release.PageURL(info.Newest)
 	}
 	return "nodkey: this is the newest release"
 }

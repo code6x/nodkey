@@ -1,17 +1,22 @@
-// Package release finds the newest release of nodkey on GitHub (DESIGN.md
-// section 15). nodkey version uses it on a terminal, and the broker uses it
-// 10 minutes after its start, and then once a day, to send a notice when a
-// newer release is out (check.go).
+// Package release finds the newest release of nodkey on GitHub, and the
+// security releases (DESIGN.md section 15). nodkey version uses it on a
+// terminal, and the broker uses it 10 minutes after its start, and then
+// once a day, to send a notice when a newer release is out (check.go).
 //
-// The lookup asks GitHub's API, without a login, for the newest release,
-// and reads only its tag, and whether it is a draft or a prerelease. It
-// takes only a tag "vX.Y.Z" with numbers that version.ParseRelease
-// accepts. Nothing else from the answer is ever shown or logged: the link
-// to the release page is made from the version (PageURL). An error has a
-// fixed text, with at most the HTTP status.
+// The lookup asks GitHub's API, without a login, for the list of the last
+// 20 releases, in one call. Of each release it reads its tag, whether it
+// is a draft or a prerelease, and its notes. It takes only a tag "vX.Y.Z"
+// with numbers that version.ParseRelease accepts. It reads the notes only
+// to find the line "### Security", which marks a security release, and
+// the IDs of advisories in the strict GHSA form under that line. Nothing
+// else from the answer is ever shown or logged: only release versions and
+// such IDs come out, and the link to the release page is made from the
+// version (PageURL). An error has a fixed text, with at most the HTTP
+// status.
 package release
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -20,8 +25,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/code6x/nodkey/internal/version"
 )
@@ -29,9 +37,9 @@ import (
 const (
 	// defaultBaseURL is the address of GitHub's API. Only tests change it.
 	defaultBaseURL = "https://api.github.com"
-	// latestPath is the newest release of nodkey that is not a draft or a
-	// prerelease.
-	latestPath = "/repos/code6x/nodkey/releases/latest"
+	// listPath is the list of the last releases of nodkey, newest first,
+	// with drafts and prereleases. GitHub sends at most maxList of them.
+	listPath = "/repos/code6x/nodkey/releases?per_page=20"
 	// pageURL is the start of the address of the page of a release. The
 	// tag follows it.
 	pageURL = "https://github.com/code6x/nodkey/releases/tag/v"
@@ -41,8 +49,19 @@ const (
 
 const (
 	// maxAnswer is the largest answer that the lookup reads. GitHub's
-	// answer is a few KiB, with the release notes.
+	// answer is some tens of KiB: 20 releases, with their notes.
 	maxAnswer = 1 << 20
+	// maxList is the most releases that the list may have: the per_page
+	// of listPath.
+	maxList = 20
+	// maxBody is the part of the notes of a release that the lookup reads
+	// for the mark of a security release. The search is cheap only on a
+	// small part, and the Security section comes first in the notes, so a
+	// mark after 64 KiB does not count.
+	maxBody = 64 << 10
+	// maxIDs is the most advisory IDs that the lookup keeps of a release,
+	// and that SecurityNewer returns.
+	maxIDs = 3
 	// maxTag is the longest tag of a release: "v" and three numbers of at
 	// most 6 digits (version.ParseRelease). A longer tag is refused before
 	// it is parsed: a tag of 1 MiB of dots would cost about 16 MiB there.
@@ -59,7 +78,54 @@ const (
 // address. Try again later.
 var ErrRateLimit = errors.New("GitHub limits the calls from this address for now")
 
-// Client asks GitHub for the newest release of nodkey. Make it with New.
+// Info is what the lookup found.
+type Info struct {
+	// Newest is the highest release in the list.
+	Newest version.Release
+	// Security holds the security releases in the list, sorted by
+	// version, oldest first, each version once.
+	Security []Security
+}
+
+// Security is a security release: its notes have the line "### Security".
+type Security struct {
+	Version version.Release
+	// IDs holds at most 3 advisory IDs in the strict GHSA form, such as
+	// GHSA-xxxx-xxxx-xxxx, from the Security section. It may be empty.
+	IDs []string
+}
+
+// SecurityNewer returns the security releases that are newer than own,
+// oldest first, so that a security release that was skipped is not lost.
+// ids holds at most 3 advisory IDs of them, each once, taken from the
+// newest release first.
+func (i Info) SecurityNewer(own version.Release) (versions []version.Release, ids []string) {
+	for _, s := range i.Security {
+		if s.Version.Compare(own) > 0 {
+			versions = append(versions, s.Version)
+		}
+	}
+	for k := len(i.Security) - 1; k >= 0; k-- {
+		if i.Security[k].Version.Compare(own) <= 0 {
+			continue
+		}
+		ids = addIDs(ids, i.Security[k].IDs)
+	}
+	return versions, ids
+}
+
+// addIDs adds the IDs of from to ids that ids does not hold yet, until
+// ids holds maxIDs.
+func addIDs(ids, from []string) []string {
+	for _, id := range from {
+		if len(ids) < maxIDs && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// Client asks GitHub for the releases of nodkey. Make it with New.
 type Client struct {
 	// http and base are fields only so that a test can use a fake GitHub
 	// server. Neither the config nor the environment changes them.
@@ -83,8 +149,8 @@ func New(own version.Release) *Client {
 //     no_proxy.
 //   - TLS 1.2 or newer, with the system's CA certificates.
 //   - It speaks only HTTP/1.1, as the Telegram code does.
-//   - It follows no redirect: Latest takes a redirect as an error.
-//   - Each step of a connection has a time limit; Latest bounds the whole
+//   - It follows no redirect: Lookup takes a redirect as an error.
+//   - Each step of a connection has a time limit; Lookup bounds the whole
 //     lookup.
 //   - It keeps no connection open after a lookup. The broker asks only
 //     once a day.
@@ -114,14 +180,16 @@ func newHTTPClient() *http.Client {
 // of GitHub.
 func PageURL(r version.Release) string { return pageURL + r.String() }
 
-// Latest asks GitHub for the newest release of nodkey, and returns its
-// version. It fails on any answer but 200 with a release that is not a
-// draft, not a prerelease, and has the tag "vX.Y.Z". 403 and 429 give
-// ErrRateLimit. The error text is fixed, with at most the HTTP status: it
-// never holds text or a header of the answer, or Go's error text, which
-// can name the proxy. So the error may go to a terminal or the journal as
-// it is. When it returns, no dial of it goes on.
-func (c *Client) Latest(ctx context.Context) (version.Release, error) {
+// Lookup asks GitHub for the list of the last 20 releases of nodkey, and
+// returns the newest release and the security releases in it. Drafts,
+// prereleases and releases without a tag "vX.Y.Z" do not count. It fails
+// on any answer but 200 with a list in the expected form that has a
+// release that counts. 403 and 429 give ErrRateLimit. The error text is
+// fixed, with at most the HTTP status: it never holds text or a header of
+// the answer, or Go's error text, which can name the proxy. So the error
+// may go to a terminal or the journal as it is. When it returns, no dial
+// of it goes on.
+func (c *Client) Lookup(ctx context.Context) (Info, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	// Go's HTTP client goes on with a dial after its request ended, such as
@@ -129,76 +197,212 @@ func (c *Client) Latest(ctx context.Context) (version.Release, error) {
 	// the proxy, and make a TLS handshake with GitHub. CloseIdleConnections
 	// ends such a dial too.
 	defer c.http.CloseIdleConnections()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+latestPath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+listPath, nil)
 	if err != nil {
-		return version.Release{}, errors.New("cannot make the request to GitHub")
+		return Info{}, errors.New("cannot make the request to GitHub")
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
 	req.Header.Set("User-Agent", c.userAgent)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return version.Release{}, errors.New("cannot reach GitHub: " + netReason(err))
+		return Info{}, errors.New("cannot reach GitHub: " + netReason(err))
 	}
 	defer func() { _ = resp.Body.Close() }() // a close error adds nothing
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusForbidden, http.StatusTooManyRequests:
-		return version.Release{}, fmt.Errorf("%w (HTTP %d); try again later", ErrRateLimit, resp.StatusCode)
+		return Info{}, fmt.Errorf("%w (HTTP %d); try again later", ErrRateLimit, resp.StatusCode)
 	default:
 		// Also a redirect, which the client does not follow.
-		return version.Release{}, fmt.Errorf("GitHub answered with HTTP %d", resp.StatusCode)
+		return Info{}, fmt.Errorf("GitHub answered with HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer+1))
 	if err != nil {
-		return version.Release{}, errors.New("cannot read the answer of GitHub: " + netReason(err))
+		return Info{}, errors.New("cannot read the answer of GitHub: " + netReason(err))
 	}
 	if len(data) > maxAnswer {
-		return version.Release{}, errors.New("the answer of GitHub is too large")
+		return Info{}, errors.New("the answer of GitHub is too large")
 	}
-	return parseLatest(data)
+	return parseList(data)
 }
 
 // errNotValid is the error for an answer that does not have the form of a
-// release.
+// list of releases.
 var errNotValid = errors.New("the answer of GitHub is not a valid release")
 
-// parseLatest reads the answer of GitHub: a JSON object with tag_name,
-// draft and prerelease. Other keys do not matter. A key counts only when
-// it is written exactly so: Go's JSON decoder would also take TAG_NAME
-// for a struct field tag_name.
-func parseLatest(data []byte) (version.Release, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
-		return version.Release{}, errNotValid
+// parseList reads the answer of GitHub: a JSON list of at most maxList
+// objects, each with tag_name, draft, prerelease and body. Other keys do
+// not matter. A key counts only when it is written exactly so: Go's JSON
+// decoder would also take TAG_NAME for a struct field tag_name. A key of
+// a wrong type makes the whole answer not valid. The list is read one
+// release at a time, so a long list costs no more than its first
+// releases.
+func parseList(data []byte) (Info, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return Info{}, errNotValid
 	}
-	var tag *string
+	var info Info
+	found := false
+	for n := 0; dec.More(); n++ {
+		if n == maxList {
+			return Info{}, errNotValid
+		}
+		var fields map[string]json.RawMessage
+		if err := dec.Decode(&fields); err != nil || fields == nil {
+			return Info{}, errNotValid
+		}
+		r, ok, body, err := parseRelease(fields)
+		if err != nil {
+			return Info{}, err
+		}
+		if !ok {
+			continue
+		}
+		if !found || r.Compare(info.Newest) > 0 {
+			info.Newest = r
+		}
+		found = true
+		if marked, ids := securityMark(body); marked {
+			info.Security = addSecurity(info.Security, r, ids)
+		}
+	}
+	// The end of the list, and nothing after it.
+	if tok, err := dec.Token(); err != nil || tok != json.Delim(']') {
+		return Info{}, errNotValid
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return Info{}, errNotValid
+	}
+	if !found {
+		return Info{}, errors.New("GitHub lists no release of nodkey")
+	}
+	slices.SortFunc(info.Security, func(a, b Security) int { return a.Version.Compare(b.Version) })
+	return info, nil
+}
+
+// parseRelease reads one release of the list. ok is false for a draft, a
+// prerelease, and a tag that is not "vX.Y.Z": such a release does not
+// count. body is the notes, "" when they are null or missing.
+func parseRelease(fields map[string]json.RawMessage) (r version.Release, ok bool, body string, err error) {
+	var tag, notes *string
 	var draft, prerelease *bool
 	for key, dst := range map[string]any{"tag_name": &tag, "draft": &draft, "prerelease": &prerelease} {
 		raw, ok := fields[key]
 		// A JSON null leaves the pointer nil.
 		if !ok || json.Unmarshal(raw, dst) != nil {
-			return version.Release{}, errNotValid
+			return version.Release{}, false, "", errNotValid
 		}
 	}
-	switch {
-	case tag == nil || draft == nil || prerelease == nil:
-		return version.Release{}, errNotValid
-	case *draft:
-		return version.Release{}, errors.New("the newest release on GitHub is a draft")
-	case *prerelease:
-		return version.Release{}, errors.New("the newest release on GitHub is a prerelease")
+	if raw, ok := fields["body"]; ok && json.Unmarshal(raw, &notes) != nil {
+		return version.Release{}, false, "", errNotValid
 	}
-	errTag := errors.New("the tag of the newest release on GitHub is not vX.Y.Z")
-	if len(*tag) > maxTag {
-		return version.Release{}, errTag
+	if tag == nil || draft == nil || prerelease == nil {
+		return version.Release{}, false, "", errNotValid
 	}
-	rest, ok := strings.CutPrefix(*tag, "v")
+	if notes != nil {
+		body = *notes
+	}
+	if *draft || *prerelease || len(*tag) > maxTag {
+		return version.Release{}, false, "", nil
+	}
+	rest, hasV := strings.CutPrefix(*tag, "v")
 	r, isRelease := version.ParseRelease(rest)
-	if !ok || !isRelease {
-		return version.Release{}, errTag
+	if !hasV || !isRelease {
+		return version.Release{}, false, "", nil
 	}
-	return r, nil
+	return r, true, body, nil
+}
+
+// addSecurity adds the security release r with ids to list. When list
+// has r already, it adds only the IDs that are new.
+func addSecurity(list []Security, r version.Release, ids []string) []Security {
+	for k := range list {
+		if list[k].Version == r {
+			list[k].IDs = addIDs(list[k].IDs, ids)
+			return list
+		}
+	}
+	return append(list, Security{Version: r, IDs: ids})
+}
+
+// securityMark reports whether the first maxBody bytes of the notes body
+// have the line "### Security", after trailing spaces and "\r" are
+// removed. ids holds at most maxIDs advisory IDs in the strict GHSA form
+// from the lines after it, up to the next line that starts with "#".
+func securityMark(body string) (marked bool, ids []string) {
+	if len(body) > maxBody {
+		body = body[:maxBody]
+	}
+	for line := range strings.Lines(body) {
+		line = strings.TrimRight(strings.TrimSuffix(line, "\n"), " \r")
+		switch {
+		case !marked:
+			marked = line == "### Security"
+		case strings.HasPrefix(line, "#"):
+			return marked, ids
+		default:
+			ids = findIDs(ids, line)
+		}
+	}
+	return marked, ids
+}
+
+// ghsaChars are the characters of the three parts of a GHSA ID.
+const ghsaChars = "23456789cfghjmpqrvwx"
+
+// ghsaLen is the length of a GHSA ID.
+const ghsaLen = len("GHSA-xxxx-xxxx-xxxx")
+
+// findIDs adds to ids the GHSA IDs in line that ids does not hold yet,
+// until ids holds maxIDs. An ID counts only as a word of its own: a
+// letter, a digit, "-" or "_" right before or after it makes it part of a
+// longer word.
+func findIDs(ids []string, line string) []string {
+	for i := 0; len(ids) < maxIDs; {
+		j := strings.Index(line[i:], "GHSA-")
+		if j < 0 {
+			break
+		}
+		start, end := i+j, i+j+ghsaLen
+		i = start + 1
+		if end > len(line) || !isGHSA(line[start:end]) {
+			continue
+		}
+		before, _ := utf8.DecodeLastRuneInString(line[:start])
+		after, _ := utf8.DecodeRuneInString(line[end:])
+		if (start > 0 && isWordRune(before)) || (end < len(line) && isWordRune(after)) {
+			continue
+		}
+		// A copy, so that the ID does not keep the whole answer in memory.
+		ids = addIDs(ids, []string{strings.Clone(line[start:end])})
+	}
+	return ids
+}
+
+// isGHSA reports whether id has the strict form of a GHSA ID:
+// "GHSA-xxxx-xxxx-xxxx", where each x is one of ghsaChars.
+func isGHSA(id string) bool {
+	if len(id) != ghsaLen || !strings.HasPrefix(id, "GHSA-") {
+		return false
+	}
+	for k := len("GHSA-"); k < len(id); k++ {
+		switch {
+		case k == 9 || k == 14:
+			if id[k] != '-' {
+				return false
+			}
+		case strings.IndexByte(ghsaChars, id[k]) < 0:
+			return false
+		}
+	}
+	return true
+}
+
+// isWordRune reports whether r continues a word around a GHSA ID.
+func isWordRune(r rune) bool {
+	return r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // netReason returns a fixed reason for an error of http.Client.Do or of
@@ -225,4 +429,20 @@ func netReason(err error) string {
 		return "cannot connect to the server"
 	}
 	return "the connection failed"
+}
+
+// SecurityFixes returns the text that names the security releases vs, such
+// as "nodkey 0.3.1 fixes a security problem" or "nodkey 0.3.1 and 0.3.4 fix
+// security problems". vs holds release versions, so the text holds only
+// fixed words, digits and dots. vs must not be empty.
+func SecurityFixes(vs []version.Release) string {
+	names := make([]string, len(vs))
+	for i, v := range vs {
+		names[i] = v.String()
+	}
+	if len(names) == 1 {
+		return "nodkey " + names[0] + " fixes a security problem"
+	}
+	return "nodkey " + strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1] +
+		" fix security problems"
 }
