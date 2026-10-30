@@ -2696,7 +2696,15 @@ nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]
 nodkey version [--offline]
+nodkey --version [--offline]
+nodkey help [COMMAND]
 ```
+
+`nodkey --version` and `nodkey -version` do the same as `nodkey version`.
+`nodkey help` prints the list of commands on stdout. `nodkey help
+COMMAND` prints on stdout the same help as `nodkey COMMAND --help`. Both
+exit with 0, with 64 on an unknown command or more than one argument,
+and with 1 when they cannot write to stdout.
 
 `nodkey broker` runs the broker. The default config is
 `/etc/nodkey/broker.toml`. Run it as its own user, from a systemd unit;

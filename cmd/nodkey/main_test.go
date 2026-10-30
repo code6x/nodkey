@@ -24,6 +24,8 @@ func TestRun(t *testing.T) {
 		{name: "--version", args: []string{"--version"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},
 		{name: "-version", args: []string{"-version"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},
 		{name: "--version with an argument", args: []string{"--version", "extra"}, wantCode: exitUsage, wantStderr: "Usage: nodkey version"},
+		{name: "--version --offline", args: []string{"--version", "--offline"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},
+		{name: "help --help", args: []string{"help", "--help"}, wantCode: exitOK, wantStdout: usageText},
 		{name: "help help", args: []string{"help", "help"}, wantCode: exitOK, wantStdout: usageText},
 		{name: "help of an unknown command", args: []string{"help", "bogus"}, wantCode: exitUsage, wantStderr: `unknown command "bogus"`},
 		{name: "help with two commands", args: []string{"help", "run", "update"}, wantCode: exitUsage, wantStderr: "Usage: nodkey help [COMMAND]"},
@@ -67,7 +69,7 @@ func TestRunReportsFailedOutput(t *testing.T) {
 // TestHelpCommand: "nodkey help COMMAND" prints on stdout the same text
 // that "nodkey COMMAND --help" prints, with exit code 0.
 func TestHelpCommand(t *testing.T) {
-	for _, name := range []string{"broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "version"} {
+	for _, name := range commands {
 		t.Run(name, func(t *testing.T) {
 			var want bytes.Buffer
 			if code := run([]string{name, "--help"}, strings.NewReader(""), &want, &want); code != exitOK {
@@ -87,5 +89,17 @@ func TestHelpCommand(t *testing.T) {
 				t.Errorf("nodkey help %s: stderr = %q, want it empty", name, stderr.String())
 			}
 		})
+	}
+}
+
+// TestCommandsAreKnown: every name in commands is a command of run, so
+// "nodkey help NAME" never gives the help of a name that run rejects.
+func TestCommandsAreKnown(t *testing.T) {
+	for _, name := range commands {
+		var stderr bytes.Buffer
+		run([]string{name, "--help"}, strings.NewReader(""), &bytes.Buffer{}, &stderr)
+		if strings.Contains(stderr.String(), "unknown command") {
+			t.Errorf("%q is in commands, but run does not know it", name)
+		}
 	}
 }

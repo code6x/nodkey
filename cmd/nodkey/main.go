@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/code6x/nodkey/internal/transport"
 )
@@ -63,12 +64,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nodkey", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { printUsage(stderr) }
-	showVersion := fs.Bool("version", false, "print the version")
+	// --version is the command version, with the flags of that command.
+	if len(args) > 0 && (args[0] == "-version" || args[0] == "--version") {
+		return runVersion(args[1:], version, stdout, stderr, realVersionCheck)
+	}
 	if err := fs.Parse(args); err != nil {
 		return parseErrorCode(err)
-	}
-	if *showVersion {
-		return runVersion(fs.Args(), version, stdout, stderr, realVersionCheck)
 	}
 	if fs.NArg() == 0 {
 		printUsage(stderr)
@@ -127,14 +128,14 @@ func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case len(args) > 1:
 		_, _ = io.WriteString(stderr, "Usage: nodkey help [COMMAND]\n")
 		return exitUsage
-	case len(args) == 0 || args[0] == "help":
+	case len(args) == 0 || slices.Contains([]string{"help", "-h", "-help", "--help"}, args[0]):
 		if _, err := io.WriteString(stdout, usageText); err != nil {
 			return exitFailure
 		}
 		return exitOK
 	}
 	name := args[0]
-	if !isCommand(name) {
+	if !slices.Contains(commands, name) {
 		_, _ = fmt.Fprintf(stderr, "nodkey: unknown command %q\n\n", name)
 		printUsage(stderr)
 		return exitUsage
@@ -147,15 +148,9 @@ func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return code
 }
 
-// isCommand reports whether name is a command of nodkey, other than help.
-func isCommand(name string) bool {
-	switch name {
-	case "broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant",
-		"preapprove", "update", "version":
-		return true
-	}
-	return false
-}
+// commands are the commands of nodkey that "nodkey help COMMAND" knows.
+// Each must handle --help before it does any work.
+var commands = []string{"broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "version"}
 
 // recordingWriter keeps the first write error, because the usage
 // functions of the commands ignore it.
