@@ -104,5 +104,17 @@ that it makes.
   squash merged. Never push to `main` directly.
 - **Open work is a GitHub issue** with a "Done when" checklist, never a TODO
   file.
+- **Every error says how to fix it.** Every error that a person or an
+  agent sees says what is wrong, where (the file and line, the section and
+  key, or the step), and how to fix it (a command, or a docs section). An
+  error without a fix is a bug.
+- **A hint is safe.** A hint never holds a secret value or text that the
+  other side chose (T19, DESIGN.md section 15). It never tells the person to
+  weaken a check, such as to copy a new pin without checking it. It says "as
+  root", never `sudo`. On a client, it says only what the client may know
+  about a refusal (#106).
+- **A usage error is one line**, for example `nodkey run: give at least one
+  --secret VAR=NAME; see "nodkey run --help" (exit 64)`. No usage text comes
+  after it, so the error is the first and the last line.
 - **Docs** use plain English and short sentences. Many readers are not
   native speakers. Dates are absolute (`2026-10-12`).

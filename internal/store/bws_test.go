@@ -86,7 +86,7 @@ func TestBWSErrorExit(t *testing.T) {
 			t.Error("Fetch returned a value with its error")
 		}
 		want := `store "main": bws secret get: the program failed (exit code ` + strconv.Itoa(code) + ")"
-		if err == nil || err.Error() != want {
+		if err == nil || !strings.HasSuffix(err.Error(), want+"; to check the setup, see section 5 of docs/setup.md; the token goes in the environment, never in an argument") {
 			t.Errorf("error = %v, want %q", err, want)
 		}
 		noCanary(t, "the error", err.Error(), value)

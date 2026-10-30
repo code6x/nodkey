@@ -146,6 +146,9 @@ func statusError(status int) *Error {
 	if s := http.StatusText(status); s != "" {
 		text += " " + s
 	}
+	if status == http.StatusServiceUnavailable {
+		text += "; the broker could not finish the request; its journal says why (journalctl -u nodkey)"
+	}
 	return &Error{Status: status, text: text}
 }
 

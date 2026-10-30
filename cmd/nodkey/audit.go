@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"slices"
 
@@ -41,8 +42,7 @@ printed.
 // runAudit runs nodkey audit with args (after "audit").
 func runAudit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		printAuditUsage(stderr)
-		return exitUsage
+		return usageFail(stderr, "audit", `give a command: "verify"`)
 	}
 	switch args[0] {
 	case "verify":
@@ -53,9 +53,7 @@ func runAudit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	default:
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit: unknown command %q\n\n", args[0])
-		printAuditUsage(stderr)
-		return exitUsage
+		return usageFail(stderr, "audit", fmt.Sprintf("unknown command %.64q", args[0]))
 	}
 }
 
@@ -63,29 +61,30 @@ func runAudit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // log: a line could hold a secret pasted by mistake.
 func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nodkey audit verify", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { printAuditUsage(stderr) }
+	fs.SetOutput(io.Discard)
 	var anchors anchorList
 	fs.Var(&anchors, "anchor", "check that entry SEQ has the hash HASH (`SEQ:HASH`); may repeat")
 	var anchorsFile onceString
 	fs.Var(&anchorsFile, "anchors", "read the anchors from `FILE`, or from stdin for -")
 	// FILE may come before or after the flags.
 	if err := fs.Parse(args); err != nil {
-		return parseErrorCode(err)
+		if errors.Is(err, flag.ErrHelp) {
+			printAuditUsage(stderr)
+		}
+		return parseErrorCode(stderr, "audit verify", err)
 	}
 	if fs.NArg() == 0 {
-		_, _ = io.WriteString(stderr, "nodkey: audit verify: name the log FILE\n\n")
-		fs.Usage()
-		return exitUsage
+		return usageFail(stderr, "audit verify", "name the log FILE")
 	}
 	path := fs.Arg(0)
 	if err := fs.Parse(fs.Args()[1:]); err != nil {
-		return parseErrorCode(err)
+		if errors.Is(err, flag.ErrHelp) {
+			printAuditUsage(stderr)
+		}
+		return parseErrorCode(stderr, "audit verify", err)
 	}
 	if fs.NArg() > 0 {
-		_, _ = io.WriteString(stderr, "nodkey: audit verify: give one FILE only\n\n")
-		fs.Usage()
-		return exitUsage
+		return usageFail(stderr, "audit verify", "give one FILE only")
 	}
 	if anchorsFile.set {
 		read, code := readAnchorsFile(anchorsFile.value, stdin, stderr)
@@ -97,17 +96,20 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 
 	f, err := os.Open(path) //nolint:gosec // G304: the person names the log to check; nodkey only reads it.
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: %v\n", err) // a *fs.PathError names the path
+		if pe := (*os.PathError)(nil); errors.As(err, &pe) {
+			err = pe.Err // the path is the person's own text; show it quoted and cut
+		}
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, err)
 		return exitNoInput
 	}
 	res, err := audit.Verify(f, anchors...)
 	_ = f.Close() // read only; a close error changes nothing
 	if ve := (*audit.VerifyError)(nil); errors.As(err, &ve) {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %s: %v\n", path, ve)
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, ve)
 		return exitDataErr
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %s: %v\n", path, err)
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, err)
 		return exitNoInput
 	}
 
@@ -135,7 +137,11 @@ func readAnchorsFile(path string, stdin io.Reader, stderr io.Writer) ([]audit.An
 	if path != "-" {
 		f, err := os.Open(path) //nolint:gosec // G304: the person names the file with the anchors; nodkey only reads it.
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors: %v\n", err)
+			var pe *fs.PathError
+			if errors.As(err, &pe) {
+				err = pe.Err // the path is the person's own text; show it quoted and cut
+			}
+			_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %.64q: %v\n", path, err)
 			return nil, exitNoInput
 		}
 		defer func() { _ = f.Close() }() // read only; a close error changes nothing
@@ -143,13 +149,12 @@ func readAnchorsFile(path string, stdin io.Reader, stderr io.Writer) ([]audit.An
 	}
 	anchors, err := audit.ReadAnchors(r)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %s: %v\n", path, err)
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %.64q: %v\n", path, err)
 		return nil, exitNoInput
 	}
 	if len(anchors) == 0 {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %s: no line is exactly %q and an anchor; "+
-			"use journalctl -o cat\n", path, audit.JournalPrefix)
-		return nil, exitUsage
+		return nil, usageFail(stderr, "audit verify", fmt.Sprintf("--anchors %.64q: no line is exactly %q and an anchor; "+
+			"use journalctl -o cat", path, audit.JournalPrefix))
 	}
 	return anchors, exitOK
 }

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/grantkey"
@@ -140,8 +141,7 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 	}
 	o, err := parseArgs(args)
 	if err != nil {
-		_, _ = io.WriteString(stderr, runUsage)
-		return fail(stderr, exitUsage, err.Error())
+		return UsageError(stderr, "run", err.Error())
 	}
 	// Look for the command before anyone is asked: a person must never
 	// approve a command that cannot start. path is absolute.
@@ -260,16 +260,46 @@ func fail(w io.Writer, code int, reason string) int {
 	return code
 }
 
+// UsageError writes the one line of a usage error of the command cmd
+// (DESIGN.md section 15), "nodkey <cmd>: <reason>; see "nodkey <cmd>
+// --help" (exit 64)", with no usage text, and returns 64. The reason must
+// not hold a secret. The whole reason is cut to maxUsageReason bytes, on a
+// character boundary, so the line stays short whatever the caller passes.
+func UsageError(w io.Writer, cmd, reason string) int {
+	name := "nodkey"
+	if cmd != "" {
+		name += " " + cmd
+	}
+	_, _ = fmt.Fprintf(w, "%s: %s; see \"%s --help\" (exit %d)\n",
+		name, capBytes(oneLine(reason), maxUsageReason), name, exitUsage)
+	return exitUsage
+}
+
 // warnLine writes "nodkey: " and text as one line, such as a warning about
 // the version of the broker. It comes before the last line.
 func warnLine(w io.Writer, text string) {
 	_, _ = io.WriteString(w, "nodkey: "+oneLine(text)+"\n")
 }
 
-// oneLine replaces control characters and line breaks in s with spaces.
+// maxUsageReason is the most bytes of the reason in a usage error line.
+const maxUsageReason = 256
+
+// capBytes cuts s to at most max bytes, without cutting a character.
+func capBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
+}
+
+// oneLine replaces control characters, format characters such as U+202E
+// (they can reorder text on a terminal) and line breaks in s with spaces.
 func oneLine(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
 			return ' '
 		}
 		return r

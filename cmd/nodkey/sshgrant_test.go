@@ -15,14 +15,13 @@ func TestSSHGrantCommand(t *testing.T) {
 	if code := run([]string{"ssh-grant"}, strings.NewReader(""), &stdout, &stderr); code != exitUsage {
 		t.Errorf("nodkey ssh-grant: exit code %d, want %d", code, exitUsage)
 	}
-	if !strings.HasPrefix(stderr.String(), "Usage: nodkey ssh-grant ") ||
-		!strings.HasSuffix(stderr.String(), "give the key with --key NAME (exit 64)\n") {
+	if stderr.String() != "nodkey ssh-grant: give the key with --key NAME; see \"nodkey ssh-grant --help\" (exit 64)\n" {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	stderr.Reset()
 	args := []string{"ssh-grant", "--key", "deploy", "--user", "deploy@web-1", "--host", "web-1", "--for", "15m"}
 	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != exitUsage ||
-		!strings.HasSuffix(stderr.String(), "must match [A-Za-z0-9._][A-Za-z0-9._-]{0,31} (exit 64)\n") {
+		!strings.HasSuffix(stderr.String(), "must match [A-Za-z0-9._][A-Za-z0-9._-]{0,31}; see \"nodkey ssh-grant --help\" (exit 64)\n") {
 		t.Errorf("a bad user name: exit code %d, stderr %q; want 64", code, stderr.String())
 	}
 	stderr.Reset()

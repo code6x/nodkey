@@ -36,8 +36,7 @@ func runChanges(args []string, stdout, stderr io.Writer) int {
 // can give its own.
 func changesOf(text string, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("nodkey changes", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.Usage = func() { _, _ = io.WriteString(stderr, changesUsage) }
+	flags.SetOutput(io.Discard)
 	var since nodkeyversion.Release
 	sinceFlag := checkedFlag{check: func(s string) error {
 		r, ok := nodkeyversion.ParseRelease(s)
@@ -49,11 +48,16 @@ func changesOf(text string, args []string, stdout, stderr io.Writer) int {
 	}}
 	flags.Var(&sinceFlag, "since", "print the changes after the release `X.Y.Z`")
 	if err := flags.Parse(args); err != nil {
-		return parseErrorCode(err)
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = io.WriteString(stderr, changesUsage)
+		}
+		return parseErrorCode(stderr, "changes", err)
 	}
-	if flags.NArg() > 0 || !sinceFlag.set {
-		flags.Usage()
-		return exitUsage
+	if flags.NArg() > 0 {
+		return usageFail(stderr, "changes", fmt.Sprintf("unexpected argument %.64q", flags.Arg(0)))
+	}
+	if !sinceFlag.set {
+		return usageFail(stderr, "changes", "give --since X.Y.Z")
 	}
 	out := formatChanges(parseChangelog(text), since)
 	if _, err := io.WriteString(stdout, out); err != nil {

@@ -374,11 +374,9 @@ func TestSSHGrantUsage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			code, stderr := grantIn(t.Context(), testGranter(nil, nil), tt.args...)
-			if !strings.HasPrefix(stderr, grantUsage) {
-				t.Errorf("stderr = %q; want the usage first", stderr)
-			}
-			if last := lastLine(stderr); code != exitUsage || !strings.HasPrefix(last, "nodkey: ") ||
-				!strings.Contains(last, tt.want) || !strings.HasSuffix(last, " (exit 64)") {
+			if last := lastLine(stderr); code != exitUsage || last != strings.TrimSuffix(stderr, "\n") ||
+				!strings.HasPrefix(last, "nodkey ssh-grant: ") || !strings.Contains(last, tt.want) ||
+				!strings.HasSuffix(last, `; see "nodkey ssh-grant --help" (exit 64)`) {
 				t.Errorf("exit code %d, last line %q; want 64 and %q", code, last, tt.want)
 			}
 		})

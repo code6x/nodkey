@@ -46,11 +46,11 @@ func TestBrokerUsage(t *testing.T) {
 		name string
 		args []string
 		code int
-		log  string // a part of the log line, if any
+		want string // a part of the one usage line, if any
 	}{
-		{"an unknown flag", []string{"broker", "--bogus"}, exitUsage, "nodkey broker: wrong usage"},
-		{"an argument", []string{"broker", "extra"}, exitUsage, "it takes no arguments"},
-		{"a flag with a line break", []string{"broker", "--x\n" + fakeAnchor}, exitUsage, "nodkey broker: wrong usage"},
+		{"an unknown flag", []string{"broker", "--bogus"}, exitUsage, "unknown option"},
+		{"an argument", []string{"broker", "extra"}, exitUsage, "unexpected argument"},
+		{"a flag with a line break", []string{"broker", "--x\n" + fakeAnchor}, exitUsage, "unknown option"},
 		{"-h", []string{"broker", "-h"}, exitOK, ""},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -60,11 +60,13 @@ func TestBrokerUsage(t *testing.T) {
 		if stdout.Len() != 0 {
 			t.Errorf("%s: stdout = %q, want it empty", tt.name, stdout.String())
 		}
-		if !strings.Contains(stderr.String(), "Usage: nodkey broker [--config FILE]") {
-			t.Errorf("%s: stderr = %q, want the usage", tt.name, stderr.String())
-		}
-		if tt.log != "" && (!strings.Contains(stderr.String(), "time=") || !strings.Contains(stderr.String(), tt.log)) {
-			t.Errorf("%s: stderr = %q, want a log line with %q", tt.name, stderr.String(), tt.log)
+		if tt.code == exitOK {
+			if !strings.Contains(stderr.String(), "Usage: nodkey broker [--config FILE]") {
+				t.Errorf("%s: stderr = %q, want the usage", tt.name, stderr.String())
+			}
+		} else if !strings.HasPrefix(stderr.String(), "nodkey broker: ") || !strings.Contains(stderr.String(), tt.want) ||
+			strings.Count(stderr.String(), "\n") != 1 {
+			t.Errorf("%s: stderr = %q, want one line with %q", tt.name, stderr.String(), tt.want)
 		}
 		noAnchorLine(t, stderr.String())
 	}
@@ -535,4 +537,19 @@ func TestUnitHasEachCredential(t *testing.T) {
 	if len(inConfig) == 0 || !slices.Equal(inConfig, inUnit) {
 		t.Errorf("the credentials of the example config %q and of the unit %q differ", inConfig, inUnit)
 	}
+}
+
+// TestBrokerUsageErrorIsShort: a huge flag argument gives one plain line
+// under the cap, so journald cannot split it (DESIGN.md section 15).
+func TestBrokerUsageErrorIsShort(t *testing.T) {
+	var stderr bytes.Buffer
+	args := []string{"broker", "--" + strings.Repeat("y", 49000)}
+	if code := run(args, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != exitUsage {
+		t.Errorf("exit code %d, want %d", code, exitUsage)
+	}
+	got := stderr.String()
+	if len(got) > 400 || strings.Count(got, "\n") != 1 {
+		t.Errorf("the line has %d bytes and %d line breaks", len(got), strings.Count(got, "\n"))
+	}
+	noAnchorLine(t, got)
 }

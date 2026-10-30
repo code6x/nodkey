@@ -15,6 +15,10 @@ import (
 	"strings"
 )
 
+// Running is the version of this binary. main sets it at start, so that
+// errors can name it. It is "dev" until then.
+var Running = "dev"
+
 // maxLen is the most bytes of a version.
 const maxLen = 64
 

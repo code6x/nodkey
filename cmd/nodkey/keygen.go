@@ -28,15 +28,19 @@ type keyWriter func(path string) (config.Pin, error)
 // the pin, and nothing secret.
 func runKeygen(args []string, stdout, stderr io.Writer, write keyWriter) int {
 	flags := flag.NewFlagSet("nodkey keygen", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.Usage = func() { _, _ = io.WriteString(stderr, keygenUsage) }
+	flags.SetOutput(io.Discard)
 	out := flags.String("out", "", "the new key file")
 	if err := flags.Parse(args); err != nil {
-		return parseErrorCode(err)
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = io.WriteString(stderr, keygenUsage)
+		}
+		return parseErrorCode(stderr, "keygen", err)
 	}
-	if flags.NArg() > 0 || *out == "" {
-		flags.Usage()
-		return exitUsage
+	if flags.NArg() > 0 {
+		return usageFail(stderr, "keygen", fmt.Sprintf("unexpected argument %.64q", flags.Arg(0)))
+	}
+	if *out == "" {
+		return usageFail(stderr, "keygen", "give --out FILE")
 	}
 	pin, err := write(*out)
 	if err != nil {

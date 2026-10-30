@@ -72,8 +72,8 @@ func TestUpdateUsage(t *testing.T) {
 		want string // a part of stderr
 	}{
 		{"an argument", []string{"update", "0.2.0"}, exitUsage, ""},
-		{"an unknown flag", []string{"update", "--bin-dir", "/tmp"}, exitUsage, "flag provided but not defined: -bin-dir"},
-		{"no version", []string{"update", "--version"}, exitUsage, "flag needs an argument: -version"},
+		{"an unknown flag", []string{"update", "--bin-dir", "/tmp"}, exitUsage, `unknown option "bin-dir"`},
+		{"no version", []string{"update", "--version"}, exitUsage, `option "version" needs a value`},
 		{"an empty version", []string{"update", "--version="}, exitUsage, "want X.Y.Z, such as 0.2.0"},
 		{"a version with two numbers", []string{"update", "--version", "0.2"}, exitUsage, "want X.Y.Z"},
 		{"a version with a v", []string{"update", "--version", "v0.2.0"}, exitUsage, "want X.Y.Z"},
@@ -83,8 +83,8 @@ func TestUpdateUsage(t *testing.T) {
 		{"a gh that is not absolute", []string{"update", "--gh", "gh"}, exitUsage, "want an absolute path"},
 		{"an empty gh", []string{"update", "--gh="}, exitUsage, "want an absolute path"},
 		{"two gh", []string{"update", "--gh", "/usr/bin/gh", "--gh", "/usr/local/bin/gh"}, exitUsage, "give it once"},
-		{"a value for --reinstall", []string{"update", "--reinstall=maybe"}, exitUsage, "invalid boolean value"},
-		{"a value for --notes", []string{"update", "--notes=maybe"}, exitUsage, "invalid boolean value"},
+		{"a value for --reinstall", []string{"update", "--reinstall=maybe"}, exitUsage, `bad value for option`},
+		{"a value for --notes", []string{"update", "--notes=maybe"}, exitUsage, `bad value for option`},
 		{"--notes with --reinstall", []string{"update", "--notes", "--reinstall"}, exitUsage, "does not go with --reinstall"},
 		{"-h", []string{"update", "-h"}, exitOK, ""},
 	} {
@@ -94,9 +94,13 @@ func TestUpdateUsage(t *testing.T) {
 			if code := run(tt.args, strings.NewReader(""), &stdout, &stderr); code != tt.code {
 				t.Errorf("exit code %d, want %d", code, tt.code)
 			}
-			if !strings.Contains(stderr.String(), "Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]") ||
-				!strings.Contains(stderr.String(), tt.want) {
-				t.Errorf("stderr = %q, want the usage and %q", stderr.String(), tt.want)
+			if tt.code == exitOK {
+				if !strings.Contains(stderr.String(), "Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]") {
+					t.Errorf("stderr = %q, want the usage", stderr.String())
+				}
+			} else if !strings.HasPrefix(stderr.String(), "nodkey update: ") || !strings.Contains(stderr.String(), tt.want) ||
+				strings.Count(stderr.String(), "\n") != 1 {
+				t.Errorf("stderr = %q, want one usage line with %q", stderr.String(), tt.want)
 			}
 			if stdout.Len() != 0 || got.calls != 0 {
 				t.Errorf("stdout %q, %d runs of the script; want nothing", stdout.String(), got.calls)

@@ -448,7 +448,10 @@ anchor look checked. So the broker logs with slog's text handler, whose
 lines start with `time=` and escape a line break in a value. It never
 logs claimed text or a panic value, and it cuts every other value, such
 as an error text, to 1 KiB. The transport cuts net/http's lines to
-printable ASCII, and store programs' error output is never read. A test
+printable ASCII, and store programs' error output is never read. The
+usage error of a wrong argument is one plain line with a reason of at
+most 256 bytes, with the user's text quoted and cut, so it is short and
+cannot be an anchor line. A test
 puts a line break and `audit anchor 1:…` into claimed text, errors, a
 panic value and the certificate of a refused client, and finds no such
 line.
@@ -478,7 +481,10 @@ itself. The broker passes only `HOME`, the one variable with the token
 or the session key, and for bw a fixed `PATH`, and nothing from its own
 environment, so a variable such as `NODE_OPTIONS` or `LD_PRELOAD` cannot
 change what the program does. The broker never logs the programs'
-output, and its errors hold only a fixed text and the exit code. Tests
+output, and its errors hold only a fixed text and the exit code. They
+also hold the path of the program and the store home from the broker
+config, and a fixed check command (for bw `env -i ... status`, with the
+fixed PATH of bw). Tests
 check all of this with made-up secrets and fake programs that record what
 they get. If a store program crashes, a core handler such as
 systemd-coredump would write its environment, with the token or the

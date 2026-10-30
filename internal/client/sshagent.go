@@ -207,8 +207,7 @@ func (r agentRunner) run(ctx context.Context, args []string, w io.Writer) int {
 		err = checkSocketPath(path)
 	}
 	if err != nil {
-		_, _ = io.WriteString(log, agentUsage)
-		return fail(log, exitUsage, err.Error())
+		return UsageError(log, "ssh-agent", err.Error())
 	}
 	configPath, err := r.configPath()
 	if err != nil {

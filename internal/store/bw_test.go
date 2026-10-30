@@ -184,7 +184,8 @@ func TestBWSyncFails(t *testing.T) {
 	f := newTestFake(t, config.StoreBW, sc, testDeps())
 	v, err := f.store.Fetch(t.Context(), testItemID)
 	checkErr(t, err, ErrFailed)
-	if err != nil && err.Error() != `store "vault": bw sync: the program failed (exit code 1)` {
+	if err == nil || !strings.HasPrefix(err.Error(), `store "vault": bw sync: the program failed (exit code 1); `) ||
+		!hasBWHint(err.Error()) {
 		t.Errorf("error = %v", err)
 	}
 	if v.Bytes() != nil {
@@ -205,7 +206,7 @@ func TestBWGetItemFails(t *testing.T) {
 	f := newTestFake(t, config.StoreBW, bwScenario(madeUp("password"), "", madeUp("value"), madeUp("other")), testDeps())
 	_, err := f.store.Fetch(t.Context(), "00000000-0000-4000-8000-0000000000ff") // not found
 	checkErr(t, err, ErrFailed)
-	if err != nil && err.Error() != `store "vault": bw get item: the program failed (exit code 1)` {
+	if err == nil || !strings.HasPrefix(err.Error(), `store "vault": bw get item: the program failed (exit code 1); `) || !hasBWHint(err.Error()) {
 		t.Errorf("error = %v", err)
 	}
 	if f.store.(*bwStore).session.Bytes() == nil {
@@ -220,7 +221,7 @@ func TestBWWrongPassword(t *testing.T) {
 	writeFile(t, f.cfg.PasswordFile, madeUp("wrong")+"\n")
 	err := f.store.Start(t.Context())
 	checkErr(t, err, ErrFailed)
-	if err != nil && err.Error() != `store "vault": bw unlock: the program failed (exit code 1)` {
+	if err == nil || !strings.HasPrefix(err.Error(), `store "vault": bw unlock: the program failed (exit code 1); `) || !hasBWHint(err.Error()) {
 		t.Errorf("error = %v", err)
 	}
 	if errors.Is(err, ErrLocked) {
@@ -492,4 +493,16 @@ func TestBWClose(t *testing.T) {
 		t.Errorf("steps = %q, want only the first unlock", got)
 	}
 	f.store.Close()
+}
+
+// hasBWHint reports whether msg ends with the fixed hint of bw: the exact
+// status check, and no command that harms the session.
+func hasBWHint(msg string) bool {
+	i := strings.Index(msg, "; to check the login, run as the broker's user: env -i -C /")
+	if i < 0 {
+		return false
+	}
+	hint := msg[i:]
+	return strings.Contains(hint, " HOME=/") && strings.Contains(hint, " PATH="+bwPath+" /") &&
+		strings.HasSuffix(hint, " status; never bw unlock, lock or logout")
 }

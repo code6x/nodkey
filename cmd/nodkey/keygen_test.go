@@ -36,8 +36,12 @@ func TestKeygenUsage(t *testing.T) {
 		if stdout.Len() != 0 {
 			t.Errorf("%s: stdout = %q, want it empty", tt.name, stdout.String())
 		}
-		if !strings.Contains(stderr.String(), "Usage: nodkey keygen --out FILE") {
-			t.Errorf("%s: stderr = %q, want the usage", tt.name, stderr.String())
+		if tt.code == exitOK {
+			if !strings.Contains(stderr.String(), "Usage: nodkey keygen --out FILE") {
+				t.Errorf("%s: stderr = %q, want the usage", tt.name, stderr.String())
+			}
+		} else if !strings.HasPrefix(stderr.String(), "nodkey keygen: ") || strings.Count(stderr.String(), "\n") != 1 {
+			t.Errorf("%s: stderr = %q, want one usage line", tt.name, stderr.String())
 		}
 	}
 	// The command list names keygen.

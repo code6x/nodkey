@@ -228,8 +228,8 @@ grant or rule, as for any other check. The audit log gets the `request`
 entry and a `denied` entry with cause `not_allowed`. The broker's log says
 why, with a fixed text and the entry of the list, such as `PATH` or
 `LD_*`, never with the name that the client sent. The client refuses
-these names too, before it asks anyone: it prints the usage and a clear
-last line, and exits with 64 (section 15).
+these names too, before it asks anyone: it prints a usage error of one
+line (section 15) and exits with 64.
 
 The broker refuses each name in the first column below. `LD_*` means
 every name that starts with `LD_`. The match is exact, on the name in
@@ -2026,6 +2026,10 @@ handler sees it.
   closes after 60 seconds.
 - An error answer gives only the HTTP status, such as
   `{"error":"Bad Request"}`. It never says which key or value was wrong.
+  The client shows it as `the broker answered 503 Service Unavailable`. For
+  `503` it adds a fixed hint: `; the broker could not finish the request;
+  its journal says why (journalctl -u nodkey)`. This text is fixed in the
+  client: it holds nothing that the broker sent.
 - If a handler panics, the broker logs where (function, file and line),
   but not the panic value, and drops the connection. The value could hold
   anything from the request.
@@ -2575,7 +2579,8 @@ tls_key = "~/.config/nodkey/client.key"
 
 Config files are strict: an unknown key is an error, so a typo cannot turn
 a rule off. Keys must be written exactly as above, in lower case: `ASK`
-is an unknown key. Each key must be below the header of its own section,
+is an unknown key. The error ends with `; this is nodkey VERSION, the key
+may be from a newer release`. Each key must be below the header of its own section,
 such as `ask` below `[secret.github-token]`. A dotted key such as
 `secret.github-token.ask = "never"` and an inline table (`{ ... }`) are
 errors, because a reader of the section would not see that key.
@@ -2750,14 +2755,28 @@ COMMAND` prints on stdout the same help as `nodkey COMMAND --help`. Both
 exit with 0, with 64 on an unknown command or more than one argument,
 and with 1 when they cannot write to stdout.
 
+A usage error (exit 64) is one line on stderr, with no usage text:
+`nodkey CMD: REASON; see "nodkey CMD --help" (exit 64)`. For nodkey itself
+the line is `nodkey: REASON; see "nodkey --help" (exit 64)`. The reason is
+fixed text, and it shows an argument of the user at most 64 characters long,
+quoted. `-h` or `--help` prints the usage and exits with 0. The text of
+the flag package is never passed on: an unknown or bad option is shown as
+our own text, with the name or the value quoted and cut to at most 64
+characters. The whole reason is cut to 256 bytes, and control characters
+and format characters (such as U+202E) become spaces. So the line is
+short, also for the broker.
+
 `nodkey broker` runs the broker. The default config is
 `/etc/nodkey/broker.toml`. Run it as its own user, from a systemd unit;
 [contrib/systemd/nodkey.service](contrib/systemd/nodkey.service) is an
 example (section 16), and [docs/setup.md](docs/setup.md) sets it up step
 by step. It writes its log to stderr, which systemd keeps in
 the journal, with the anchors of the audit log (section 9). All its
-lines, also an error at start and a wrong argument, come from the logger
-of section 10, so no line can look like an anchor.
+lines, also an error at start, come from the logger
+of section 10, so no line can look like an anchor. The one exception is
+the usage error of a wrong argument (section 15): one plain line of at
+most 256 bytes of reason, which cannot be an anchor line and is far under
+the size at which journald splits a line.
 
 It starts in this order. If a step fails, it stops there, and ends what
 it started before.
@@ -2892,7 +2911,8 @@ exits with 69 when it cannot reach the broker, and for every other answer
 that is not `200`, such as `503` or a redirect (section 10). It never
 tries again. More cases:
 
-- 69: the client config or the TLS key cannot be read or is not valid,
+- 69: the client config or the TLS key cannot be read or is not valid
+  (a client config that is missing points to `docs/setup.md`, section 11),
   as then the broker cannot be reached; nodkey cannot mark itself as not
   dumpable (section 16); the broker sends no answer within the deadline
   of 15 minutes (section 5); a `200` whose body is not a valid answer, or
@@ -2921,7 +2941,7 @@ phone. Once the command starts, the signals are the command's.
 
 `nodkey run -h` or `nodkey run --help` prints the usage and exits with 0,
 but only as the only argument. With other arguments, `-h` and `--help`
-are wrong usage (64): an exit with 0 that runs nothing would look like a
+are wrong usage (64), with the one line above: an exit with 0 that runs nothing would look like a
 command that ran.
 
 The command itself may also exit with one of these codes. To tell them
@@ -2992,8 +3012,9 @@ that this machine does not have is 77. A job should ask when it is
 planned, not when it runs.
 
 `nodkey keygen` prints the pin on stdout, and nothing else. It exits with
-0, with 64 on wrong usage, and with 1 on any other error. Then its last
-line on stderr is `nodkey: <reason> (exit 1)`.
+0, with 64 on wrong usage (the one line of a usage error above), and with
+1 on any other error. Then its last line on stderr is
+`nodkey: <reason> (exit 1)`.
 
 `nodkey version [--offline]` prints `nodkey <version>` on stdout, such as
 `nodkey 0.2.0`, and nothing else there: scripts and the installer read
@@ -3138,8 +3159,8 @@ takes `FILE` before or after the options.
 - `--anchors FILE` reads anchors from a file, or from stdin for `-`. It
   uses every line that is exactly `audit anchor SEQ:HASH`, and skips the
   other lines, so it takes the output of `journalctl -u nodkey -o cat`.
-  If no line is an anchor, that is wrong usage: a check with no anchor
-  must not pass by mistake.
+  If no line is an anchor, that is wrong usage (64, with the one line of a
+  usage error): a check with no anchor must not pass by mistake.
 - Two anchors for one entry must not differ.
 
 Check with every anchor since the log began (section 9). When the log
@@ -3314,8 +3335,16 @@ The broker runs `bws` and `bw` like this (`internal/store`):
   `bw` (section 11).
 - The broker reads stdout, never stderr, and logs neither. An error names
   the store and the step, and gives a fixed reason and the exit code, such
-  as `store "vault": bw sync: the program failed (exit code 1)`. Any error
-  means deny.
+  as `store "vault": bw sync: the program failed (exit code 1)`. It ends
+  with a fixed hint for the kind of store. For `bw`: `; to check the login,
+  run as the broker's user: env -i -C HOME HOME=HOME PATH=PATH PROGRAM
+  status; never bw unlock, lock or logout`, with the path of the program,
+  of its home and the fixed PATH of bw. It is the check of the setup guide,
+  and it shows no secret. Unlock, lock and logout would end the session of
+  the broker. For `bws`: `; to check the setup, see section 5 of
+  docs/setup.md; the token goes in the environment, never in an argument`.
+  The hint holds no argument and no output of the program, so T18 holds.
+  Any error means deny.
 - The broker clears the output, the token and the session key in its
   memory when it no longer needs them. This is best effort: Go strings,
   such as the environment variable for a run, and buffers of the operating

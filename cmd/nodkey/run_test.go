@@ -13,7 +13,7 @@ func TestRunCommand(t *testing.T) {
 	if code := run([]string{"run"}, strings.NewReader(""), &stdout, &stderr); code != exitUsage {
 		t.Errorf("nodkey run: exit code %d, want %d", code, exitUsage)
 	}
-	if !strings.HasPrefix(stderr.String(), "Usage: nodkey run ") || !strings.HasSuffix(stderr.String(), "(exit 64)\n") {
+	if !strings.HasPrefix(stderr.String(), "nodkey run: ") || !strings.HasSuffix(stderr.String(), `see "nodkey run --help" (exit 64)`+"\n") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	if stdout.Len() != 0 {

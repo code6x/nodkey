@@ -9,8 +9,12 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
+	"strings"
 
+	"github.com/code6x/nodkey/internal/client"
 	"github.com/code6x/nodkey/internal/transport"
+	runningversion "github.com/code6x/nodkey/internal/version"
 )
 
 // version is the nodkey version. Release builds set it with
@@ -58,6 +62,7 @@ Options:
 `
 
 func main() {
+	runningversion.Running = version
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
@@ -65,18 +70,20 @@ func main() {
 // exit code.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nodkey", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { printUsage(stderr) }
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	// --version is the command version, with the flags of that command.
 	if len(args) > 0 && (args[0] == "-version" || args[0] == "--version") {
 		return runVersion(args[1:], version, stdout, stderr, realVersionCheck)
 	}
 	if err := fs.Parse(args); err != nil {
-		return parseErrorCode(err)
+		if errors.Is(err, flag.ErrHelp) {
+			printUsage(stderr)
+		}
+		return parseErrorCode(stderr, "", err)
 	}
 	if fs.NArg() == 0 {
-		printUsage(stderr)
-		return exitUsage
+		return usageFail(stderr, "", "give a command")
 	}
 
 	name, rest := fs.Arg(0), fs.Args()[1:]
@@ -105,9 +112,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "help":
 		return runHelp(rest, stdin, stdout, stderr)
 	default:
-		_, _ = fmt.Fprintf(stderr, "nodkey: unknown command %q\n\n", name)
-		printUsage(stderr)
-		return exitUsage
+		return usageFail(stderr, "", fmt.Sprintf("unknown command %.64q", name))
 	}
 }
 
@@ -117,13 +122,51 @@ func printUsage(w io.Writer) {
 	_, _ = io.WriteString(w, usageText)
 }
 
-// parseErrorCode returns the exit code for an error from flag parsing.
-// The flag package has already printed the message and the usage.
-func parseErrorCode(err error) int {
+// usageFail writes the one line of a usage error of the command cmd ("" for
+// nodkey itself) and returns exitUsage: "nodkey CMD: REASON; see "nodkey CMD
+// --help" (exit 64)". It prints no usage text.
+func usageFail(stderr io.Writer, cmd, reason string) int {
+	return client.UsageError(stderr, cmd, reason)
+}
+
+// parseErrorCode returns the exit code for an error from flag parsing. For
+// --help it is 0, and the command prints its usage before. Else it writes
+// the one line of the usage error; the flag set must have its output
+// discarded.
+func parseErrorCode(stderr io.Writer, cmd string, err error) int {
 	if errors.Is(err, flag.ErrHelp) {
 		return exitOK
 	}
-	return exitUsage
+	return usageFail(stderr, cmd, flagErrorText(err.Error()))
+}
+
+// flagErrorText turns the text of an error of the flag package into our
+// own text. It never passes the text on as it is: the flag package puts
+// the user's input into it. The input is quoted and cut to 64 characters.
+// The reason of a bad value is kept (at most 64 characters), because it
+// comes from the flag package or from our own flag types, and it is fixed
+// text, such as "want X.Y.Z, such as 0.2.0".
+func flagErrorText(msg string) string {
+	if name, ok := strings.CutPrefix(msg, "flag provided but not defined: -"); ok {
+		return fmt.Sprintf("unknown option %.64q", name)
+	}
+	if name, ok := strings.CutPrefix(msg, "flag needs an argument: -"); ok {
+		return fmt.Sprintf("option %.64q needs a value", name)
+	}
+	rest, ok := strings.CutPrefix(msg, "invalid value ")
+	if !ok {
+		rest, ok = strings.CutPrefix(msg, "invalid boolean value ")
+	}
+	if ok {
+		// The value is quoted with %q, so its end is exact.
+		if quoted, err := strconv.QuotedPrefix(rest); err == nil {
+			rest = rest[len(quoted):]
+			rest = strings.TrimPrefix(strings.TrimPrefix(rest, " for flag"), " for")
+			name, reason, _ := strings.Cut(strings.TrimPrefix(rest, " -"), ": ")
+			return fmt.Sprintf("bad value for option %.64q: %s", name, reason)
+		}
+	}
+	return "wrong option"
 }
 
 // runHelp prints the general usage, or with one argument the help of that
@@ -131,8 +174,7 @@ func parseErrorCode(err error) int {
 func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch {
 	case len(args) > 1:
-		_, _ = io.WriteString(stderr, "Usage: nodkey help [COMMAND]\n")
-		return exitUsage
+		return usageFail(stderr, "help", "give at most one command")
 	case len(args) == 0 || slices.Contains([]string{"help", "-h", "-help", "--help"}, args[0]):
 		if _, err := io.WriteString(stdout, usageText); err != nil {
 			return exitFailure
@@ -141,9 +183,7 @@ func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	name := args[0]
 	if !slices.Contains(commands, name) {
-		_, _ = fmt.Fprintf(stderr, "nodkey: unknown command %q\n\n", name)
-		printUsage(stderr)
-		return exitUsage
+		return usageFail(stderr, "help", fmt.Sprintf("unknown command %.64q", name))
 	}
 	out := &recordingWriter{w: stdout}
 	code := run([]string{name, "--help"}, stdin, out, out)

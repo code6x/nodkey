@@ -40,6 +40,18 @@ type runner struct {
 	home      string        // the program's private home and working directory
 	timeout   time.Duration // the time limit of one run
 	waitDelay time.Duration // see deps.waitDelay
+	bwPath    string        // the PATH of bw; empty for bws
+}
+
+// hint is the fixed end of the error of a failed run. It is never an
+// invitation to run a command that does harm: not bw unlock, lock or
+// logout (they end the broker's session), not bws secret get (it prints a
+// secret), and never a token as an argument.
+func (r *runner) hint() string {
+	if r.bwPath != "" {
+		return fmt.Sprintf("to check the login, run as the broker's user: env -i -C %s HOME=%s PATH=%s %s status; never bw unlock, lock or logout", r.home, r.home, r.bwPath, r.program)
+	}
+	return "to check the setup, see section 5 of docs/setup.md; the token goes in the environment, never in an argument"
 }
 
 // run runs the program once with args, and returns what it wrote to
@@ -115,7 +127,7 @@ func (r *runner) run(ctx context.Context, step string, args, env []string) ([]by
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit):
-		return nil, fmt.Errorf("store %q: %s: %w (%s)", r.store, step, ErrFailed, exitDetail(exit))
+		return nil, fmt.Errorf("store %q: %s: %w (%s); %s", r.store, step, ErrFailed, exitDetail(exit), r.hint())
 	case cmd.Process != nil:
 		// It ran, but its output could not be read to the end.
 		return nil, fmt.Errorf("store %q: %s: %w (its output could not be read)", r.store, step, ErrFailed)

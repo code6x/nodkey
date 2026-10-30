@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -60,15 +61,16 @@ var realVersionCheck = versionCheck{
 // prints no other line.
 func runVersion(args []string, own string, stdout, stderr io.Writer, check versionCheck) int {
 	fs := flag.NewFlagSet("nodkey version", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { _, _ = io.WriteString(stderr, versionUsage) }
+	fs.SetOutput(io.Discard)
 	offline := fs.Bool("offline", false, "do not ask GitHub")
 	if err := fs.Parse(args); err != nil {
-		return parseErrorCode(err)
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = io.WriteString(stderr, versionUsage)
+		}
+		return parseErrorCode(stderr, "version", err)
 	}
 	if fs.NArg() > 0 {
-		fs.Usage()
-		return exitUsage
+		return usageFail(stderr, "version", fmt.Sprintf("unexpected argument %.64q", fs.Arg(0)))
 	}
 	if _, err := fmt.Fprintf(stdout, "nodkey %s\n", own); err != nil {
 		return exitFailure

@@ -207,7 +207,7 @@ func TestAgentListFailures(t *testing.T) {
 	}{
 		{"403", answer(http.StatusForbidden, `{"error":"Forbidden"}`), "denied"},
 		{"503", answer(http.StatusServiceUnavailable, `{"error":"Service Unavailable"}`),
-			"the broker answered 503 Service Unavailable"},
+			"the broker answered 503 Service Unavailable; the broker could not finish the request; its journal says why (journalctl -u nodkey)"},
 		{"not JSON", answer(http.StatusOK, "keys"), "the answer of the broker is not valid"},
 		{"an unknown field", answer(http.StatusOK, `{"keys":[],"more":1}`), "the answer of the broker is not valid"},
 		{"a certificate", answer(http.StatusOK, keysJSON("deploy", cert.Marshal())),
@@ -319,7 +319,7 @@ func TestAgentSignAnswers(t *testing.T) {
 		{"400", write(http.StatusBadRequest, api.ErrorAnswer{Error: "Bad Request"}),
 			"the broker answered 400 Bad Request"},
 		{"503", write(http.StatusServiceUnavailable, api.ErrorAnswer{Error: "Service Unavailable"}),
-			"the broker answered 503 Service Unavailable"},
+			"the broker answered 503 Service Unavailable; the broker could not finish the request; its journal says why (journalctl -u nodkey)"},
 		{"201 with a valid signature", func(w http.ResponseWriter, req *api.SignRequest) {
 			sig := sigOf(deploy, req.Data)
 			_ = transport.WriteJSON(w, http.StatusCreated, api.SignAnswer{Format: sig.Format, Blob: sig.Blob})

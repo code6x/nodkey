@@ -255,9 +255,9 @@ func TestPreapproveUsage(t *testing.T) {
 		"help with other arguments":  {"--help", "--uses", "1"},
 	} {
 		code, stdout, stderr := preIn(t.Context(), testGranter(nil, nil), args...)
-		if code != exitUsage || stdout != "" || !strings.HasPrefix(stderr, "Usage: nodkey preapprove") ||
-			!strings.HasSuffix(stderr, "(exit 64)\n") {
-			t.Errorf("%s: exit code %d, stdout %q, stderr %.200q; want 64 after the usage", name, code, stdout, stderr)
+		if code != exitUsage || stdout != "" || !strings.HasPrefix(stderr, "nodkey preapprove: ") ||
+			!strings.HasSuffix(stderr, `see "nodkey preapprove --help" (exit 64)`+"\n") || strings.Count(stderr, "\n") != 1 {
+			t.Errorf("%s: exit code %d, stdout %q, stderr %.200q; want 64 and one line", name, code, stdout, stderr)
 		}
 	}
 	for _, help := range []string{"-h", "--help", "-help"} {
