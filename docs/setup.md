@@ -189,9 +189,9 @@ Use a trusted machine for this, never an agent machine
 ([section 1](#where-you-do-the-setup)). Get nodkey from a release, or
 from the source.
 
-**From a release.** Download the tarball for your machine, such as
-`nodkey_0.1.0_linux_amd64.tar.gz` (`nodkey_0.1.0_linux_arm64.tar.gz` on
-64-bit ARM), `SHA256SUMS`, and the bundle `nodkey_<version>.sigstore.json`
+**From a release.** Download the tarball for your machine,
+`nodkey_<version>_linux_amd64.tar.gz` (`nodkey_<version>_linux_arm64.tar.gz`
+on 64-bit ARM), `SHA256SUMS`, and the bundle `nodkey_<version>.sigstore.json`
 if the release has one, from the
 [release page](https://github.com/code6x/nodkey/releases). Check it, as
 [docs/releasing.md](releasing.md#verify-a-download) says, with all the
@@ -201,7 +201,8 @@ without it, such as for 0.1.0. Then take the file `nodkey` out of the
 tarball:
 
 ```sh
-tar -xzf nodkey_0.1.0_linux_amd64.tar.gz nodkey
+VERSION=0.2.0   # the version you downloaded
+tar -xzf "nodkey_${VERSION}_linux_amd64.tar.gz" nodkey
 ```
 
 **From the source.** Build nodkey with Go 1.26 or newer. Never build it
@@ -773,6 +774,7 @@ ssh_timeout = "90s"                 # SSH signatures
 [updates]
 check = true                        # optional; false: never ask GitHub for a newer release
 
+# [preapprove], [standing] and preapprove = true are new in 0.3.0; leave them out for 0.2.0
 [preapprove]                        # optional; the limits of scheduled grants
 max_ahead = "168h"                  # how far ahead a grant may start; default 7 days
 max_open = "8h"                     # the longest time from start to end
@@ -806,7 +808,7 @@ id = "00000000-0000-0000-0000-000000000000"
 clients = ["laptop"]
 ask = "window"
 window = "15m"
-preapprove = true                   # optional; default false: allows `nodkey preapprove`
+preapprove = true                   # new in 0.3.0; optional; default false: allows `nodkey preapprove`
 
 [key.deploy]
 file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
@@ -831,6 +833,10 @@ seconds to 10 minutes, 120 seconds by default. `ssh_timeout` is the same
 for an SSH login: 15 to 110 seconds, 90 seconds by default. sshd drops a
 login that takes longer than its `LoginGraceTime` (120 seconds by
 default).
+
+**New in 0.3.0.** `[preapprove]`, `[standing]`, `preapprove`, `standing`
+and the command `nodkey preapprove` are new in 0.3.0. nodkey 0.2.0
+refuses a config with them (`unknown key`), so leave them out for 0.2.0.
 
 **`[preapprove]` and `preapprove`.** A secret or key with
 `preapprove = true` lets a client ask for a scheduled grant with
@@ -939,13 +945,14 @@ the same version as your nodkey, to `/etc/systemd/system/nodkey.service`.
 Never copy it through an agent machine: whoever can change the unit can
 run a program as root on the broker host. After a build from the source,
 the unit is in your copy of the repository. The release tarball does not
-hold it. Take it from the tag of your version in the repository, such as
-[v0.1.0](https://github.com/code6x/nodkey/blob/refs/tags/v0.1.0/contrib/systemd/nodkey.service),
-on the broker host or on the trusted machine. For 0.1.0, on the broker
-host:
+hold it. Take it from the tag of your version in the repository
+(`contrib/systemd/nodkey.service` at the tag `vX.Y.Z`), on the broker
+host or on the trusted machine. For a release, on the broker host, this
+takes the unit of the installed version:
 
 ```sh
-curl -fL -o /etc/systemd/system/nodkey.service https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v0.1.0/contrib/systemd/nodkey.service
+VERSION=$(/usr/local/bin/nodkey version | cut -d' ' -f2)
+curl -fL -o /etc/systemd/system/nodkey.service "https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v$VERSION/contrib/systemd/nodkey.service"
 ```
 
 Then change it to fit your setup:
@@ -1159,7 +1166,7 @@ A good start looks like this. Here, the `time=` at the start of each
 line, and some lines, are left out:
 
 ```text
-level=INFO msg="nodkey broker: starting" version=0.1.0 config=/etc/nodkey/broker.toml
+level=INFO msg="nodkey broker: starting" version=0.2.0 config=/etc/nodkey/broker.toml
 level=INFO msg="nodkey broker: the config and the files it names passed their checks"
 level=INFO msg="nodkey broker: core dumps are off: the soft and the hard limit of core dumps are 1, and the process is not dumpable"
 level=INFO msg="nodkey broker: the TLS key is loaded" pin=sha256:Q2b9...
@@ -1343,6 +1350,8 @@ the key ends its grants at once.
 
 ### A job that runs later: nodkey preapprove
 
+New in 0.3.0: nodkey 0.2.0 does not have it.
+
 A timer or a job runner cannot tap a button at 03:00. Ask for the grant
 when the job is planned, while you are awake. Then the job gets what it
 needs without a tap, inside the time you approved, and the grant ends by
@@ -1403,6 +1412,8 @@ Things to know:
   of the grant says so.
 
 ### A job that runs every night: standing grants
+
+New in 0.3.0: nodkey 0.2.0 does not have it.
 
 A scheduled grant covers one time span. A job that runs every night for
 weeks would need a new grant, and a tap, each day. A standing grant lets

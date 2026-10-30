@@ -541,6 +541,8 @@ processes. Expected: it prints `0` for both files.
 
 ### Check 14: Scheduled grants (optional)
 
+New in 0.3.0: skip it with nodkey 0.2.0.
+
 This checks the Revoke button, the notice of a grant that was not used,
 and the notice of a stop. In `$T/broker.toml`, add `preapprove = true`
 to the section of `demo-always`, add an empty `[preapprove]` section,
@@ -578,6 +580,8 @@ Expected:
   the uses left. The broker still stops within a few seconds.
 
 ### Check 15: Standing grants (optional)
+
+New in 0.3.0: skip it with nodkey 0.2.0.
 
 This checks a standing grant: a use with the token file, the alarm of an
 old token, `/grants` and Revoke. In `$T/broker.toml`, add `standing =
