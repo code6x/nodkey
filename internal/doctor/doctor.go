@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Status is the result of one check.
@@ -99,10 +101,12 @@ func (r Report) OK() bool {
 }
 
 // WriteText writes one line per check, and for a failed check the lines
-// of why, fix and docs.
+// of why, fix and docs. A control character in a text, such as from a
+// path, becomes "?", so no text can move the cursor or change colors.
 func (r Report) WriteText(w io.Writer) error {
 	var b strings.Builder
 	for _, c := range r.Checks {
+		c.Detail, c.What = noControl(c.Detail), noControl(c.What)
 		switch c.Status {
 		case Fail:
 			fmt.Fprintf(&b, "FAIL %s: %s\n", c.Name, c.What)
@@ -117,6 +121,17 @@ func (r Report) WriteText(w io.Writer) error {
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// noControl returns s with each control or format character, such as a
+// change of the text direction, as "?".
+func noControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // jsonReport is the JSON form: {"ok": BOOL, "checks": [RESULT...]}.

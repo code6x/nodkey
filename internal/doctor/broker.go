@@ -120,11 +120,13 @@ func checkUnit(env BrokerEnv, cfg *config.Broker) (string, uint32, *Problem) {
 	creds := map[string]string{}
 	sc := bufio.NewScanner(strings.NewReader(text))
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if u, ok := strings.CutPrefix(line, "User="); ok {
-			user = u
+		// systemd allows spaces around "=".
+		key, value, _ := strings.Cut(sc.Text(), "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if key == "User" {
+			user = value
 		}
-		if m := credLine.FindStringSubmatch(line); m != nil {
+		if m := credLine.FindStringSubmatch(key + "=" + value); m != nil {
 			creds[m[1]] = m[2]
 		}
 	}
@@ -137,6 +139,11 @@ func checkUnit(env BrokerEnv, cfg *config.Broker) (string, uint32, *Problem) {
 	if err != nil {
 		p.What = "the user " + strconv.Quote(user) + " of the unit is not known"
 		p.Fix = "make the user: useradd --system --no-create-home nodkey"
+		return "", 0, p
+	}
+	if uid == 0 {
+		p.What = "the user " + strconv.Quote(user) + " of the unit has the user ID 0 of root"
+		p.Fix = "give the broker a user of its own: useradd --system --no-create-home nodkey"
 		return "", 0, p
 	}
 	for _, name := range credNames(cfg, env.CredDir) {
@@ -220,8 +227,8 @@ func checkSystemd(env BrokerEnv) (string, *Problem) {
 }
 
 // checkSwap checks /proc/swaps. zram keeps its swap in memory, and a
-// device-mapper device can be encrypted swap; a plain partition or file
-// can keep a page of the memory of the broker on the disk.
+// dm-crypt device is encrypted swap; a plain partition, file or LVM
+// volume can keep a page of the memory of the broker on the disk.
 func checkSwap(env BrokerEnv) (string, *Problem) {
 	data, err := env.ReadFile("/proc/swaps")
 	p := &Problem{
@@ -234,22 +241,36 @@ func checkSwap(env BrokerEnv) (string, *Problem) {
 		return "", p
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	var dm []string
+	var crypt []string
 	for _, line := range lines[1:] {
-		dev, _, _ := strings.Cut(line, " ")
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		dev := f[0]
 		switch {
 		case strings.HasPrefix(dev, "/dev/zram"):
-		case strings.HasPrefix(dev, "/dev/dm-") || strings.HasPrefix(dev, "/dev/mapper/"):
-			dm = append(dm, dev)
+		case strings.HasPrefix(dev, "/dev/dm-") && isCrypt(env, strings.TrimPrefix(dev, "/dev/")):
+			crypt = append(crypt, dev)
 		default:
-			p.What = "swap on " + strconv.Quote(dev) + " is not encrypted"
+			p.What = "swap on " + strconv.Quote(dev) + " is not encrypted, or nodkey cannot tell"
 			return "", p
 		}
 	}
-	if len(dm) > 0 {
-		return "swap on " + strings.Join(dm, ", ") + ": check that it is encrypted (docs/setup.md section 9)", nil
+	if len(crypt) > 0 {
+		return "encrypted swap on " + strconv.Quote(strings.Join(crypt, ", ")), nil
 	}
 	return "no swap on a disk", nil
+}
+
+// isCrypt reports whether the device-mapper device name, such as "dm-1",
+// is a dm-crypt device.
+func isCrypt(env BrokerEnv, name string) bool {
+	if strings.ContainsAny(name, "/.") {
+		return false
+	}
+	uuid, err := env.ReadFile("/sys/block/" + name + "/dm/uuid")
+	return err == nil && strings.HasPrefix(string(uuid), "CRYPT-")
 }
 
 // checkCorePattern checks kernel.core_pattern: the socket form ("@")

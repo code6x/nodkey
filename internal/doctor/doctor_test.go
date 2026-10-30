@@ -70,6 +70,17 @@ func TestWriteText(t *testing.T) {
 	}
 }
 
+func TestWriteTextNoControl(t *testing.T) {
+	r := Run([]Check{{Name: "a", Run: func() (string, *Problem) { return "x\x1b[31my\nz\u202e", nil }}})
+	var b bytes.Buffer
+	if err := r.WriteText(&b); err != nil {
+		t.Fatal(err)
+	}
+	if b.String() != "ok   a: x?[31my?z?\n" {
+		t.Errorf("got %q", b.String())
+	}
+}
+
 func TestWriteJSONForm(t *testing.T) {
 	var b bytes.Buffer
 	if err := (Report{}).WriteJSON(&b); err != nil {

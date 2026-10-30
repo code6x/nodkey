@@ -74,11 +74,26 @@ func TestBrokerAllPass(t *testing.T) {
 	}
 }
 
+func TestBrokerUnitSpaces(t *testing.T) {
+	env := goodBroker()
+	env.UnitText = func() (string, error) {
+		return strings.ReplaceAll(goodUnit, "=", " = "), nil
+	}
+	if res := result(t, Run(BrokerChecks(env)), "unit"); res.Status != OK {
+		t.Errorf("unit %+v", res)
+	}
+}
+
 func TestBrokerEncryptedSwap(t *testing.T) {
 	env := goodBroker()
-	env.ReadFile = func(string) ([]byte, error) { return []byte("Filename\n/dev/dm-1 partition\n"), nil }
+	env.ReadFile = func(p string) ([]byte, error) {
+		if p == "/sys/block/dm-1/dm/uuid" {
+			return []byte("CRYPT-PLAIN-swap\n"), nil
+		}
+		return []byte("Filename\n/dev/dm-1 partition\n"), nil
+	}
 	res := result(t, Run(BrokerChecks(env)), "swap")
-	if res.Status != OK || !strings.Contains(res.Detail, "check that it is encrypted") {
+	if res.Status != OK || !strings.Contains(res.Detail, "encrypted swap on") {
 		t.Errorf("swap %+v", res)
 	}
 }
@@ -115,6 +130,9 @@ func TestBrokerFails(t *testing.T) {
 		}, "cannot read the unit", []string{"files"}},
 		{"no user", "unit", unit(strings.Replace(goodUnit, "User=nodkey\n", "", 1)), "no User=", []string{"files"}},
 		{"root", "unit", unit(strings.Replace(goodUnit, "User=nodkey", "User=root", 1)), "runs as root", []string{"files"}},
+		{"user with ID 0", "unit", func(e *BrokerEnv) {
+			e.LookupUser = func(string) (uint32, error) { return 0, nil }
+		}, "user ID 0", []string{"files"}},
 		{"unknown user", "unit", func(e *BrokerEnv) {
 			e.LookupUser = func(string) (uint32, error) { return 0, errors.New("unknown") }
 		}, "is not known", []string{"files"}},
@@ -151,6 +169,7 @@ func TestBrokerFails(t *testing.T) {
 				return old(p)
 			}
 		}, "cgroup v2", nil},
+		{"LVM swap", "swap", read("/proc/swaps", "Filename\n/dev/dm-0 partition 1 0 -2\n"), "nodkey cannot tell", nil},
 		{"plain swap", "swap", read("/proc/swaps", "Filename\n/dev/sda2 partition 1 0 -2\n"), "not encrypted", nil},
 		{"no /proc/swaps", "swap", func(e *BrokerEnv) {
 			old := e.ReadFile

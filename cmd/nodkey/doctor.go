@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -122,7 +123,9 @@ func realDoctorEnv(offline bool) doctor.ClientEnv {
 		SSHVersion: func() (string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), sshVersionTimeout)
 			defer cancel()
-			out, err := exec.CommandContext(ctx, "ssh", "-V").CombinedOutput()
+			cmd := exec.CommandContext(ctx, "ssh", "-V")
+			cmd.WaitDelay = time.Second
+			out, err := cmd.CombinedOutput()
 			return string(out), err
 		},
 		Getenv: os.Getenv,
@@ -142,11 +145,30 @@ func realDoctorEnv(offline bool) doctor.ClientEnv {
 // systemdTimeout bounds each call of systemctl and journalctl.
 const systemdTimeout = 10 * time.Second
 
-// output runs a program with a timeout, and returns its stdout.
+// systemPath is the PATH of the programs that nodkey doctor broker runs
+// as root: never the PATH of root's shell, where a directory may be
+// writable by others.
+const systemPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+// output runs a program of systemd, found in systemPath, with a timeout,
+// and returns its stdout.
 func output(name string, args ...string) (string, error) {
+	path := ""
+	for _, dir := range filepath.SplitList(systemPath) {
+		if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && fi.Mode().IsRegular() {
+			path = filepath.Join(dir, name)
+			break
+		}
+	}
+	if path == "" {
+		return "", errors.New(name + " is not in " + systemPath)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), systemdTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = []string{"PATH=" + systemPath, "LC_ALL=C", "SYSTEMD_PAGER=", "SYSTEMD_COLORS=0"}
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
 	return string(out), err
 }
 
@@ -155,12 +177,10 @@ func output(name string, args ...string) (string, error) {
 // it stands for the directory where systemd puts the credentials, and
 // no check reads a file in it.
 func realBrokerDoctorEnv(path string) doctor.BrokerEnv {
-	credDir := os.Getenv("CREDENTIALS_DIRECTORY")
-	if credDir == "" {
-		credDir = "/run/credentials/" + doctor.Unit
-		// Only this process sees it: config.ExpandPath reads it.
-		_ = os.Setenv("CREDENTIALS_DIRECTORY", credDir)
-	}
+	// Only this process sees it: config.ExpandPath reads it. A value
+	// that root's shell has is not trusted.
+	credDir := "/run/credentials/" + doctor.Unit
+	_ = os.Setenv("CREDENTIALS_DIRECTORY", credDir)
 	return doctor.BrokerEnv{
 		ConfigPath: path,
 		CredDir:    credDir,
