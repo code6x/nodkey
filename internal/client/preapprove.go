@@ -33,8 +33,9 @@ Ask the broker now for a grant that you use later, and wait until a person
 approves it on the phone. The grant hands out nothing. From the time given
 by --from (or now), until the time given by --until, the same machine can
 get the named secrets, or SSH logins to the named hosts, without another
-tap, N times in all. Each use sends a silent notice to the phone. Then the grant
-is gone. A job that runs at night can ask for its grant when it is planned.
+tap, N times in all. Each use sends a silent notice to the phone. Then the
+grant is gone. A job that runs at night can ask for its grant when it is
+planned.
 
   --secret NAME   a secret of the broker; give each with its own --secret.
                   One use is one run with some or all of them.
