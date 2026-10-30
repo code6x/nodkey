@@ -297,7 +297,10 @@ client (T33) counts toward neither limit. It has its own: at most 3 in
 any 60 seconds, at most one try a minute for each client, and one notice
 for each client in each start of the broker, rarely more than one. A
 notice about a newer release (T34) shares that limit of 3, with at most
-one try an hour after a failure.
+one try an hour after a failure. So do the notices about a security
+release (T34): the one for the broker, which comes once a day and makes a
+sound, and the silent one for a client, which comes at most once for each
+client in each round of a daily check.
 Risk that remains: low. Telegram counts all the messages of the notice
 chat. With up to 3 notices about versions in a minute, such as right
 after a start, about 18 notices of "never ask" uses already pass the
@@ -889,7 +892,10 @@ it. A value that does not match the strict rule of a version counts as
 none, and is never logged or shown. A false claim can cause one wrong
 line in the journal and one wrong notice for that client in each start
 of the broker, rarely more than one notice, however many values the
-client sends.
+client sends. The same holds for the notice about a security release
+(T34): a client that claims an old version gets at most one silent notice
+in each round of the daily check, and it can only cause the notice of
+its own name.
 A notice that did not go out is tried again, at most once a minute for
 each client, with a journal line for each failed try. The notice is
 silent, shows only the client's name from the config and release
@@ -933,20 +939,39 @@ one in `SSL_CERT_FILE` or `SSL_CERT_DIR` (DESIGN.md section 7).
   false answer can mark a release as a security release, or hide the
   mark. A security release older than the last 20 releases is not
   found. Each error gives one line with a fixed text,
-  and no notice.
-- It cannot install anything. The notice only says what to run.
+  and no notice. The flag is a claim from the answer, and the notice
+  says so: "the flag is not checked". No notice, line or header shows
+  text or a link from the answer, which can be fake and is cut by
+  Telegram at 4,096 characters. The broker also puts the newest security
+  release version (digits and dots) in a header to a client that claims
+  an older release (DESIGN.md section 10). The client takes only a value
+  that is a release version and newer than its own, and prints one fixed
+  line. So a false answer can add a false flag, or hide a real one, but
+  it cannot install anything.
+- It cannot install anything. The notice only says what to run. Only the
+  checked notes come from an attested release: `nodkey update --notes`
+  makes the same checks as `nodkey update` and installs nothing, and
+  `nodkey changes` reads the CHANGELOG.md that is built into the binary.
   `nodkey update` checks the attestation of the release and the version
   of the new binary before it installs (T20). A release that does not
   exist, or a file that the release workflow did not build, fails there.
 - The check never touches a request, a secret, the audit log or an
-  approval. Its notices are silent, and share the limit of 3 in any 60
-  seconds with the notices about versions (T9, T33). In each start, each
-  newer release gets one notice, rarely more than one: a try that times
-  out after Telegram took the message sends it again, at the next check
-  1 hour later. The first check of a start comes 10 minutes after it.
-  So a broker that systemd starts again and again sends no notice,
-  unless each start runs for 10 minutes or more; then it sends at most
-  one in each start, about 6 an hour. So it cannot fill the notice chat.
+  approval. The notice of a normal release is silent. The notice of a
+  security release makes a sound, so a false answer can ring the phone,
+  but at most once in each daily check: it comes at each daily check, until the broker
+  runs that release. The notice for a client is silent. All of them share
+  the limit of 3 in any 60 seconds with the notices about versions (T9,
+  T33). A normal release gets one notice in each start, rarely more than
+  one: a try that times out after Telegram took the message sends it
+  again, at the next check 1 hour later. The first check of a start comes
+  10 minutes after it. So a broker that systemd starts again and again
+  sends no notice, unless each start runs for 10 minutes or more; then it
+  sends at most one in each start, about 6 an hour. A security release
+  sends one notice with a sound in each check, and a check comes at least
+  23 hours after the last one, but a new start counts as a new check, so
+  a broker that restarts after 10 minutes each time can ring about 6
+  times an hour. The limit of 3 a minute stays, so it cannot fill the
+  notice chat.
 
 Two cases are worse than a wrong notice:
 - GitHub allows 60 calls an hour without a login from one address. An
