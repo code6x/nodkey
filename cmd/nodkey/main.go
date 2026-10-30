@@ -12,6 +12,7 @@ import (
 
 	"github.com/code6x/nodkey/internal/client"
 	"github.com/code6x/nodkey/internal/transport"
+	runningversion "github.com/code6x/nodkey/internal/version"
 )
 
 // version is the nodkey version. Release builds set it with
@@ -59,6 +60,7 @@ Options:
 `
 
 func main() {
+	runningversion.Running = version
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 

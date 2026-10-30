@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/code6x/nodkey/internal/version"
 )
 
 // namePattern is the form of every name a person chooses: clients, stores,
@@ -85,6 +86,12 @@ func keyText(k toml.Key, nameSections []string) (string, bool) {
 	return strconv.Quote(k.String()), true
 }
 
+// newerHint is the end of the unknown key error: a key may be from a newer
+// release than this one.
+func newerHint() string {
+	return "; this is nodkey " + version.Running + ", the key may be from a newer release"
+}
+
 // unknownKeysError returns the error for the unknown keys, sorted. It
 // lists the names that keyText shows, and only counts the others.
 func unknownKeysError(keys []toml.Key, nameSections []string) error {
@@ -106,7 +113,7 @@ func unknownKeysError(keys []toml.Key, nameSections []string) error {
 		msg = "unknown keys " + strings.Join(shown, ", ")
 	}
 	if hidden == 0 {
-		return errors.New(msg)
+		return errors.New(msg + newerHint())
 	}
 	more := ""
 	if msg != "" {
@@ -119,7 +126,7 @@ func unknownKeysError(keys []toml.Key, nameSections []string) error {
 	if msg != "" {
 		count = msg + ", and " + count
 	}
-	return errors.New(count + "; an error shows a key name only if it looks like a config key, such as tls_key")
+	return errors.New(count + "; an error shows a key name only if it looks like a config key, such as tls_key" + newerHint())
 }
 
 // errNotConfig is the error for a file that cannot be read as a config

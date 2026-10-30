@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 )
 
 // ClientConfig is the client config, such as ~/.config/nodkey/client.toml.
@@ -27,6 +28,9 @@ type clientFile struct {
 func LoadClient(path string) (*ClientConfig, error) {
 	data, err := ReadConfigFile(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("config: %w; make the client config as in docs/setup.md, section 11 \"A client on the agent machine\"", err)
+		}
 		return nil, fmt.Errorf("config: %w", err) // the error names the path
 	}
 	var f clientFile

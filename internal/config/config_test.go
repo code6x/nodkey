@@ -209,6 +209,8 @@ func TestDecodeStrict(t *testing.T) {
 		{name: "valid with an empty parent header", data: "[entry]\n[entry.web-1]\nask = \"never\"\n"},
 		{name: "braces and quotes in strings and comments", data: "name = \"{ \\\" #\" # { '\n[entry.web-1]\nask = '''{\n'' }'''''\n"},
 		{name: "unknown key", data: "nick = \"a\"\n", want: `unknown key "nick"`},
+		{name: "unknown key says the version", data: "nick = \"a\"\n", want: "; this is nodkey dev, the key may be from a newer release"},
+		{name: "hidden key says the version", data: "NAME = \"a\"\n", want: "; this is nodkey dev, the key may be from a newer release"},
 		{name: "unknown key in a named section", data: "[entry.web-1]\naks = \"never\"\n", want: `unknown key "entry.web-1.aks"`},
 		{name: "unknown subtable", data: "[entry.web-1.more]\nask = \"x\"\n", want: `"entry.web-1.more"`},
 		{name: "two unknown keys", data: "a = 1\nb = 2\n", want: `unknown keys "a", "b"`},

@@ -141,7 +141,7 @@ func TestLoadClientErrors(t *testing.T) {
 func TestLoadClientMissingFile(t *testing.T) {
 	path := filepath.Join(privateTempDir(t), "client.toml")
 	_, err := LoadClient(path)
-	checkError(t, err, "config: lstat "+path+": no such file or directory", "")
+	checkError(t, err, "config: lstat "+path+": no such file or directory; make the client config as in docs/setup.md, section 11 \"A client on the agent machine\"", "")
 }
 
 // TestLoadClientChecksTheFile: the client config is read as the broker
