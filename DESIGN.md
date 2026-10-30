@@ -2994,9 +2994,9 @@ file cannot be saved, the command does not run (exit 77).
 `nodkey preapprove` asks for a scheduled grant (section 8) and waits for
 the tap, as `nodkey ssh-grant` does. The times are read as section 8
 says; the client only checks their form. Without `--from`, the client
-sends the current time, as for a standing grant. After an approval it prints the
-ID of the grant alone on stdout, so a script can keep it for `--cancel`,
-and its last line on stderr is `nodkey: grant ID: 2 uses from
+sends the current time, as for a standing grant. After an approval it
+prints the ID of the grant alone on stdout, so a script can keep it for
+`--cancel`, and its last line on stderr is `nodkey: grant ID: 2 uses from
 2026-10-28T03:00:00+02:00 until 2026-10-28T04:00:00+02:00 (exit 0)`, with
 the times in the broker's local time. `--cancel ID` ends a grant of this
 machine without a tap; its last line is `nodkey: grant ID cancelled (exit

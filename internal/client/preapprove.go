@@ -31,9 +31,9 @@ const preapproveUsage = `Usage: nodkey preapprove (--secret NAME... | --key NAME
 
 Ask the broker now for a grant that you use later, and wait until a person
 approves it on the phone. The grant hands out nothing. From the time given
-by --from, until the time given by --until, the same machine can get the
-named secrets, or SSH logins to the named hosts, without another tap, N
-times in all. Each use sends a silent notice to the phone. Then the grant
+by --from (or now), until the time given by --until, the same machine can
+get the named secrets, or SSH logins to the named hosts, without another
+tap, N times in all. Each use sends a silent notice to the phone. Then the grant
 is gone. A job that runs at night can ask for its grant when it is planned.
 
   --secret NAME   a secret of the broker; give each with its own --secret.
@@ -141,7 +141,7 @@ func (g granter) runPreapprove(ctx context.Context, args []string, stdout, w io.
 			return fail(stderr, exitUsage, err.Error())
 		}
 	}
-	if o.from == "" {
+	if o.cancel == "" && o.from == "" {
 		o.from = g.now().Format(time.RFC3339)
 	}
 	path, body, err := newPreapprove(o, reason)
