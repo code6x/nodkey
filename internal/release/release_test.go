@@ -523,6 +523,10 @@ func TestLookupTimeout(t *testing.T) {
 		_, _ = io.WriteString(w, `[{"tag_name":"v0.3.0",`)
 		w.(http.Flusher).Flush()
 		hang(w, r)
+		// Never end the body: a handler that returns would end it, and
+		// the client could read a short answer before it sees its own
+		// time out.
+		panic(http.ErrAbortHandler)
 	}
 	for _, tt := range []struct {
 		name    string
