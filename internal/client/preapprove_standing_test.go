@@ -310,9 +310,9 @@ func TestPreapproveStandingFlags(t *testing.T) {
 			t.Errorf("%s: uses %d windows %v", tt.name, o.uses, o.windows)
 		}
 	}
-	// A scheduled request is as before: --from and --uses are a must.
-	if _, err := parsePreapproveArgs([]string{"--secret", "s", "--until", "2026-12-28T00:00"}); err == nil {
-		t.Error("a scheduled grant without --from and --uses passes")
+	// A scheduled request is as before: --uses is a must.
+	if _, err := parsePreapproveArgs([]string{"--secret", "s", "--from", "2026-10-16T00:00", "--until", "2026-12-28T00:00"}); err == nil {
+		t.Error("a scheduled grant without --uses passes")
 	}
 }
 

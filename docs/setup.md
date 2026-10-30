@@ -1380,15 +1380,17 @@ nodkey preapprove --secret backup-token \
   --reason "job nightly-backup"
 ```
 
-The message shows the secret, the uses and the time, in the broker's
-local time. After **Approve**, the command prints the ID of the grant and
-ends. The message keeps one **Revoke** button. At 03:00 the job runs
-`nodkey run` as usual, and gets the secret without a tap. Each use sends
-a silent notice to the notice chat. When the uses are gone, or at 04:00,
-the grant is gone, and the message shows how and when it ended. If the
-job did not run, or ran late, and a use is left at 04:00, a silent notice
-says `not used`. To end the grant earlier, tap **Revoke** on the phone.
-The client can also cancel it, for example when the job is removed:
+`--from` is optional (default: now): without it, the grant starts when
+you run the command. The message shows the secret, the uses and the
+time, in the broker's local time. After **Approve**, the command prints
+the ID of the grant and ends. The message keeps one **Revoke** button.
+At 03:00 the job runs `nodkey run` as usual, and gets the secret without
+a tap. Each use sends a silent notice to the notice chat. When the uses
+are gone, or at 04:00, the grant is gone, and the message shows how and
+when it ended. If the job did not run, or ran late, and a use is left at
+04:00, a silent notice says `not used`. To end the grant earlier, tap
+**Revoke** on the phone. The client can also cancel it, for example when
+the job is removed:
 
 ```sh
 nodkey preapprove --cancel ID
