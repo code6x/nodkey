@@ -15,8 +15,9 @@ import (
 
 // lookup is what one lookup of a checkRun returns.
 type lookup struct {
-	newest version.Release
-	err    error
+	newest   version.Release
+	err      error
+	security []Security
 }
 
 // checkRun is a Check that runs in its own goroutine, with fakes. Its
@@ -40,6 +41,8 @@ type checkRun struct {
 	noticeErr error         // the result of the next tries
 	gate      chan struct{} // if set, each try waits until it is closed, or its context ends
 	deadlines []time.Duration
+
+	nextSecurity []Security // the security releases of each next lookup; only the test goroutine uses it
 }
 
 // syncBuffer is a log that many goroutines can write.
@@ -67,7 +70,7 @@ func startCheck(t *testing.T, own version.Release) *checkRun {
 	t.Helper()
 	r := &checkRun{t: t, lookups: make(chan lookup), waits: make(chan time.Duration), ticks: make(chan struct{}),
 		done: make(chan struct{}), logs: &syncBuffer{}}
-	c := NewCheck(own, FirstWait, r.latest, r.notice, slog.New(slog.NewTextHandler(r.logs, nil)))
+	c := NewCheck(own, FirstWait, r.latest, r.notice, r.loud, slog.New(slog.NewTextHandler(r.logs, nil)))
 	c.wait = func(ctx context.Context, d time.Duration) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -135,11 +138,15 @@ func (r *checkRun) latest(ctx context.Context) (Info, error) {
 	r.mu.Unlock()
 	select {
 	case l := <-r.lookups:
-		return Info{Newest: l.newest}, l.err
+		return Info{Newest: l.newest, Security: l.security}, l.err
 	case <-ctx.Done():
 		return Info{}, ctx.Err()
 	}
 }
+
+// loud is the notice with a sound. Its texts start with "LOUD " in tries
+// and sent.
+func (r *checkRun) loud(ctx context.Context, msg string) error { return r.notice(ctx, "LOUD "+msg) }
 
 func (r *checkRun) notice(ctx context.Context, msg string) error {
 	r.mu.Lock()
@@ -179,7 +186,7 @@ func (r *checkRun) round(newest version.Release, err error) time.Duration {
 func (r *checkRun) lookup(newest version.Release, err error) {
 	r.t.Helper()
 	select {
-	case r.lookups <- lookup{newest, err}:
+	case r.lookups <- lookup{newest: newest, err: err, security: r.nextSecurity}:
 	case <-time.After(10 * time.Second):
 		r.t.Fatal("the check made no lookup")
 	}
@@ -249,7 +256,8 @@ func TestCheckNotices(t *testing.T) {
 	}
 	if want := "A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as " +
 		"root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all " +
-		"grants. Update the agent machines too: sudo nodkey update. Release notes: " +
+		"grants. Update the agent machines too: run nodkey update as root. What is new: nodkey update --notes. " +
+		"Release notes: " +
 		"https://github.com/code6x/nodkey/releases/tag/v0.3.0"; tries[0] != want {
 		t.Errorf("the notice:\n%s\nwant:\n%s", tries[0], want)
 	}
@@ -415,5 +423,35 @@ func TestCheckRealWait(t *testing.T) {
 		if err := sleep(ctx, 0); !errors.Is(err, context.Canceled) {
 			t.Fatalf("sleep for 0 with a context that ended: %v", err)
 		}
+	}
+}
+
+// TestCheckSecurity: a security release newer than the broker, also one
+// older than the newest release, gets the loud notice at each daily check,
+// until the broker runs it. A failed loud notice is tried again after 1
+// hour. A security release that is not newer gets no loud notice.
+func TestCheckSecurity(t *testing.T) {
+	id := "GHSA-" + strings.Repeat("c", 4) + "-" + strings.Repeat("f", 4) + "-" + strings.Repeat("g", 4)
+	r := startCheck(t, rel(0, 3, 0))
+	r.nextSecurity = []Security{{Version: rel(0, 2, 9)}}
+	r.mustRound(rel(0, 3, 0), nil, 24*time.Hour)
+	r.nextSecurity = []Security{{Version: rel(0, 3, 1), IDs: []string{id}}}
+	r.mustRound(rel(0, 3, 2), nil, 24*time.Hour) // a skipped security release
+	r.mustRound(rel(0, 3, 2), nil, 24*time.Hour) // again the next day
+	r.setNotice(errors.New("telegram: no answer"))
+	r.mustRound(rel(0, 3, 2), nil, time.Hour)
+	r.stop()
+	tries, sent := r.notices()
+	want := "LOUD " + securityText([]version.Release{rel(0, 3, 1)}, []string{id}, rel(0, 3, 0))
+	if len(tries) != 3 || len(sent) != 2 || tries[0] != want || tries[1] != want || tries[2] != want {
+		t.Fatalf("tries %q, %d sent; want 3 tries of %q, 2 sent", tries, len(sent), want)
+	}
+	if want := "LOUD SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. The broker runs nodkey 0.3.0. " +
+		"Advisories: " + id + ". This flag comes from GitHub's answer and is not checked: read the checked " +
+		"notes with nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. " +
+		"Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: " +
+		"run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or " +
+		"newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1"; tries[0] != want {
+		t.Errorf("the notice:\n%s\nwant:\n%s", tries[0], want)
 	}
 }

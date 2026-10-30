@@ -457,6 +457,20 @@ func (a *Approver) Alert(ctx context.Context, msg string) error {
 // the caller logs a notice that did not go out, and decides when to try
 // again.
 func (a *Approver) Inform(ctx context.Context, msg string) error {
+	return a.inform(ctx, "ℹ️ nodkey: "+msg, true)
+}
+
+// InformLoud is Inform with a sound, for the notice about a security
+// release of nodkey (DESIGN.md section 7). It shares the count of Inform.
+// msg must start with the broker's own fixed words, such as "SECURITY
+// UPDATE".
+func (a *Approver) InformLoud(ctx context.Context, msg string) error {
+	return a.inform(ctx, "⚠️ "+msg, false)
+}
+
+// inform sends text, without a sound when silent, for Inform and
+// InformLoud.
+func (a *Approver) inform(ctx context.Context, msg string, silent bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -464,13 +478,13 @@ func (a *Approver) Inform(ctx context.Context, msg string) error {
 		return ErrInformLimit
 	}
 	var t text
-	t.write("ℹ️ nodkey: " + cutUnits(strings.ToValidUTF8(msg, "�"), maxAlertUnits))
+	t.write(cutUnits(strings.ToValidUTF8(msg, "�"), maxAlertUnits))
 	if e := a.api.callOnce(ctx, "sendMessage", sendMessageParams{
 		ChatID:              a.noticeChat,
 		Text:                t.html.String(),
 		ParseMode:           "HTML",
 		LinkPreviewOptions:  noPreview,
-		DisableNotification: true,
+		DisableNotification: silent,
 	}, nil, a.api.timeout); e != nil {
 		return e
 	}

@@ -272,7 +272,7 @@ func TestBrokerReleaseNotice(t *testing.T) {
 	}
 	want := "ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, " +
 		"run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends " +
-		"all grants. Update the agent machines too: sudo nodkey update. Release notes: " +
+		"all grants. Update the agent machines too: run nodkey update as root. What is new: nodkey update --notes. Release notes: " +
 		"https://github.com/code6x/nodkey/releases/tag/v0.3.0"
 	if notice.ChatID != approverID || notice.Text != want || notice.ParseMode != "HTML" || !notice.DisableNotification ||
 		!notice.LinkPreviewOptions.IsDisabled {
