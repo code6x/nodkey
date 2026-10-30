@@ -46,7 +46,11 @@ Commands:
   version [--offline]
             print the version; on a terminal, also say if a newer
             release is out
-  help      print this help
+  help [COMMAND]
+            print this help, or the help of COMMAND
+
+Options:
+  --version same as the command version
 `
 
 func main() {
@@ -59,8 +63,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nodkey", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { printUsage(stderr) }
+	showVersion := fs.Bool("version", false, "print the version")
 	if err := fs.Parse(args); err != nil {
 		return parseErrorCode(err)
+	}
+	if *showVersion {
+		return runVersion(fs.Args(), version, stdout, stderr, realVersionCheck)
 	}
 	if fs.NArg() == 0 {
 		printUsage(stderr)
@@ -89,10 +97,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "version":
 		return runVersion(rest, version, stdout, stderr, realVersionCheck)
 	case "help":
-		if _, err := io.WriteString(stdout, usageText); err != nil {
-			return exitFailure
-		}
-		return exitOK
+		return runHelp(rest, stdin, stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "nodkey: unknown command %q\n\n", name)
 		printUsage(stderr)
@@ -113,4 +118,56 @@ func parseErrorCode(err error) int {
 		return exitOK
 	}
 	return exitUsage
+}
+
+// runHelp prints the general usage, or with one argument the help of that
+// command: the same text as "nodkey COMMAND --help", but on stdout.
+func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	switch {
+	case len(args) > 1:
+		_, _ = io.WriteString(stderr, "Usage: nodkey help [COMMAND]\n")
+		return exitUsage
+	case len(args) == 0 || args[0] == "help":
+		if _, err := io.WriteString(stdout, usageText); err != nil {
+			return exitFailure
+		}
+		return exitOK
+	}
+	name := args[0]
+	if !isCommand(name) {
+		_, _ = fmt.Fprintf(stderr, "nodkey: unknown command %q\n\n", name)
+		printUsage(stderr)
+		return exitUsage
+	}
+	out := &recordingWriter{w: stdout}
+	code := run([]string{name, "--help"}, stdin, out, out)
+	if out.err != nil {
+		return exitFailure
+	}
+	return code
+}
+
+// isCommand reports whether name is a command of nodkey, other than help.
+func isCommand(name string) bool {
+	switch name {
+	case "broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant",
+		"preapprove", "update", "version":
+		return true
+	}
+	return false
+}
+
+// recordingWriter keeps the first write error, because the usage
+// functions of the commands ignore it.
+type recordingWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (r *recordingWriter) Write(p []byte) (int, error) {
+	n, err := r.w.Write(p)
+	if err != nil && r.err == nil {
+		r.err = err
+	}
+	return n, err
 }
