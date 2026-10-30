@@ -21,8 +21,8 @@ Examples:
 - `fix(sign): reject an empty key name`
 - `docs: explain the threat model`
 
-The allowed types are `feat`, `fix`, `perf`, `revert`, `docs`, `chore`,
-`ci`, `test`, `refactor`, `build` and `style`.
+The allowed types are `security`, `feat`, `fix`, `perf`, `revert`, `docs`,
+`chore`, `ci`, `test`, `refactor`, `build` and `style`.
 
 For a breaking change, add `!` after the type. For example:
 `feat!: change the config file format`.
@@ -30,12 +30,36 @@ For a breaking change, add `!` after the type. For example:
 The **PR title** check tests the title. If the check fails, edit the title.
 The check runs again by itself.
 
+## Security fixes
+
+Use the type `security` for a pull request that fixes a real security
+problem, and only for that. If other pull requests use it, the mark means
+nothing. Examples:
+
+- `security: deny a request with two Host headers`
+- `security(deps): bump golang.org/x/crypto (GHSA-xxxx-xxxx-xxxx)`
+
+The title may name the IDs of published advisories, in the form
+`GHSA-xxxx-xxxx-xxxx`.
+
+A `security` pull request puts its line in a `### Security` section. This
+section comes first in CHANGELOG.md and in the release notes. The update
+notices of nodkey will use this section to flag a security release (issue
+#122).
+
+Do not name an unfixed problem in public. Fix a privately reported problem
+in the temporary private fork of its GitHub security advisory, and merge it
+from there just before the release. The title becomes public when it is
+merged, before the advisory is published. So keep the advisory ID and the
+details of the problem out of that title.
+
 ## Squash merges
 
 This repository allows only squash merges. When you merge a pull request,
 GitHub makes one commit on `main`. The commit message is only the pull
-request title. release-please reads this title. For `feat`, `fix`, `perf`,
-`revert` and `docs`, the title also becomes a line in the changelog.
+request title. release-please reads this title. For `security`, `feat`,
+`fix`, `perf`, `revert` and `docs`, the title also becomes a line in the
+changelog.
 
 release-please also reads the description of each merged pull request. A
 `BEGIN_COMMIT_OVERRIDE` block there replaces the commit message, even after
@@ -89,6 +113,7 @@ the old draft release. Its tag stays, because tags cannot be deleted.
 
 | Type | Section in the release notes | Makes a release? |
 |---|---|---|
+| `security` | Security (first) | yes |
 | `feat` | Features | yes |
 | `fix` | Bug Fixes | yes |
 | `perf` | Performance Improvements | yes |
@@ -108,7 +133,8 @@ do not list them.
 - `feat` makes a minor release: `0.1.0` → `0.2.0`.
 - A breaking change (`!`) also makes only a minor release before 1.0, not
   `1.0.0`. This is `bump-minor-pre-major` in `release-please-config.json`.
-- `fix`, `perf`, `revert` and `docs` make a patch release: `0.1.0` → `0.1.1`.
+- `security`, `fix`, `perf`, `revert` and `docs` make a patch release:
+  `0.1.0` → `0.1.1`.
 
 ## Dependency updates
 
@@ -117,8 +143,9 @@ titles start with `chore(deps):` or `ci(deps):`, so they do not make a
 release.
 
 If an update fixes a security problem in a Go module that nodkey uses,
-change the pull request title to `fix(deps): ...` before you merge it. Then
-the fix gets a release.
+change the pull request title to `security(deps): ...` before you merge it.
+Then the fix gets a release, and the release is marked as a security
+release.
 
 ## Vulnerability checks
 

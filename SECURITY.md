@@ -37,3 +37,8 @@ Until 1.0, only the
 [latest release](https://github.com/code6x/nodkey/releases/latest) gets
 fixes. To get a fix, upgrade to the newest release
 ([docs/setup.md section 13](docs/setup.md#a-new-version-of-nodkey)).
+
+A release that fixes a security problem has a `### Security` section first
+in its notes and in CHANGELOG.md. A line there may name the advisory
+(`GHSA-xxxx-xxxx-xxxx`). The pull request of the fix has the type
+`security:` ([docs/releasing.md](docs/releasing.md#security-fixes)).
