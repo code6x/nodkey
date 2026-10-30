@@ -345,6 +345,12 @@ func TestTryApproveWindow(t *testing.T) {
 	e.stopAndCheck(syscall.SIGTERM)
 }
 
+func TestTryStopsOnHangup(t *testing.T) {
+	e := newTryEnv(t)
+	e.start(time.Minute)
+	e.stopAndCheck(syscall.SIGHUP)
+}
+
 func TestTryDeny(t *testing.T) {
 	e := newTryEnv(t)
 	e.start(time.Minute)

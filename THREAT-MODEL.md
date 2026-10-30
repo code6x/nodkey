@@ -1164,8 +1164,9 @@ must never take answers from a terminal.
   client cannot reach the trial broker: the trial knows only its own
   client key.
 - Its files are in one directory, mode 0700, that it removes when it
-  stops. Every line says `TRY MODE`, so a person does not take the trial
-  for a setup.
+  stops. Each message of `nodkey try` says `TRY MODE`, and each line that
+  `nodkey try run` prints starts with `TRY MODE`, so a person does not take
+  the trial for a setup. The trial allows no scheduled and no standing grant.
 
 Risk that remains: the agent on the same machine can answer a request of
 the trial, or read its fake values. That is fine: they open nothing. A

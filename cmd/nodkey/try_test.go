@@ -10,6 +10,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/code6x/nodkey/internal/approval"
@@ -191,5 +192,41 @@ func TestTryApproverAnswers(t *testing.T) {
 	// The input ended: no answer can come, so Run stops.
 	if err := a.Run(t.Context(), answer); !errors.Is(err, errTryInputClosed) {
 		t.Fatalf("Run: %v", err)
+	}
+}
+
+// The trial allows no scheduled and no standing grant.
+func TestTryConfigAllowsNoScheduledOrStandingGrants(t *testing.T) {
+	cfg := tryConfig("/nonexistent", config.Pin{})
+	if cfg.Preapprove != (config.PreapproveLimits{}) {
+		t.Errorf("preapprove limits %+v, want none", cfg.Preapprove)
+	}
+	if cfg.Standing != (config.StandingLimits{}) {
+		t.Errorf("standing limits %+v, want none", cfg.Standing)
+	}
+	for name, s := range cfg.Secrets {
+		if s.Rule.Preapprove {
+			t.Errorf("secret %q allows preapprove", name)
+		}
+	}
+}
+
+// Write is safe to call from several goroutines.
+func TestTryLinesConcurrent(t *testing.T) {
+	var b bytes.Buffer
+	w := &tryLines{w: &b, start: true}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				_, _ = io.WriteString(w, "line\n")
+			}
+		}()
+	}
+	wg.Wait()
+	if want := strings.Repeat("TRY MODE line\n", 400); b.String() != want {
+		t.Fatal("lines are mixed")
 	}
 }

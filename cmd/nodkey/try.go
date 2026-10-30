@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -97,7 +98,7 @@ func runTry(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "nodkey try: TRY MODE: %s (exit 1)\n", err)
 		return exitFailure
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 	defer stop()
 	return serveTry(ctx, dir, stdin, stdout)
 }
@@ -121,11 +122,14 @@ func runTryRun(args []string, stderr io.Writer) int {
 
 // tryLines writes to w and starts each line with "TRY MODE ".
 type tryLines struct {
+	mu    sync.Mutex
 	w     io.Writer
 	start bool // the next byte starts a line
 }
 
 func (t *tryLines) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	var b []byte
 	for _, c := range p {
 		if t.start {
@@ -164,6 +168,7 @@ func tryDir() (string, error) {
 type trial struct {
 	dir   string
 	lock  *os.File
+	made  bool // this run made the directory
 	logF  *os.File
 	log   *slog.Logger
 	audit *audit.Logger
@@ -292,7 +297,7 @@ func (tr *trial) start(ap *tryApprover) (string, error) {
 // makeDir makes the directory of the trial, mode 0700, and locks it. A
 // directory of an earlier trial that did not end cleanly, such as after
 // SIGKILL, is removed first, but only when no trial holds its lock.
-func (tr *trial) makeDir() error {
+func (tr *trial) makeDirOnce() error {
 	err := os.Mkdir(tr.dir, 0o700)
 	if errors.Is(err, fs.ErrExist) {
 		if err := removeStaleTryDir(tr.dir); err != nil {
@@ -303,6 +308,7 @@ func (tr *trial) makeDir() error {
 	if err != nil {
 		return err
 	}
+	tr.made = true
 	// The umask may have removed bits of the owner; it never adds any.
 	if err := os.Chmod(tr.dir, 0o700); err != nil { //nolint:gosec // G302: a directory, private to its owner.
 		return err
@@ -313,6 +319,27 @@ func (tr *trial) makeDir() error {
 	}
 	tr.lock = f
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+// makeDir makes the directory of the trial. When it fails after the
+// directory exists, the directory is removed again.
+func (tr *trial) makeDir() error {
+	if err := tr.makeDirOnce(); err != nil {
+		tr.removeMade()
+		return err
+	}
+	return nil
+}
+
+// removeMade removes the directory, which this run made, and closes the lock.
+func (tr *trial) removeMade() {
+	if tr.made {
+		_ = os.RemoveAll(tr.dir)
+	}
+	if tr.lock != nil {
+		_ = tr.lock.Close()
+		tr.lock = nil
+	}
 }
 
 // removeStaleTryDir removes dir, the directory of an earlier trial, when
@@ -355,11 +382,13 @@ func (tr *trial) stop() bool {
 	if tr.logF != nil {
 		_ = tr.logF.Close()
 	}
-	if tr.lock == nil {
+	if !tr.made {
 		return true // the directory is not ours, or it was not made
 	}
 	err := os.RemoveAll(tr.dir)
-	_ = tr.lock.Close()
+	if tr.lock != nil {
+		_ = tr.lock.Close()
+	}
 	return err == nil
 }
 
@@ -370,15 +399,15 @@ func tryConfig(dir string, clientPin config.Pin) *config.Broker {
 	// The rule is one that LoadBroker would make from ask = "window".
 	rule := config.Rule{Ask: config.AskWindow, Window: tryWindow}
 	cfg := &config.Broker{
-		Listen:     netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0),
-		TLSKey:     filepath.Join(dir, tryBrokerKey),
-		AuditLog:   filepath.Join(dir, tryAuditLog),
-		Telegram:   config.Telegram{UserID: tryUserID, NoticeChatID: tryUserID, Timeout: tryTimeout, SSHTimeout: tryTimeout},
-		Preapprove: config.DefaultPreapprove(),
-		Standing:   config.DefaultStanding(),
-		Clients:    map[string]config.Client{tryClientName: {Name: tryClientName, Pin: clientPin}},
-		Stores:     map[string]config.Store{tryStoreName: {Name: tryStoreName}},
-		Secrets:    make(map[string]config.Secret, len(trySecretNames)),
+		Listen:   netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0),
+		TLSKey:   filepath.Join(dir, tryBrokerKey),
+		AuditLog: filepath.Join(dir, tryAuditLog),
+		Telegram: config.Telegram{UserID: tryUserID, NoticeChatID: tryUserID, Timeout: tryTimeout, SSHTimeout: tryTimeout},
+		// Preapprove and Standing stay zero: the trial allows no scheduled
+		// and no standing grant.
+		Clients: map[string]config.Client{tryClientName: {Name: tryClientName, Pin: clientPin}},
+		Stores:  map[string]config.Store{tryStoreName: {Name: tryStoreName}},
+		Secrets: make(map[string]config.Secret, len(trySecretNames)),
 	}
 	for _, name := range trySecretNames {
 		cfg.Secrets[name] = config.Secret{Name: name, Store: tryStoreName, ID: name, Clients: []string{tryClientName},

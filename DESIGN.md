@@ -3053,18 +3053,19 @@ nodkey try shows each request in its own terminal, with the lines of the
 message and the choices: `1` Approve once, `2` Approve 5 min, `3` Deny.
 With more than one request waiting, the person types the short code
 first, such as `k3f9 1`. A request with no answer expires after 120
-seconds and is denied. Every line says `TRY MODE`. When its input ends,
+seconds and is denied. Each message that `nodkey try` shows has `TRY MODE`
+on its first line. The trial allows no scheduled and no standing grant. When its input ends,
 no answer can come, so it stops with exit code 1. A second nodkey try
 while one runs exits with 1. A directory of a trial that was killed,
-whose lock no one holds, is removed at the next start. SIGINT or SIGTERM
-stops the trial with exit code 0: it ends the parts in the order of
+whose lock no one holds, is removed at the next start. SIGINT, SIGTERM, SIGHUP or
+SIGQUIT stops the trial with exit code 0: it ends the parts in the order of
 `nodkey broker`, removes the directory, and prints what a real setup
 adds, with a pointer to docs/setup.md.
 
 `nodkey try run` is `nodkey run` with the client config of the trial,
 `client.toml` in that directory. It never reads
-`~/.config/nodkey/client.toml`. Each line that nodkey writes starts with
-`TRY MODE `. Without a trial it exits with 69. Its other exit codes are
+`~/.config/nodkey/client.toml`. In `nodkey try run`, each line that nodkey
+prints starts with `TRY MODE `. Without a trial it exits with 69. Its other exit codes are
 those of `nodkey run`.
 
 `nodkey keygen` prints the pin on stdout, and nothing else. It exits with
