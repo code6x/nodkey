@@ -126,7 +126,9 @@ ask = "always"
 	env.CheckFiles = func(b *config.Broker, self uint32, skip func(string) bool) error {
 		return b.CheckFilesAs(self, skip)
 	}
-	env.UnitText = func() (string, error) { return "User=nodkey\nLoadCredentialEncrypted=broker-tls-key:"+dir+"/broker-tls-key.cred\n", nil }
+	env.UnitText = func() (string, error) {
+		return "User=nodkey\nLoadCredentialEncrypted=broker-tls-key:" + dir + "/broker-tls-key.cred\n", nil
+	}
 	r := doctor.Run(doctor.BrokerChecks(env))
 	if res := result(t, r, "config"); res.Status != doctor.OK {
 		t.Fatalf("config: %+v", res)
@@ -146,4 +148,3 @@ ask = "always"
 		t.Errorf("a check changed a file:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
-
