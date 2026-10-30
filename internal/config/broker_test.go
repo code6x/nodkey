@@ -1566,3 +1566,38 @@ func TestLoadBrokerStandingLimits(t *testing.T) {
 		t.Errorf("max_days = 3, warn_days = 2: %v", err)
 	}
 }
+
+func TestCheckFilesAs(t *testing.T) {
+	e := newBrokerEnv(t)
+	path := e.write(t)
+	b, err := ReadBroker(path)
+	if err != nil {
+		t.Fatalf("ReadBroker: %v", err)
+	}
+	self, err := currentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inCreds := func(p string) bool { return strings.HasPrefix(p, e.creds+"/") }
+
+	// The credentials are there only while the service runs: skip them.
+	p := filepath.Join(e.creds, "ssh-backup")
+	if err := os.Rename(p, p+".away"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.CheckFilesAs(self, inCreds); err != nil {
+		t.Errorf("CheckFilesAs with the credentials skipped: %v", err)
+	}
+	checkError(t, b.CheckFilesAs(self, nil), "[key.backup] file: lstat "+p, "")
+	if err := os.Rename(p+".away", p); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another user: the files of this user are not safe for it.
+	if self == 0 {
+		t.Skip("root owns the files")
+	}
+	checkError(t, b.CheckFilesAs(self+1, nil), "is owned by user ID", "")
+	// A skipped file is not checked, but a store's program still is.
+	checkError(t, b.CheckFilesAs(self+1, inCreds), "program", "")
+}

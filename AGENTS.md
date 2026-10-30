@@ -16,7 +16,7 @@ Planned. Each v1 issue adds its part.
   are in `install_linux_test.go`. CI checks it with shellcheck.
 - `cmd/nodkey/` - the one binary. Subcommands: `broker`, `run`,
   `ssh-agent`, `ssh-grant`, `preapprove`, `keygen`, `audit verify`, `update`,
-  `version`.
+  `version`, `doctor`.
   `nodkey broker` starts the broker's parts in a fixed order, and stops
   them in a fixed order (DESIGN.md section 15). Its tests run it in a
   child process, with a fake Telegram server behind a fake HTTPS proxy.
@@ -30,6 +30,9 @@ Planned. Each v1 issue adds its part.
     section 10).
   - `internal/grantkey/` - the token of a standing grant: make, parse,
     hash, and hide it in every format (DESIGN.md section 8).
+  - `internal/doctor/` - the checks of `nodkey doctor` (client) and
+    `nodkey doctor broker`: read only, with the text and JSON form of
+    the result (DESIGN.md section 15).
   - `internal/release/` - the newest release of nodkey on GitHub: the
     lookup for `nodkey version`, and the broker's check for a newer
     release, with its notice (DESIGN.md section 15). Its tests use a fake

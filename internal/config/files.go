@@ -120,7 +120,16 @@ func CheckPrivateFile(path string) error {
 // checkPrivateFile makes the checks of ReadPrivateFile and returns the
 // information of the open file.
 func checkPrivateFile(path string) (fs.FileInfo, error) {
-	f, fi, err := openPrivateFile(path)
+	self, err := currentUser()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return checkPrivateFileAs(path, self)
+}
+
+// checkPrivateFileAs is checkPrivateFile for the user ID self.
+func checkPrivateFileAs(path string, self uint32) (fs.FileInfo, error) {
+	f, fi, err := openPrivateFileAs(path, self)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +146,11 @@ func openPrivateFile(path string) (*os.File, fs.FileInfo, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
+	return openPrivateFileAs(path, self)
+}
+
+// openPrivateFileAs is openPrivateFile for the user ID self.
+func openPrivateFileAs(path string, self uint32) (*os.File, fs.FileInfo, error) {
 	name, lfi, err := walkPath(path, self, lastLstat)
 	if err != nil {
 		return nil, nil, err
@@ -345,6 +359,11 @@ func checkProgram(path string) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	return checkProgramAs(path, self)
+}
+
+// checkProgramAs is checkProgram for the user ID self.
+func checkProgramAs(path string, self uint32) (fs.FileInfo, error) {
 	name, fi, err := walkPath(path, self, lastFollow)
 	if err != nil {
 		return nil, err

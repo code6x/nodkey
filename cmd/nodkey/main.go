@@ -51,6 +51,11 @@ Commands:
             only print its changes; run it as root
   changes --since X.Y.Z
             print the changes after X.Y.Z from the built-in changelog
+  doctor [--offline] [--json]
+            check the setup of this client, read only, and say how to
+            fix each problem
+  doctor broker [--config FILE] [--json]
+            the same for the broker host; run it as root
   version [--offline]
             print the version; on a terminal, also say if a newer
             release is out
@@ -107,6 +112,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runUpdate(rest, stdout, stderr)
 	case "changes":
 		return runChanges(rest, stdout, stderr)
+	case "doctor":
+		return runDoctor(rest, stdout, stderr, realDoctorEnv, realBrokerDoctorEnv)
 	case "version":
 		return runVersion(rest, version, stdout, stderr, realVersionCheck)
 	case "help":
@@ -195,7 +202,7 @@ func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 // commands are the commands of nodkey that "nodkey help COMMAND" knows.
 // Each must handle --help before it does any work.
-var commands = []string{"broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "changes", "version"}
+var commands = []string{"broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "changes", "doctor", "version"}
 
 // recordingWriter keeps the first write error, because the usage
 // functions of the commands ignore it.

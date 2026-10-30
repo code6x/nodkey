@@ -291,6 +291,10 @@ func LoadBroker(path string) (*Broker, error) {
 	return b, nil
 }
 
+// ReadBroker is LoadBroker without CheckFiles: nodkey doctor broker
+// checks the files itself, with CheckFilesAs.
+func ReadBroker(path string) (*Broker, error) { return loadBroker(path) }
+
 // loadBroker is LoadBroker without CheckFiles.
 func loadBroker(path string) (*Broker, error) {
 	data, err := ReadConfigFile(path)
@@ -827,6 +831,22 @@ func checkList(section, key string, items []string, unknown string, known func(s
 //     config file or known_hosts. That holds also through a hard link or a
 //     linked directory.
 func (b *Broker) CheckFiles() error {
+	self, err := currentUser()
+	if err != nil {
+		return fmt.Errorf("config %s: %w", b.Path, err)
+	}
+	return b.CheckFilesAs(self, nil)
+}
+
+// CheckFilesAs is CheckFiles for the user ID self, the user that runs the
+// broker, such as when root runs nodkey doctor broker. It skips each file
+// that holds a key, a token or a password, and the config file and
+// known_hosts, when skip reports true for its path: the credentials of
+// the unit are there only while the service runs.
+func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
+	if skip == nil {
+		skip = func(string) bool { return false }
+	}
 	type file struct {
 		where, path string
 		key         bool
@@ -849,10 +869,6 @@ func (b *Broker) CheckFiles() error {
 	for _, name := range slices.Sorted(maps.Keys(b.Keys)) {
 		private = append(private, file{place(sectionName("key", name), "file"), b.Keys[name].File, true})
 	}
-	self, err := currentUser()
-	if err != nil {
-		return fmt.Errorf("config %s: %w", b.Path, err)
-	}
 	// checked holds every file that the broker reads or runs, to compare
 	// it with the audit log.
 	type checkedFile struct {
@@ -862,7 +878,10 @@ func (b *Broker) CheckFiles() error {
 	}
 	var checked []checkedFile
 	for _, f := range private {
-		fi, err := checkPrivateFile(f.path)
+		if skip(f.path) {
+			continue
+		}
+		fi, err := checkPrivateFileAs(f.path, self)
 		if err != nil {
 			return fmt.Errorf("config %s: %s: %w", b.Path, f.where, err)
 		}
@@ -876,7 +895,7 @@ func (b *Broker) CheckFiles() error {
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
 		where := place(sectionName("store", name), "program")
-		fi, err := checkProgram(b.Stores[name].Program)
+		fi, err := checkProgramAs(b.Stores[name].Program, self)
 		if err != nil {
 			return fmt.Errorf("config %s: %s: %w", b.Path, where, err)
 		}
@@ -885,6 +904,9 @@ func (b *Broker) CheckFiles() error {
 	// ReadConfigFile checked the config file and known_hosts when they were
 	// read. Here they are only found again, the same way.
 	for _, f := range []struct{ where, path string }{{"the config file", b.Path}, {"known_hosts", b.KnownHostsFile}} {
+		if skip(f.path) {
+			continue
+		}
 		_, fi, err := walkPath(f.path, self, lastFollow)
 		if err != nil {
 			return fmt.Errorf("config %s: %s: %w", b.Path, f.where, err)
