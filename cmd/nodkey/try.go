@@ -210,6 +210,11 @@ func serveTry(ctx context.Context, dir string, stdin io.Reader, stdout io.Writer
 // config, the audit log, the store, the service, the approval core with
 // the terminal approver, and the server on 127.0.0.1 with a random port.
 func (tr *trial) start(ap *tryApprover) (string, error) {
+	// As nodkey broker: no core dumps, and other processes of the user
+	// cannot read its memory. It needs no root.
+	if err := hardenProcess(); err != nil {
+		return "", fmt.Errorf("cannot turn off core dumps: %w", err)
+	}
 	if err := tr.makeDir(); err != nil {
 		return "", err
 	}

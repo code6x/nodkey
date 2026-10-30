@@ -3041,8 +3041,9 @@ client config, the audit log and the broker's log. The broker config is
 made in memory, not read from a file. Then nodkey try runs the real
 parts of the broker: the service, the approval core, the audit log and
 the server with mutual TLS and pins, on `127.0.0.1` with a random port.
-It skips only what needs root or systemd: core dumps stay as they are,
-and there are no encrypted credentials. Its one client is `try-client`.
+As `nodkey broker`, it turns off core dumps first. It skips only what
+needs root or systemd: its own user, the sandbox and encrypted
+credentials. Its one client is `try-client`.
 Its one store holds three secrets, `demo-token`, `demo-password` and
 `demo-api-key`, with random values that start with `TRY-`, made at the
 start. Their rule is `ask = "window"` with a 5 minute window. It has no
