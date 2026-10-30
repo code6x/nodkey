@@ -14,12 +14,16 @@ Planned. Each v1 issue adds its part.
   (package `nodkey`, at the root of the module) builds it into the
   binary with `go:embed`, for `nodkey update`. The tests of the script
   are in `install_linux_test.go`. CI checks it with shellcheck.
-- `cmd/nodkey/` - the one binary. Subcommands: `broker`, `run`,
+- `cmd/nodkey/` - the one binary. Subcommands: `broker`, `try`, `run`,
   `ssh-agent`, `ssh-grant`, `preapprove`, `keygen`, `audit verify`, `update`,
   `version`, `doctor`.
   `nodkey broker` starts the broker's parts in a fixed order, and stops
   them in a fixed order (DESIGN.md section 15). Its tests run it in a
   child process, with a fake Telegram server behind a fake HTTPS proxy.
+  `nodkey try` (`try.go`, `tryapprover.go`, `trystore.go`) is the trial
+  on one machine: the terminal approver and the test store live only
+  there, and a test fails if any other file uses them (DESIGN.md section
+  15, THREAT-MODEL.md T38).
 - `internal/` - one package per part (config, transport, audit, approval,
   telegram, store, sshauth, client parts). Packages do not import
   `cmd/`.
