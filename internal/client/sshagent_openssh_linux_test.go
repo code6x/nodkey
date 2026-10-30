@@ -288,7 +288,7 @@ func TestOpenSSHAgentChecksTheSignature(t *testing.T) {
 			"the signature of the broker does not fit the key and the sign flags"},
 		{"503", func(w http.ResponseWriter, _ *api.SignRequest) {
 			transport.WriteError(w, http.StatusServiceUnavailable)
-		}, "the broker answered 503 Service Unavailable"},
+		}, "the broker answered 503 Service Unavailable; the broker could not finish the request; its journal says why (journalctl -u nodkey)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -77,7 +77,7 @@ func TestRunAnswers(t *testing.T) {
 		}, exitUnavailable, "the broker answered 500 Internal Server Error"},
 		{"503", func(*testing.T) http.HandlerFunc {
 			return answer(http.StatusServiceUnavailable, `{"error":"Service Unavailable"}`)
-		}, exitUnavailable, "the broker answered 503 Service Unavailable"},
+		}, exitUnavailable, "the broker answered 503 Service Unavailable; the broker could not finish the request; its journal says why (journalctl -u nodkey)"},
 		{"a status without a name", func(*testing.T) http.HandlerFunc { return answer(299, `{}`) },
 			exitUnavailable, "the broker answered 299"},
 		{"201 with a valid answer", func(t *testing.T) http.HandlerFunc {

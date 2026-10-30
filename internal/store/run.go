@@ -115,7 +115,7 @@ func (r *runner) run(ctx context.Context, step string, args, env []string) ([]by
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit):
-		return nil, fmt.Errorf("store %q: %s: %w (%s)", r.store, step, ErrFailed, exitDetail(exit))
+		return nil, fmt.Errorf("store %q: %s: %w (%s); to see why, run %s by hand as the broker's user, with HOME set to %s", r.store, step, ErrFailed, exitDetail(exit), r.program, r.home)
 	case cmd.Process != nil:
 		// It ran, but its output could not be read to the end.
 		return nil, fmt.Errorf("store %q: %s: %w (its output could not be read)", r.store, step, ErrFailed)

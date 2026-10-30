@@ -257,7 +257,7 @@ func TestRunStoreFails(t *testing.T) {
 	fx := &fakeExec{}
 	code, stderr := runIn(t.Context(), testRunner(tb.client(t), nil, fx), "--secret", "GH_TOKEN=github-token", "--",
 		self(t))
-	if want := "nodkey: the broker answered 503 Service Unavailable (exit 69)"; code != exitUnavailable ||
+	if want := "nodkey: the broker answered 503 Service Unavailable; the broker could not finish the request; its journal says why (journalctl -u nodkey) (exit 69)"; code != exitUnavailable ||
 		lastLine(stderr) != want {
 		t.Errorf("exit code %d, stderr %q; want 69 and the last line %q", code, safe(stderr), want)
 	}

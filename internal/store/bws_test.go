@@ -86,7 +86,8 @@ func TestBWSErrorExit(t *testing.T) {
 			t.Error("Fetch returned a value with its error")
 		}
 		want := `store "main": bws secret get: the program failed (exit code ` + strconv.Itoa(code) + ")"
-		if err == nil || err.Error() != want {
+		if err == nil || !strings.HasPrefix(err.Error(), want+"; to see why, run /") ||
+			!strings.Contains(err.Error(), " by hand as the broker's user, with HOME set to /") {
 			t.Errorf("error = %v, want %q", err, want)
 		}
 		noCanary(t, "the error", err.Error(), value)
