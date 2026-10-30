@@ -90,7 +90,8 @@ func TestBrokerLVMOnCryptSwap(t *testing.T) {
 	for _, tt := range []struct {
 		below []string
 		ok    bool
-	}{{[]string{"dm-0"}, true}, {[]string{"dm-2"}, false}, {[]string{"dm-0", "sda3"}, false}, {nil, false}} {
+	}{{[]string{"dm-0"}, true}, {[]string{"dm-2"}, false}, {[]string{"dm-0", "sda3"}, false}, {nil, false},
+		{[]string{"dm-1"}, false}, {[]string{"../dm-0"}, false}} {
 		env := goodBroker()
 		env.ReadFile = func(p string) ([]byte, error) {
 			for dev, u := range uuids {
@@ -98,7 +99,10 @@ func TestBrokerLVMOnCryptSwap(t *testing.T) {
 					return []byte(u), nil
 				}
 			}
-			return []byte("Filename\n/dev/dm-1 partition\n"), nil
+			if p == "/proc/swaps" {
+				return []byte("Filename\n/dev/dm-1 partition\n"), nil
+			}
+			return nil, fs.ErrNotExist
 		}
 		env.ReadDir = func(p string) ([]string, error) {
 			if p == "/sys/block/dm-1/slaves" {
