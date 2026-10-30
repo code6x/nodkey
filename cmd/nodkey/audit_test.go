@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -118,20 +119,20 @@ func TestAuditVerify(t *testing.T) {
 			args:       []string{"audit", "verify", path, "--anchors=-", "--anchor", "3:" + hashes[2]},
 			wantStdout: ok + "anchors: 2 checked, all match; the newest is entry 3\n" + last},
 		{name: "wrong anchor", args: []string{"audit", "verify", path, "--anchor", "2:" + hashes[2]}, wantCode: exitDataErr,
-			wantStderr: "nodkey: audit log " + path + ": line 2: is entry 2, and its hash is not the hash in the anchor\n"},
+			wantStderr: "nodkey: audit log " + strconv.Quote(path) + ": line 2: is entry 2, and its hash is not the hash in the anchor\n"},
 		{name: "two anchors for one entry", args: []string{"audit", "verify", path, "--anchor", "2:" + hashes[1], "--anchor", "2:" + hashes[2]},
-			wantCode: exitDataErr, wantStderr: "nodkey: audit log " + path + ": two anchors for entry 2 have different hashes"},
+			wantCode: exitDataErr, wantStderr: "nodkey: audit log " + strconv.Quote(path) + ": two anchors for entry 2 have different hashes"},
 		{name: "anchor after the end", args: []string{"audit", "verify", path, "--anchor", "4:" + hashes[2]}, wantCode: exitDataErr,
-			wantStderr: "nodkey: audit log " + path + ": no entry 4: the log ends at entry 3\n"},
+			wantStderr: "nodkey: audit log " + strconv.Quote(path) + ": no entry 4: the log ends at entry 3\n"},
 		{name: "changed line", args: []string{"audit", "verify", broken}, wantCode: exitDataErr,
-			wantStderr: "nodkey: audit log " + broken + ": line 3: has a prev that is not the hash of the entry before it, on line 2\n"},
+			wantStderr: "nodkey: audit log " + strconv.Quote(broken) + ": line 3: has a prev that is not the hash of the entry before it, on line 2\n"},
 		// The newest anchor alone does not find the cut: the second run
 		// wrote it. Every anchor since the log began finds it.
 		{name: "cut and written again, newest anchor only", args: []string{"audit", "verify", cut, "--anchor", "4:" + h2[1]},
 			wantCode: exitOK, wantStdout: "ok: 4 entries (torn lines: 0)\nanchors: 1 checked, all match; the newest is entry 4\n" +
 				"last entry: 4:" + h2[1] + "\n"},
 		{name: "cut and written again, every anchor", args: []string{"audit", "verify", cut, "--anchors", "-"}, stdin: cutJournal,
-			wantCode: exitDataErr, wantStderr: "nodkey: audit log " + cut + ": two anchors for entry 3 have different hashes"},
+			wantCode: exitDataErr, wantStderr: "nodkey: audit log " + strconv.Quote(cut) + ": two anchors for entry 3 have different hashes"},
 		{name: "missing file", args: []string{"audit", "verify", path + ".missing"}, wantCode: exitNoInput,
 			wantStderr: "no such file or directory"},
 		{name: "a directory", args: []string{"audit", "verify", filepath.Dir(path)}, wantCode: exitNoInput,
@@ -147,7 +148,9 @@ func TestAuditVerify(t *testing.T) {
 		{name: "no file", args: []string{"audit", "verify"}, wantCode: exitUsage, wantStderr: "name the log FILE"},
 		{name: "two files", args: []string{"audit", "verify", path, path}, wantCode: exitUsage, wantStderr: "give one FILE only"},
 		{name: "bad anchor", args: []string{"audit", "verify", path, "--anchor", "2"}, wantCode: exitUsage,
-			wantStderr: "an anchor is SEQ:HASH"},
+			wantStderr: `as in the journal's "audit anchor" lines; see "nodkey audit verify --help"`},
+		{name: "missing log with a strange name", args: []string{"audit", "verify", "gone\u202e\nx"}, wantCode: exitNoInput,
+			wantStderr: `nodkey: audit log "gone\u202e\nx": no such file or directory` + "\n"},
 		{name: "unknown flag", args: []string{"audit", "verify", path, "--bogus"}, wantCode: exitUsage,
 			wantStderr: "unknown option"},
 		{name: "help of verify", args: []string{"audit", "verify", "-h"}, wantCode: exitOK, wantStderr: auditUsageText},

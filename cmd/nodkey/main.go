@@ -163,7 +163,7 @@ func flagErrorText(msg string) string {
 			rest = rest[len(quoted):]
 			rest = strings.TrimPrefix(strings.TrimPrefix(rest, " for flag"), " for")
 			name, reason, _ := strings.Cut(strings.TrimPrefix(rest, " -"), ": ")
-			return fmt.Sprintf("bad value for option %.64q: %.64s", name, reason)
+			return fmt.Sprintf("bad value for option %.64q: %s", name, reason)
 		}
 	}
 	return "wrong option"

@@ -96,17 +96,20 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 
 	f, err := os.Open(path) //nolint:gosec // G304: the person names the log to check; nodkey only reads it.
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: %v\n", err) // a *fs.PathError names the path
+		if pe := (*os.PathError)(nil); errors.As(err, &pe) {
+			err = pe.Err // the path is the person's own text; show it quoted and cut
+		}
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, err)
 		return exitNoInput
 	}
 	res, err := audit.Verify(f, anchors...)
 	_ = f.Close() // read only; a close error changes nothing
 	if ve := (*audit.VerifyError)(nil); errors.As(err, &ve) {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %s: %v\n", path, ve)
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, ve)
 		return exitDataErr
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %s: %v\n", path, err)
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, err)
 		return exitNoInput
 	}
 

@@ -2758,7 +2758,7 @@ and with 1 when they cannot write to stdout.
 A usage error (exit 64) is one line on stderr, with no usage text:
 `nodkey CMD: REASON; see "nodkey CMD --help" (exit 64)`. For nodkey itself
 the line is `nodkey: REASON; see "nodkey --help" (exit 64)`. The reason is
-fixed text, and it shows an argument of the user at most 64 bytes long,
+fixed text, and it shows an argument of the user at most 64 characters long,
 quoted. `-h` or `--help` prints the usage and exits with 0. The text of
 the flag package is never passed on: an unknown or bad option is shown as
 our own text, with the name or the value quoted and cut to at most 64
