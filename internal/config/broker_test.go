@@ -1574,7 +1574,10 @@ func TestCheckFilesAs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadBroker: %v", err)
 	}
-	self := uint32(os.Geteuid())
+	self, err := currentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
 	inCreds := func(p string) bool { return strings.HasPrefix(p, e.creds+"/") }
 
 	// The credentials are there only while the service runs: skip them.

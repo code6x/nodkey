@@ -165,7 +165,7 @@ func output(name string, args ...string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), systemdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // G204: path is systemctl or journalctl from systemPath; the arguments are fixed.
 	cmd.Env = []string{"PATH=" + systemPath, "LC_ALL=C", "SYSTEMD_PAGER=", "SYSTEMD_COLORS=0"}
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()

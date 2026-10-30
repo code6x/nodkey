@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/code6x/nodkey/internal/config"
@@ -115,7 +116,13 @@ ask = "always"
 	before := snapshot(t, dir)
 
 	env := doctor.BrokerEnv{
-		LookupUser:     func(string) (uint32, error) { return uint32(os.Geteuid()), nil },
+		LookupUser: func(string) (uint32, error) {
+			fi, err := os.Stat(dir)
+			if err != nil {
+				return 0, err
+			}
+			return fi.Sys().(*syscall.Stat_t).Uid, nil
+		},
 		Stat:           os.Stat,
 		ReadFile:       func(string) ([]byte, error) { return nil, fs.ErrNotExist },
 		ReadDir:        func(string) ([]string, error) { return nil, fs.ErrNotExist },

@@ -113,7 +113,7 @@ func TestNoSecretCalls(t *testing.T) {
 			continue
 		}
 		n++
-		src, err := os.ReadFile(f)
+		src, err := os.ReadFile(f) //nolint:gosec // G304: the test reads the Go files of nodkey doctor.
 		if err != nil {
 			t.Fatal(err)
 		}
