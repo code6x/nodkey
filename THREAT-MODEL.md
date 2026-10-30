@@ -958,8 +958,9 @@ one in `SSL_CERT_FILE` or `SSL_CERT_DIR` (DESIGN.md section 7).
 - The check never touches a request, a secret, the audit log or an
   approval. The notice of a normal release is silent. The notice of a
   security release makes a sound, so a false answer can ring the phone,
-  but at most once in each daily check: it comes at each daily check, until the broker
-  runs that release. The notice for a client is silent. All of them share
+  but at most once in each daily check, rarely twice (a try that times
+  out after Telegram took the message is tried again 1 hour later): it
+  comes at each daily check, until the broker runs that release. The notice for a client is silent. All of them share
   the limit of 3 in any 60 seconds with the notices about versions (T9,
   T33). A normal release gets one notice in each start, rarely more than
   one: a try that times out after Telegram took the message sends it

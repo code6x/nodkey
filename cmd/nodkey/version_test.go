@@ -19,9 +19,12 @@ import (
 // GitHub. It counts the lookups.
 type fakeVersionCheck struct {
 	terminal bool
-	newest   nodkeyversion.Release
-	security []release.Security
-	err      error
+	// notTerminal is a writer that is not a terminal, even when terminal
+	// is true.
+	notTerminal io.Writer
+	newest      nodkeyversion.Release
+	security    []release.Security
+	err         error
 
 	mu       sync.Mutex
 	lookups  int
@@ -31,7 +34,7 @@ type fakeVersionCheck struct {
 
 func (f *fakeVersionCheck) check() versionCheck {
 	return versionCheck{
-		isTerminal: func(io.Writer) bool { return f.terminal },
+		isTerminal: func(w io.Writer) bool { return f.terminal && w != f.notTerminal },
 		lookup: func(ctx context.Context, own nodkeyversion.Release) (release.Info, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -179,7 +182,7 @@ func TestVersionRealCheck(t *testing.T) {
 
 // TestVersionSecurity: a security release newer than this nodkey, also one
 // older than the newest release, gives one red SECURITY UPDATE line. With
-// NO_COLOR it has no colour. A security release that is not newer gives
+// NO_COLOR, or when stderr is not a terminal, it has no colour. A security release that is not newer gives
 // the normal line.
 func TestVersionSecurity(t *testing.T) {
 	sec := func(vs ...nodkeyversion.Release) []release.Security {
@@ -194,22 +197,27 @@ func TestVersionSecurity(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		noColor  string
+		pipe     bool // stderr is not a terminal
 		newest   nodkeyversion.Release
 		security []release.Security
 		want     string
 	}{
-		{"security", "", rel(0, 3, 1), sec(rel(0, 3, 1)), "\x1b[31m" + one + "\x1b[0m\n"},
-		{"NO_COLOR", "1", rel(0, 3, 1), sec(rel(0, 3, 1)), one + "\n"},
-		{"a skipped one", "1", rel(0, 3, 2), sec(rel(0, 3, 1)), one + "\n"},
-		{"two", "1", rel(0, 4, 0), sec(rel(0, 3, 1), rel(0, 4, 0)),
+		{"security", "", false, rel(0, 3, 1), sec(rel(0, 3, 1)), "\x1b[31m" + one + "\x1b[0m\n"},
+		{"stderr not a terminal", "", true, rel(0, 3, 1), sec(rel(0, 3, 1)), one + "\n"},
+		{"NO_COLOR", "1", false, rel(0, 3, 1), sec(rel(0, 3, 1)), one + "\n"},
+		{"a skipped one", "1", false, rel(0, 3, 2), sec(rel(0, 3, 1)), one + "\n"},
+		{"two", "1", false, rel(0, 4, 0), sec(rel(0, 3, 1), rel(0, 4, 0)),
 			"SECURITY UPDATE: nodkey 0.3.1 and 0.4.0 fix security problems. This is nodkey 0.3.0. " +
 				"Update now: run nodkey update as root. Checked notes: nodkey update --notes.\n"},
-		{"not newer", "", rel(0, 3, 0), sec(rel(0, 2, 9), rel(0, 3, 0)), "nodkey: this is the newest release\n"},
-		{"not newer, a normal newer one", "", rel(0, 3, 2), sec(rel(0, 3, 0)), "nodkey: a newer release is out: nodkey 0.3.2;"},
+		{"not newer", "", false, rel(0, 3, 0), sec(rel(0, 2, 9), rel(0, 3, 0)), "nodkey: this is the newest release\n"},
+		{"not newer, a normal newer one", "", false, rel(0, 3, 2), sec(rel(0, 3, 0)), "nodkey: a newer release is out: nodkey 0.3.2;"},
 	} {
 		t.Setenv("NO_COLOR", tt.noColor)
-		f := &fakeVersionCheck{terminal: true, newest: tt.newest, security: tt.security}
 		var stdout, stderr bytes.Buffer
+		f := &fakeVersionCheck{terminal: true, newest: tt.newest, security: tt.security}
+		if tt.pipe {
+			f.notTerminal = &stderr
+		}
 		if code := runVersion(nil, "0.3.0", &stdout, &stderr, f.check()); code != exitOK || stdout.String() != "nodkey 0.3.0\n" {
 			t.Errorf("%s: exit code %d, stdout %q", tt.name, code, stdout.String())
 		}

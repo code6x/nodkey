@@ -640,10 +640,12 @@ until the broker runs that release or a newer one. It shares the limit of
 UPDATE`, names the security releases that are newer than the broker,
 lists at most 3 advisory IDs in the strict GHSA form, says that the flag
 comes from GitHub's answer and is not checked, and points to the checked
-notes. The link is made from the newest version and ends the text:
+notes. The link is made from the newest version and ends the text. A
+try that times out after Telegram took the message is tried again 1 hour
+later, so the phone rarely rings twice in one daily check:
 
 ```
-SECURITY UPDATE: <security releases>. The broker runs nodkey 0.2.0. Advisories: GHSA-xxxx-xxxx-xxxx. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1
+⚠️ SECURITY UPDATE: <security releases>. The broker runs nodkey 0.2.0. Advisories: GHSA-xxxx-xxxx-xxxx. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1
 ```
 
 When a client claims a release older than a security release that the
@@ -657,7 +659,7 @@ because its version cannot be compared. The name is the name of the
 `[client.*]` section:
 
 ```
-SECURITY UPDATE: the client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.1, a security release. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update laptop, run there as root: nodkey update. This notice comes again after the next daily check while laptop runs an older nodkey.
+ℹ️ nodkey: SECURITY UPDATE: the client laptop says that it runs nodkey 0.2.0, which is older than nodkey 0.3.1, a security release. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update laptop, run there as root: nodkey update. This notice comes again after the next daily check while laptop runs an older nodkey.
 ```
 
 - The host key shows only `SHA256:` and its first 4 characters. The

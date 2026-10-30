@@ -35,7 +35,7 @@ when stdout cannot be written.
 // versionCheck is what the check of nodkey version for a newer release
 // uses. Tests use fakes, so that no test asks GitHub or needs a terminal.
 type versionCheck struct {
-	// isTerminal reports whether stdout is a terminal.
+	// isTerminal reports whether w (stdout or stderr) is a terminal.
 	isTerminal func(w io.Writer) bool
 	// lookup asks GitHub for the newest release and the security releases,
 	// for a nodkey whose version is own.
@@ -82,8 +82,9 @@ func runVersion(args []string, own string, stdout, stderr io.Writer, check versi
 	info, err := check.lookup(ctx, r)
 	line := releaseLine(r, info, err)
 	// A security release gets a red line, unless NO_COLOR is set
-	// (https://no-color.org).
-	if err == nil && strings.HasPrefix(line, "SECURITY UPDATE") && os.Getenv("NO_COLOR") == "" {
+	// (https://no-color.org) or stderr, where the line goes, is not a
+	// terminal.
+	if err == nil && strings.HasPrefix(line, "SECURITY UPDATE") && os.Getenv("NO_COLOR") == "" && check.isTerminal(stderr) {
 		line = "\x1b[31m" + line + "\x1b[0m"
 	}
 	// A failed write to stderr cannot be reported anywhere; stdout has the
