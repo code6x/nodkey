@@ -3,11 +3,11 @@
 nodkey lets an AI coding agent use a secret or an SSH key only after a
 person approves that one request on a phone.
 
-**Status:** on 2026-10-15, the code of version 1 is on `main`, the test
-with a real Telegram bot
-([#17](https://github.com/code6x/nodkey/issues/17)) is done, and the
-first release,
-[0.1.0](https://github.com/code6x/nodkey/releases/tag/v0.1.0), is out.
+**Status:** on 2026-10-15, the code of version 1 is on `main`, and the
+test with a real Telegram bot
+([#17](https://github.com/code6x/nodkey/issues/17)) is done. The latest
+release is on the
+[release page](https://github.com/code6x/nodkey/releases/latest).
 Try it on a test setup first. See the
 [v1 milestone](https://github.com/code6x/nodkey/milestone/1).
 
@@ -150,15 +150,16 @@ root on the broker host on the agent machine
    ask = "always"
    ```
 
-   Take the example unit from the tag of your version, such as
-   [v0.1.0](https://github.com/code6x/nodkey/blob/refs/tags/v0.1.0/contrib/systemd/nodkey.service),
-   never through the agent machine
+   Take the example unit from the tag of the version you installed
+   (`contrib/systemd/nodkey.service` at the tag `vX.Y.Z`), never through
+   the agent machine
    ([docs/setup.md section 8](docs/setup.md#8-the-systemd-unit)). After
    a build from the source, use the unit in your copy of the repository
-   instead. For the release 0.1.0:
+   instead. For a release, on the broker host:
 
    ```sh
-   curl -fL -o /etc/systemd/system/nodkey.service https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v0.1.0/contrib/systemd/nodkey.service
+   VERSION=$(/usr/local/bin/nodkey version | cut -d' ' -f2)
+   curl -fL -o /etc/systemd/system/nodkey.service "https://raw.githubusercontent.com/code6x/nodkey/refs/tags/v$VERSION/contrib/systemd/nodkey.service"
    ```
 
    Keep only the `LoadCredentialEncrypted=` lines of `broker-tls-key`,
