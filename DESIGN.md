@@ -3187,8 +3187,9 @@ Its checks, in this order:
    broker then fails at its start, and `service` shows why.
 4. `systemd`: the version of systemd.
 5. `cgroup v2`: the machine uses cgroup v2.
-6. `swap`: swap only on zram or on a dm-crypt device. Swap on another
-   device, such as a plain LVM volume, fails.
+6. `swap`: swap only on zram, on a dm-crypt device, or on a device-mapper
+   device that lies only on dm-crypt, such as LVM on dm-crypt. Swap on
+   another device, such as a plain LVM volume or a file, fails.
 7. `core_pattern`: `kernel.core_pattern` does not pass core dumps to a socket.
 8. `service`: whether the service runs. If not, it shows the last error
    lines of the service in the journal since the boot: at most 5 lines of

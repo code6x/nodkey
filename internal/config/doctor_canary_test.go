@@ -118,6 +118,7 @@ ask = "always"
 		LookupUser:     func(string) (uint32, error) { return uint32(os.Geteuid()), nil },
 		Stat:           os.Stat,
 		ReadFile:       func(string) ([]byte, error) { return nil, fs.ErrNotExist },
+		ReadDir:        func(string) ([]string, error) { return nil, fs.ErrNotExist },
 		SystemdVersion: func() (string, error) { return "systemd 255", nil },
 		Service:        func() (string, []string, error) { return "active", nil, nil },
 	}

@@ -197,8 +197,16 @@ func realBrokerDoctorEnv(path string) doctor.BrokerEnv {
 		CheckFiles: func(b *config.Broker, self uint32, skip func(string) bool) error {
 			return b.CheckFilesAs(self, skip)
 		},
-		Stat:           os.Stat,
-		ReadFile:       os.ReadFile,
+		Stat:     os.Stat,
+		ReadFile: os.ReadFile,
+		ReadDir: func(path string) ([]string, error) {
+			entries, err := os.ReadDir(path)
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			return names, err
+		},
 		SystemdVersion: func() (string, error) { return output("systemctl", "--version") },
 		Service: func() (string, []string, error) {
 			state, err := output("systemctl", "show", "--property=ActiveState", "--value", "--", doctor.Unit)

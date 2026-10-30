@@ -47,6 +47,7 @@ func goodBroker() BrokerEnv {
 			}
 			return nil, fs.ErrNotExist
 		},
+		ReadDir:        func(string) ([]string, error) { return nil, fs.ErrNotExist },
 		SystemdVersion: func() (string, error) { return "systemd 255 (255.4-1ubuntu8)\n+PAM", nil },
 		Service:        func() (string, []string, error) { return "active", nil, nil },
 	}
@@ -81,6 +82,33 @@ func TestBrokerUnitSpaces(t *testing.T) {
 	}
 	if res := result(t, Run(BrokerChecks(env)), "unit"); res.Status != OK {
 		t.Errorf("unit %+v", res)
+	}
+}
+
+func TestBrokerLVMOnCryptSwap(t *testing.T) {
+	uuids := map[string]string{"dm-1": "LVM-abc", "dm-0": "CRYPT-LUKS2-abc", "dm-2": "LVM-def"}
+	for _, tt := range []struct {
+		below []string
+		ok    bool
+	}{{[]string{"dm-0"}, true}, {[]string{"dm-2"}, false}, {[]string{"dm-0", "sda3"}, false}, {nil, false}} {
+		env := goodBroker()
+		env.ReadFile = func(p string) ([]byte, error) {
+			for dev, u := range uuids {
+				if p == "/sys/block/"+dev+"/dm/uuid" {
+					return []byte(u), nil
+				}
+			}
+			return []byte("Filename\n/dev/dm-1 partition\n"), nil
+		}
+		env.ReadDir = func(p string) ([]string, error) {
+			if p == "/sys/block/dm-1/slaves" {
+				return tt.below, nil
+			}
+			return nil, fs.ErrNotExist
+		}
+		if res := result(t, Run(BrokerChecks(env)), "swap"); (res.Status == OK) != tt.ok {
+			t.Errorf("below %q: swap %+v, want ok %v", tt.below, res, tt.ok)
+		}
 	}
 }
 

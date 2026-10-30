@@ -35,8 +35,9 @@ type BrokerEnv struct {
 	// CheckFiles is (*config.Broker).CheckFilesAs.
 	CheckFiles     func(b *config.Broker, self uint32, skip func(path string) bool) error
 	Stat           func(path string) (fs.FileInfo, error)
-	ReadFile       func(path string) ([]byte, error) // for files in /proc
-	SystemdVersion func() (string, error)            // systemctl --version
+	ReadFile       func(path string) ([]byte, error)   // for files in /proc and /sys
+	ReadDir        func(path string) ([]string, error) // the names in a directory of /sys
+	SystemdVersion func() (string, error)              // systemctl --version
 	// Service returns the state of the unit, such as "active", and the
 	// error lines of its last start in the journal.
 	Service func() (state string, errors []string, err error)
@@ -263,14 +264,38 @@ func checkSwap(env BrokerEnv) (string, *Problem) {
 	return "no swap on a disk", nil
 }
 
+// maxDMDepth is the most device-mapper devices on top of each other that
+// isCrypt follows, such as LVM on dm-crypt.
+const maxDMDepth = 4
+
 // isCrypt reports whether the device-mapper device name, such as "dm-1",
-// is a dm-crypt device.
+// is a dm-crypt device, or lies only on dm-crypt devices, such as an LVM
+// volume on dm-crypt.
 func isCrypt(env BrokerEnv, name string) bool {
-	if strings.ContainsAny(name, "/.") {
+	return isCryptDepth(env, name, maxDMDepth)
+}
+
+func isCryptDepth(env BrokerEnv, name string, depth int) bool {
+	if depth == 0 || name == "" || strings.ContainsAny(name, "/.") {
 		return false
 	}
 	uuid, err := env.ReadFile("/sys/block/" + name + "/dm/uuid")
-	return err == nil && strings.HasPrefix(string(uuid), "CRYPT-")
+	if err != nil {
+		return false
+	}
+	if strings.HasPrefix(string(uuid), "CRYPT-") {
+		return true
+	}
+	below, err := env.ReadDir("/sys/block/" + name + "/slaves")
+	if err != nil || len(below) == 0 {
+		return false
+	}
+	for _, b := range below {
+		if !isCryptDepth(env, b, depth-1) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkCorePattern checks kernel.core_pattern: the socket form ("@")
