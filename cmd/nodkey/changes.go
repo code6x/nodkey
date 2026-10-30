@@ -18,7 +18,8 @@ const changesUsage = `Usage: nodkey changes --since X.Y.Z
 
 Print the changes of the releases after X.Y.Z, from the changelog that is
 built into this nodkey. The security fixes of all these releases come
-first, then the other changes. nodkey update --notes runs this with the
+first, then the other changes. If there is no security fix, it says so
+first, then lists the changes. nodkey update --notes runs this with the
 new, checked release, before it installs anything.
 
   --since X.Y.Z  the version that you run now, such as 0.2.0
@@ -150,7 +151,8 @@ func safeLine(line string) string {
 
 // formatChanges returns the text that nodkey changes prints: the
 // security items of the entries newer than since, then their other
-// sections.
+// sections. Without security items, it says so in one line, and the
+// sections come under # CHANGES.
 func formatChanges(entries []releaseEntry, since nodkeyversion.Release) string {
 	var newer []releaseEntry
 	for _, e := range entries {
@@ -178,7 +180,20 @@ func formatChanges(entries []releaseEntry, since nodkeyversion.Release) string {
 			}
 		}
 	}
-	b.WriteString("\n# OTHER CHANGES\n")
+	heading, empty := "# OTHER CHANGES", "No other changes."
+	if len(security) == 0 {
+		// Name the newest release read: this changelog ends at the
+		// release of this binary, and says nothing about later ones.
+		newest := newer[0].version
+		for _, e := range newer {
+			if e.version.Compare(newest) > 0 {
+				newest = e.version
+			}
+		}
+		fmt.Fprintf(&b, "\nNo security fixes after nodkey %s, up to nodkey %s.\n", since, newest)
+		heading, empty = "# CHANGES", "The changelog lists no changes for this release."
+	}
+	fmt.Fprintf(&b, "\n%s\n", heading)
 	for _, e := range newer {
 		fmt.Fprintf(&b, "\n## %s\n", e.heading)
 		n := 0
@@ -193,7 +208,7 @@ func formatChanges(entries []releaseEntry, since nodkeyversion.Release) string {
 			}
 		}
 		if n == 0 {
-			b.WriteString("\nNo other changes.\n")
+			fmt.Fprintf(&b, "\n%s\n", empty)
 		}
 	}
 	return b.String()

@@ -132,6 +132,39 @@ func TestChangesNoSecurity(t *testing.T) {
 	}
 }
 
+// TestChangesNoSecurityText: without security fixes, one line says so,
+// and the changes come under # CHANGES, not # OTHER CHANGES; an entry
+// without items does not say "No other changes".
+func TestChangesNoSecurityText(t *testing.T) {
+	// 0.4.0 is not first, so the newest release is not just the first.
+	text := "## [0.3.0](x) (2026-11-10)\n\n### Features\n\n* a new command\n\n" +
+		"## [0.4.0](x) (2026-12-01)\n\n" +
+		"## [0.2.0](x) (2026-10-17)\n\n### Security\n\n* an old fix\n"
+	code, out, errOut := changes(t, text, "--since", "0.2.0")
+	if code != exitOK || errOut != "" {
+		t.Fatalf("code %d, stderr %q", code, errOut)
+	}
+	want := `Changes after nodkey 0.2.0, from the changelog of this nodkey.
+
+No security fixes after nodkey 0.2.0, up to nodkey 0.4.0.
+
+# CHANGES
+
+## [0.3.0](x) (2026-11-10)
+
+### Features
+
+* a new command
+
+## [0.4.0](x) (2026-12-01)
+
+The changelog lists no changes for this release.
+`
+	if out != want {
+		t.Fatalf("got\n%s\nwant\n%s", out, want)
+	}
+}
+
 // TestChangesNothingNewer: one line when no release is newer.
 func TestChangesNothingNewer(t *testing.T) {
 	for _, since := range []string{"0.3.1", "1.0.0"} {

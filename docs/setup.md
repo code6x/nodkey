@@ -1630,6 +1630,8 @@ get a silent notice that names that client.
 1. Read the changes. `nodkey update --notes`, as root, downloads the
    release and checks it as `nodkey update` does, but installs nothing.
    Then it prints the changes since your version, security fixes first.
+   If there is none, it says `No security fixes after nodkey X.Y.Z, up to
+   nodkey A.B.C.` and lists the changes under `# CHANGES`.
    `nodkey changes --since 0.2.0` prints the same from the changelog that
    is built into the nodkey that you run. A normal `nodkey update` prints
    the changes after it installs. A host on nodkey 0.2.0 has no
