@@ -219,9 +219,24 @@ func (g granter) runPreapprove(ctx context.Context, args []string, stdout, w io.
 	}
 	// The grant is made. The ID goes to stdout for a script that cancels.
 	_, _ = fmt.Fprintln(stdout, ans.ID)
+	if o.windows != nil {
+		_, _ = fmt.Fprintf(stderr, "nodkey: standing grant %s: %s in each window, %s (broker time), from %s until %s (exit %d)\n",
+			ans.ID, usesText(o.uses), windowText(o.windows[0]), ans.From, ans.Until, exitOK)
+		return exitOK
+	}
 	_, _ = fmt.Fprintf(stderr, "nodkey: grant %s: %s from %s until %s (exit %d)\n",
 		ans.ID, usesText(o.uses), ans.From, ans.Until, exitOK)
 	return exitOK
+}
+
+// windowText returns the window of a standing grant as the person gave it:
+// "daily 03:00-05:00" or "weekly mon,thu 03:00-05:00".
+func windowText(w api.Window) string {
+	span := w.From + "-" + w.To
+	if w.Kind == api.WindowWeekly {
+		return "weekly " + strings.Join(w.Days, ",") + " " + span
+	}
+	return "daily " + span
 }
 
 // saveAnswerToken checks the token of the answer against the request and

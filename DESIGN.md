@@ -2989,7 +2989,13 @@ Before it, it may print one warning about the version of the broker
 `--grant-token FILE` is a must; the client writes the token there after the
 tap (mode 0600, new file or its own file) and prints no token. `nodkey run
 --grant-token FILE` uses it and rotates it, as section 8 says; if the
-file cannot be saved, the command does not run (exit 77).
+file cannot be saved, the command does not run (exit 77). After an
+approval, its last line on stderr names the window, the uses in each
+window and the span: `nodkey: standing grant ID: 1 use in each window,
+daily 03:00-05:00 (broker time), from 2026-10-30T15:54:02+02:00 until
+2026-12-31T00:00:00+02:00 (exit 0)`. A weekly window shows as `weekly
+mon,thu 03:00-05:00`. The window is in the broker's local time, as
+section 8 says.
 
 `nodkey preapprove` asks for a scheduled grant (section 8) and waits for
 the tap, as `nodkey ssh-grant` does. The times are read as section 8
