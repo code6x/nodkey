@@ -39,7 +39,8 @@ nothing. Examples:
 - `security: deny a request with two Host headers`
 - `security(deps): bump golang.org/x/crypto (GHSA-xxxx-xxxx-xxxx)`
 
-The title may name advisory IDs in the form `GHSA-xxxx-xxxx-xxxx`.
+The title may name the IDs of published advisories, in the form
+`GHSA-xxxx-xxxx-xxxx`.
 
 A `security` pull request puts its line in a `### Security` section. This
 section comes first in CHANGELOG.md and in the release notes. The update
@@ -48,8 +49,9 @@ notices of nodkey will use this section to flag a security release (issue
 
 Do not name an unfixed problem in public. Fix a privately reported problem
 in the temporary private fork of its GitHub security advisory, and merge it
-from there just before the release. Name the advisory ID in a public title
-only after the advisory is published.
+from there just before the release. The title becomes public when it is
+merged, before the advisory is published. So keep the advisory ID and the
+details of the problem out of that title.
 
 ## Squash merges
 
