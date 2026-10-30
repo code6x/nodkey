@@ -24,6 +24,12 @@ Examples:
 The allowed types are `security`, `feat`, `fix`, `perf`, `revert`, `docs`,
 `chore`, `ci`, `test`, `refactor`, `build` and `style`.
 
+For a breaking change, add `!` after the type. For example:
+`feat!: change the config file format`.
+
+The **PR title** check tests the title. If the check fails, edit the title.
+The check runs again by itself.
+
 ## Security fixes
 
 Use the type `security` for a pull request that fixes a real security
@@ -44,12 +50,6 @@ Do not name an unfixed problem in public. Fix a privately reported problem
 in the temporary private fork of its GitHub security advisory, and merge it
 from there just before the release. Name the advisory ID in a public title
 only after the advisory is published.
-
-For a breaking change, add `!` after the type. For example:
-`feat!: change the config file format`.
-
-The **PR title** check tests the title. If the check fails, edit the title.
-The check runs again by itself.
 
 ## Squash merges
 
