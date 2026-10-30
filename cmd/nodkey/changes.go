@@ -182,7 +182,15 @@ func formatChanges(entries []releaseEntry, since nodkeyversion.Release) string {
 	}
 	heading, empty := "# OTHER CHANGES", "No other changes."
 	if len(security) == 0 {
-		fmt.Fprintf(&b, "\nNo security fixes after nodkey %s.\n", since)
+		// Name the newest release read: this changelog ends at the
+		// release of this binary, and says nothing about later ones.
+		newest := newer[0].version
+		for _, e := range newer {
+			if e.version.Compare(newest) > 0 {
+				newest = e.version
+			}
+		}
+		fmt.Fprintf(&b, "\nNo security fixes after nodkey %s, up to nodkey %s.\n", since, newest)
 		heading, empty = "# CHANGES", "The changelog lists no changes for this release."
 	}
 	fmt.Fprintf(&b, "\n%s\n", heading)
