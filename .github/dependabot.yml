@@ -1,7 +1,8 @@
 version: 2
 updates:
   # Pull request titles look like "chore(deps): bump ...". The chore type
-  # makes no release. See docs/releasing.md for security fixes.
+  # makes no release. A fix for a known security problem is retitled
+  # "security(deps): ...". See docs/releasing.md.
   - package-ecosystem: gomod
     directory: /
     schedule:

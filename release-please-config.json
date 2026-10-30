@@ -7,6 +7,7 @@
   "draft": true,
   "force-tag-creation": true,
   "changelog-sections": [
+    { "type": "security", "section": "Security" },
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },
     { "type": "perf", "section": "Performance Improvements" },
