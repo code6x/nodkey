@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/code6x/nodkey/compare/v0.2.0...v0.3.0) (2026-10-30)
+
+
+### Features
+
+* flag security releases in nodkey version, the broker's notices and the answers to clients ([#122](https://github.com/code6x/nodkey/issues/122)) ([1c3cdca](https://github.com/code6x/nodkey/commit/1c3cdcab6610af9050ef7fd0471dcdccc107b75a))
+* nodkey changes and nodkey update --notes; a host on nodkey 0.2.0 has no --notes, so update it once first ([#122](https://github.com/code6x/nodkey/issues/122)) ([1c3cdca](https://github.com/code6x/nodkey/commit/1c3cdcab6610af9050ef7fd0471dcdccc107b75a))
+* revoke button and notices for scheduled grants (part 2 of [#108](https://github.com/code6x/nodkey/issues/108)) ([#114](https://github.com/code6x/nodkey/issues/114)) ([89d07e9](https://github.com/code6x/nodkey/commit/89d07e9ca58a262d4cd27022d564c2085c0b6ca4))
+* scheduled grants with nodkey preapprove (part 1 of [#108](https://github.com/code6x/nodkey/issues/108)) ([#112](https://github.com/code6x/nodkey/issues/112)) ([102d0bf](https://github.com/code6x/nodkey/commit/102d0bf9e495f1973b9af4ba318abd977759873c))
+* standing grants (part 1 of [#110](https://github.com/code6x/nodkey/issues/110)) ([#115](https://github.com/code6x/nodkey/issues/115)) ([bfd9036](https://github.com/code6x/nodkey/commit/bfd9036e4a36ffa4e5bed812410c3820dc7db084))
+* standing grants (part 2 of [#110](https://github.com/code6x/nodkey/issues/110)) ([#116](https://github.com/code6x/nodkey/issues/116)) ([3442a2a](https://github.com/code6x/nodkey/commit/3442a2a14f2e8df3a0250cc1421a74fe3d691130))
+
+
+### Bug Fixes
+
+* nodkey --version and nodkey help COMMAND ([#129](https://github.com/code6x/nodkey/issues/129)) ([d3e033f](https://github.com/code6x/nodkey/commit/d3e033f7923f1373b35d631f0a79fe6048101431))
+
+
+### Documentation
+
+* mark what is new in 0.3.0, and stop naming 0.1.0 as the latest release ([#130](https://github.com/code6x/nodkey/issues/130)) ([3b9e4c6](https://github.com/code6x/nodkey/commit/3b9e4c6ced3643d8aec1672785d83769a5bf8e7a))
+
 ## [0.2.0](https://github.com/code6x/nodkey/compare/v0.1.0...v0.2.0) (2026-10-17)
 
 
