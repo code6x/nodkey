@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/code6x/nodkey/internal/client"
 	"github.com/code6x/nodkey/internal/transport"
@@ -135,7 +137,36 @@ func parseErrorCode(stderr io.Writer, cmd string, err error) int {
 	if errors.Is(err, flag.ErrHelp) {
 		return exitOK
 	}
-	return usageFail(stderr, cmd, err.Error())
+	return usageFail(stderr, cmd, flagErrorText(err.Error()))
+}
+
+// flagErrorText turns the text of an error of the flag package into our
+// own text. It never passes the text on as it is: the flag package puts
+// the user's input into it. The input is quoted and cut to 64 characters.
+// The reason of a bad value is kept (at most 64 characters), because it
+// comes from the flag package or from our own flag types, and it is fixed
+// text, such as "want X.Y.Z, such as 0.2.0".
+func flagErrorText(msg string) string {
+	if name, ok := strings.CutPrefix(msg, "flag provided but not defined: -"); ok {
+		return fmt.Sprintf("unknown option %.64q", name)
+	}
+	if name, ok := strings.CutPrefix(msg, "flag needs an argument: -"); ok {
+		return fmt.Sprintf("option %.64q needs a value", name)
+	}
+	rest, ok := strings.CutPrefix(msg, "invalid value ")
+	if !ok {
+		rest, ok = strings.CutPrefix(msg, "invalid boolean value ")
+	}
+	if ok {
+		// The value is quoted with %q, so its end is exact.
+		if quoted, err := strconv.QuotedPrefix(rest); err == nil {
+			rest = rest[len(quoted):]
+			rest = strings.TrimPrefix(strings.TrimPrefix(rest, " for flag"), " for")
+			name, reason, _ := strings.Cut(strings.TrimPrefix(rest, " -"), ": ")
+			return fmt.Sprintf("bad value for option %.64q: %.64s", name, reason)
+		}
+	}
+	return "wrong option"
 }
 
 // runHelp prints the general usage, or with one argument the help of that

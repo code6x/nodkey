@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
 	"github.com/code6x/nodkey/internal/version"
 )
 

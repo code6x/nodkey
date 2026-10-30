@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/claim"
@@ -542,5 +543,22 @@ func TestRunNotDumpableFails(t *testing.T) {
 	}
 	if fb.requests.Load() != 0 || len(fx.ran()) != 0 {
 		t.Error("a request was sent or the command started")
+	}
+}
+
+// TestUsageErrorCapsTheReason: the reason is one line of at most 256
+// bytes, cut on a character boundary, with no format character.
+func TestUsageErrorCapsTheReason(t *testing.T) {
+	var b strings.Builder
+	reason := "a\u202eb\n" + strings.Repeat("\u00e9", 500) // 2 bytes each
+	if code := UsageError(&b, "run", reason); code != exitUsage {
+		t.Errorf("exit code %d, want %d", code, exitUsage)
+	}
+	got := b.String()
+	if strings.Count(got, "\n") != 1 || strings.ContainsRune(got, '\u202e') {
+		t.Errorf("line = %q, want one line without U+202E", got)
+	}
+	if len(got) > 256+100 || !utf8.ValidString(got) {
+		t.Errorf("line has %d bytes, valid = %v; want it capped and valid", len(got), utf8.ValidString(got))
 	}
 }

@@ -48,9 +48,9 @@ func TestBrokerUsage(t *testing.T) {
 		code int
 		want string // a part of the one usage line, if any
 	}{
-		{"an unknown flag", []string{"broker", "--bogus"}, exitUsage, "flag provided but not defined"},
+		{"an unknown flag", []string{"broker", "--bogus"}, exitUsage, "unknown option"},
 		{"an argument", []string{"broker", "extra"}, exitUsage, "unexpected argument"},
-		{"a flag with a line break", []string{"broker", "--x\n" + fakeAnchor}, exitUsage, "flag provided but not defined"},
+		{"a flag with a line break", []string{"broker", "--x\n" + fakeAnchor}, exitUsage, "unknown option"},
 		{"-h", []string{"broker", "-h"}, exitOK, ""},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -537,4 +537,19 @@ func TestUnitHasEachCredential(t *testing.T) {
 	if len(inConfig) == 0 || !slices.Equal(inConfig, inUnit) {
 		t.Errorf("the credentials of the example config %q and of the unit %q differ", inConfig, inUnit)
 	}
+}
+
+// TestBrokerUsageErrorIsShort: a huge flag argument gives one plain line
+// under the cap, so journald cannot split it (DESIGN.md section 15).
+func TestBrokerUsageErrorIsShort(t *testing.T) {
+	var stderr bytes.Buffer
+	args := []string{"broker", "--" + strings.Repeat("y", 49000)}
+	if code := run(args, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != exitUsage {
+		t.Errorf("exit code %d, want %d", code, exitUsage)
+	}
+	got := stderr.String()
+	if len(got) > 400 || strings.Count(got, "\n") != 1 {
+		t.Errorf("the line has %d bytes and %d line breaks", len(got), strings.Count(got, "\n"))
+	}
+	noAnchorLine(t, got)
 }

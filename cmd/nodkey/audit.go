@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"slices"
 
@@ -133,7 +134,11 @@ func readAnchorsFile(path string, stdin io.Reader, stderr io.Writer) ([]audit.An
 	if path != "-" {
 		f, err := os.Open(path) //nolint:gosec // G304: the person names the file with the anchors; nodkey only reads it.
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors: %v\n", err)
+			var pe *fs.PathError
+			if errors.As(err, &pe) {
+				err = pe.Err // the path is the person's own text; show it quoted and cut
+			}
+			_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %.64q: %v\n", path, err)
 			return nil, exitNoInput
 		}
 		defer func() { _ = f.Close() }() // read only; a close error changes nothing
@@ -141,11 +146,11 @@ func readAnchorsFile(path string, stdin io.Reader, stderr io.Writer) ([]audit.An
 	}
 	anchors, err := audit.ReadAnchors(r)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %s: %v\n", path, err)
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %.64q: %v\n", path, err)
 		return nil, exitNoInput
 	}
 	if len(anchors) == 0 {
-		return nil, usageFail(stderr, "audit verify", fmt.Sprintf("--anchors %s: no line is exactly %q and an anchor; "+
+		return nil, usageFail(stderr, "audit verify", fmt.Sprintf("--anchors %.64q: no line is exactly %q and an anchor; "+
 			"use journalctl -o cat", path, audit.JournalPrefix))
 	}
 	return anchors, exitOK

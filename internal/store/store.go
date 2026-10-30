@@ -167,6 +167,7 @@ func newStore(cfg config.Store, dir string, d deps) (Store, error) {
 	if cfg.Type == config.StoreBWS {
 		return newBWS(cfg, r, d)
 	}
+	r.bwPath = d.path
 	return newBW(cfg, r, d)
 }
 

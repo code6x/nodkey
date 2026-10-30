@@ -72,8 +72,8 @@ func TestUpdateUsage(t *testing.T) {
 		want string // a part of stderr
 	}{
 		{"an argument", []string{"update", "0.2.0"}, exitUsage, ""},
-		{"an unknown flag", []string{"update", "--bin-dir", "/tmp"}, exitUsage, "flag provided but not defined: -bin-dir"},
-		{"no version", []string{"update", "--version"}, exitUsage, "flag needs an argument: -version"},
+		{"an unknown flag", []string{"update", "--bin-dir", "/tmp"}, exitUsage, `unknown option "bin-dir"`},
+		{"no version", []string{"update", "--version"}, exitUsage, `option "version" needs a value`},
 		{"an empty version", []string{"update", "--version="}, exitUsage, "want X.Y.Z, such as 0.2.0"},
 		{"a version with two numbers", []string{"update", "--version", "0.2"}, exitUsage, "want X.Y.Z"},
 		{"a version with a v", []string{"update", "--version", "v0.2.0"}, exitUsage, "want X.Y.Z"},
@@ -83,8 +83,8 @@ func TestUpdateUsage(t *testing.T) {
 		{"a gh that is not absolute", []string{"update", "--gh", "gh"}, exitUsage, "want an absolute path"},
 		{"an empty gh", []string{"update", "--gh="}, exitUsage, "want an absolute path"},
 		{"two gh", []string{"update", "--gh", "/usr/bin/gh", "--gh", "/usr/local/bin/gh"}, exitUsage, "give it once"},
-		{"a value for --reinstall", []string{"update", "--reinstall=maybe"}, exitUsage, "invalid boolean value"},
-		{"a value for --notes", []string{"update", "--notes=maybe"}, exitUsage, "invalid boolean value"},
+		{"a value for --reinstall", []string{"update", "--reinstall=maybe"}, exitUsage, `bad value for option`},
+		{"a value for --notes", []string{"update", "--notes=maybe"}, exitUsage, `bad value for option`},
 		{"--notes with --reinstall", []string{"update", "--notes", "--reinstall"}, exitUsage, "does not go with --reinstall"},
 		{"-h", []string{"update", "-h"}, exitOK, ""},
 	} {

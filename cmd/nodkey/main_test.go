@@ -17,7 +17,7 @@ func TestRun(t *testing.T) {
 	}{
 		{name: "no arguments", args: nil, wantCode: exitUsage, wantStderr: `nodkey: give a command; see "nodkey --help"`},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: exitUsage, wantStderr: `unknown command "bogus"`},
-		{name: "unknown flag", args: []string{"-bogus"}, wantCode: exitUsage, wantStderr: "flag provided but not defined"},
+		{name: "unknown flag", args: []string{"-bogus"}, wantCode: exitUsage, wantStderr: "unknown option"},
 		{name: "-h", args: []string{"-h"}, wantCode: exitOK, wantStderr: usageText},
 		{name: "help", args: []string{"help"}, wantCode: exitOK, wantStdout: usageText},
 		{name: "version", args: []string{"version"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},

@@ -2759,7 +2759,12 @@ A usage error (exit 64) is one line on stderr, with no usage text:
 `nodkey CMD: REASON; see "nodkey CMD --help" (exit 64)`. For nodkey itself
 the line is `nodkey: REASON; see "nodkey --help" (exit 64)`. The reason is
 fixed text, and it shows an argument of the user at most 64 bytes long,
-quoted. `-h` or `--help` prints the usage and exits with 0.
+quoted. `-h` or `--help` prints the usage and exits with 0. The text of
+the flag package is never passed on: an unknown or bad option is shown as
+our own text, with the name or the value quoted and cut to at most 64
+characters. The whole reason is cut to 256 bytes, and control characters
+and format characters (such as U+202E) become spaces. So the line is
+short, also for the broker.
 
 `nodkey broker` runs the broker. The default config is
 `/etc/nodkey/broker.toml`. Run it as its own user, from a systemd unit;
@@ -2767,8 +2772,11 @@ quoted. `-h` or `--help` prints the usage and exits with 0.
 example (section 16), and [docs/setup.md](docs/setup.md) sets it up step
 by step. It writes its log to stderr, which systemd keeps in
 the journal, with the anchors of the audit log (section 9). All its
-lines, also an error at start and a wrong argument, come from the logger
-of section 10, so no line can look like an anchor.
+lines, also an error at start, come from the logger
+of section 10, so no line can look like an anchor. The one exception is
+the usage error of a wrong argument (section 15): one plain line of at
+most 256 bytes of reason, which cannot be an anchor line and is far under
+the size at which journald splits a line.
 
 It starts in this order. If a step fails, it stops there, and ends what
 it started before.
@@ -3328,10 +3336,15 @@ The broker runs `bws` and `bw` like this (`internal/store`):
 - The broker reads stdout, never stderr, and logs neither. An error names
   the store and the step, and gives a fixed reason and the exit code, such
   as `store "vault": bw sync: the program failed (exit code 1)`. It ends
-  with a hint: `; to see why, run PROGRAM by hand as the broker's user, with
-  HOME set to HOME`, with the path of the program and of its home. The hint
-  holds no argument and no output of the program, so T18 holds. Any error
-  means deny.
+  with a fixed hint for the kind of store. For `bw`: `; to check the login,
+  run as the broker's user: env -i -C HOME HOME=HOME PATH=PATH PROGRAM
+  status; never bw unlock, lock or logout`, with the path of the program,
+  of its home and the fixed PATH of bw. It is the check of the setup guide,
+  and it shows no secret. Unlock, lock and logout would end the session of
+  the broker. For `bws`: `; to check the setup, see section 5 of
+  docs/setup.md; the token goes in the environment, never in an argument`.
+  The hint holds no argument and no output of the program, so T18 holds.
+  Any error means deny.
 - The broker clears the output, the token and the session key in its
   memory when it no longer needs them. This is best effort: Go strings,
   such as the environment variable for a run, and buffers of the operating
