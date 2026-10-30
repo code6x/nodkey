@@ -91,6 +91,15 @@ func Run(args []string, stderr io.Writer, version string) int {
 	return r.main(args, stderr)
 }
 
+// RunWithConfig is Run with the client config at path, in place of
+// ConfigPath. nodkey try run uses it with the config of the trial, so it
+// never reads ~/.config/nodkey/client.toml.
+func RunWithConfig(args []string, stderr io.Writer, version, path string) int {
+	r := runner{load: Load, configPath: func() (string, error) { return path, nil }, environ: os.Environ,
+		exec: syscall.Exec, notDumpable: notDumpable, version: version}
+	return r.main(args, stderr)
+}
+
 // runner runs nodkey run. Tests replace its parts.
 type runner struct {
 	// load reads the client config and the TLS key: Load.

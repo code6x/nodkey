@@ -38,6 +38,8 @@ const usageText = `Usage: nodkey <command> [arguments]
 Commands:
   broker [--config FILE]
             run the broker: the daemon that asks the approver on Telegram
+  try [run ...]
+            try nodkey on this machine with fake secrets; no setup
   keygen    make a TLS key for the broker or a client, and print its pin
   run       run a command with secrets, once a person approves on the phone
   ssh-agent serve an SSH agent for ssh; the keys stay on the broker
@@ -95,6 +97,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch name {
 	case "broker":
 		return runBroker(rest, stderr)
+	case "try":
+		return runTry(rest, stdin, stdout, stderr)
 	case "keygen":
 		ignoreBrokenPipe()
 		return runKeygen(rest, stdout, stderr, writeKeyFile)
@@ -202,7 +206,7 @@ func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 // commands are the commands of nodkey that "nodkey help COMMAND" knows.
 // Each must handle --help before it does any work.
-var commands = []string{"broker", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "changes", "doctor", "version"}
+var commands = []string{"broker", "try", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "update", "changes", "doctor", "version"}
 
 // recordingWriter keeps the first write error, because the usage
 // functions of the commands ignore it.
