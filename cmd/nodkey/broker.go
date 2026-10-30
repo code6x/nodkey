@@ -487,7 +487,7 @@ func (b *brokerParts) startCheck(notice broker.NoticeFunc) {
 		b.log.Info("nodkey broker: the check for a newer release is off: this is a build from the source")
 		return
 	}
-	check := release.NewCheck(own, releaseFirstWait, release.New(own).Latest, notice, b.log)
+	check := release.NewCheck(own, releaseFirstWait, release.New(own).Lookup, notice, b.log)
 	ctx, cancel := context.WithCancel(context.Background())
 	b.stopCheck = cancel
 	b.checkDone = make(chan struct{})

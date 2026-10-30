@@ -19,9 +19,9 @@ import (
 
 // Go reads the proxy setting of the environment once per process. So the
 // test of the proxy runs the lookup in a child process: the test binary
-// again, with TestLatestThroughProxyChild only.
+// again, with TestLookupThroughProxyChild only.
 
-// proxyChildEnv makes TestLatestThroughProxyChild run.
+// proxyChildEnv makes TestLookupThroughProxyChild run.
 const proxyChildEnv = "NODKEY_TEST_RELEASE_PROXY_CHILD"
 
 // tunnelProxy is a small HTTPS proxy. It keeps what it reads before the
@@ -68,15 +68,15 @@ func (p *tunnelProxy) handle(c net.Conn) {
 	_, _ = io.Copy(c, up)
 }
 
-// TestLatestThroughProxyChild runs only as the child of
-// TestLatestThroughProxy. The lookup asks https://example.com; the proxy
+// TestLookupThroughProxyChild runs only as the child of
+// TestLookupThroughProxy. The lookup asks https://example.com; the proxy
 // connects it to a fake GitHub, whose certificate holds example.com. The
 // client may dial only the proxy, so nothing goes to example.com itself.
-func TestLatestThroughProxyChild(t *testing.T) {
+func TestLookupThroughProxyChild(t *testing.T) {
 	if os.Getenv(proxyChildEnv) == "" {
-		t.Skip("runs only as the child of TestLatestThroughProxy")
+		t.Skip("runs only as the child of TestLookupThroughProxy")
 	}
-	srv := httptest.NewTLSServer(answer(http.StatusOK, releaseJSON("v0.3.0")))
+	srv := httptest.NewTLSServer(answer(http.StatusOK, listJSON(releaseJSON("v0.3.0"))))
 	defer srv.Close()
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -103,28 +103,28 @@ func TestLatestThroughProxyChild(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	got, err := c.Latest(ctx)
-	if err != nil || got != (rel(0, 3, 0)) {
-		t.Fatalf("Latest through the proxy: %v, %v", got, err)
+	got, err := c.Lookup(ctx)
+	if err != nil || got.Newest != (rel(0, 3, 0)) {
+		t.Fatalf("Lookup through the proxy: %v, %v", got, err)
 	}
 	proxy.mu.Lock()
 	seen := proxy.seen.String()
 	proxy.mu.Unlock()
 	// The proxy sees the host, and the user name and the password of the
 	// setting, but not the path: it is inside TLS.
-	if !strings.HasPrefix(seen, "CONNECT example.com:443 HTTP/1.1\r\n") || strings.Contains(seen, latestPath) {
+	if !strings.HasPrefix(seen, "CONNECT example.com:443 HTTP/1.1\r\n") || strings.Contains(seen, listPath) {
 		t.Errorf("the proxy saw: %q", seen)
 	}
 }
 
-// TestLatestThroughProxy: the lookup takes the proxy from HTTPS_PROXY, as
+// TestLookupThroughProxy: the lookup takes the proxy from HTTPS_PROXY, as
 // the calls to Telegram do.
-func TestLatestThroughProxy(t *testing.T) {
+func TestLookupThroughProxy(t *testing.T) {
 	if os.Getenv(proxyChildEnv) != "" {
 		t.Skip("this is the child")
 	}
 	//nolint:gosec // G204: the test binary itself, with fixed arguments.
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLatestThroughProxyChild$", "-test.v")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLookupThroughProxyChild$", "-test.v")
 	// No other proxy setting of the test's environment, such as NO_PROXY,
 	// may change where the child's call goes.
 	for _, kv := range os.Environ() {
@@ -134,7 +134,7 @@ func TestLatestThroughProxy(t *testing.T) {
 	}
 	cmd.Env = append(cmd.Env, proxyChildEnv+"=1")
 	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "--- PASS: TestLatestThroughProxyChild") {
+	if err != nil || !strings.Contains(string(out), "--- PASS: TestLookupThroughProxyChild") {
 		t.Fatalf("the child: %v\n%s", err, out)
 	}
 }

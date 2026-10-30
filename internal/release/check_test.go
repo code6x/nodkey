@@ -129,15 +129,15 @@ func (r *checkRun) lookupsBegun() int {
 	return r.looked
 }
 
-func (r *checkRun) latest(ctx context.Context) (version.Release, error) {
+func (r *checkRun) latest(ctx context.Context) (Info, error) {
 	r.mu.Lock()
 	r.looked++
 	r.mu.Unlock()
 	select {
 	case l := <-r.lookups:
-		return l.newest, l.err
+		return Info{Newest: l.newest}, l.err
 	case <-ctx.Done():
-		return version.Release{}, ctx.Err()
+		return Info{}, ctx.Err()
 	}
 }
 

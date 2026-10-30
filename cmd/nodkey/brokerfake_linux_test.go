@@ -355,8 +355,8 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveGitHub answers like GitHub's API: the newest release of nodkey,
-// with newestTag. The other fields hold text and a link that the broker
+// serveGitHub answers like GitHub's API: the list of releases of nodkey,
+// with one release, newestTag. The other fields hold text and a link that the broker
 // must never show.
 func (f *fakeTelegram) serveGitHub(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
@@ -364,12 +364,13 @@ func (f *fakeTelegram) serveGitHub(w http.ResponseWriter, r *http.Request) {
 	tag := f.newestTag
 	f.notifyLocked()
 	f.mu.Unlock()
-	if r.Method != http.MethodGet || r.URL.Path != "/repos/code6x/nodkey/releases/latest" {
+	if r.Method != http.MethodGet || r.URL.Path != "/repos/code6x/nodkey/releases" ||
+		r.URL.RawQuery != "per_page=20" {
 		writeTelegram(w, http.StatusNotFound, `{"message":"Not Found"}`)
 		return
 	}
-	writeTelegram(w, http.StatusOK, fmt.Sprintf(`{"tag_name":%q,"draft":false,"prerelease":false,`+
-		`"name":"not this name","html_url":"https://example.com/not-this-link","body":"<b>not this text</b>"}`, tag))
+	writeTelegram(w, http.StatusOK, fmt.Sprintf(`[{"tag_name":%q,"draft":false,"prerelease":false,`+
+		`"name":"not this name","html_url":"https://example.com/not-this-link","body":"<b>not this text</b>"}]`, tag))
 }
 
 // githubCalls returns the headers of each call to the fake GitHub.

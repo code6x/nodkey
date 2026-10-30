@@ -38,7 +38,7 @@ const (
 type Check struct {
 	own    version.Release
 	first  time.Duration // the wait before the first check
-	latest func(ctx context.Context) (version.Release, error)
+	lookup func(ctx context.Context) (Info, error)
 	notice func(ctx context.Context, msg string) error
 	log    *slog.Logger
 	// wait waits for d, or until ctx ends. It is a field only so that a
@@ -47,19 +47,19 @@ type Check struct {
 }
 
 // NewCheck returns the check of a broker whose version is own. Its first
-// check comes after first, such as FirstWait. latest finds the newest
-// release, such as Client.Latest. notice sends the notice to the
+// check comes after first, such as FirstWait. lookup finds the newest
+// release, such as Client.Lookup. notice sends the notice to the
 // approver, such as telegram.Approver.Inform: it makes one try, and its
 // ctx has a deadline. log gets a line for each newer release, each
 // notice, each failed lookup and each failed notice, with fixed texts and
 // release versions only; it may be nil.
-func NewCheck(own version.Release, first time.Duration, latest func(ctx context.Context) (version.Release, error),
+func NewCheck(own version.Release, first time.Duration, lookup func(ctx context.Context) (Info, error),
 	notice func(ctx context.Context, msg string) error, log *slog.Logger,
 ) *Check {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Check{own: own, first: first, latest: latest, notice: notice, log: log, wait: sleep}
+	return &Check{own: own, first: first, lookup: lookup, notice: notice, log: log, wait: sleep}
 }
 
 // Run checks for a newer release until ctx ends. It never stops on its
@@ -77,7 +77,7 @@ func (c *Check) Run(ctx context.Context) {
 
 // once makes one check, and returns the time until the next one.
 func (c *Check) once(ctx context.Context, noticed, logged *version.Release) time.Duration {
-	newest, err := c.latest(ctx)
+	info, err := c.lookup(ctx)
 	if ctx.Err() != nil {
 		return 0 // the broker stops
 	}
@@ -86,6 +86,7 @@ func (c *Check) once(ctx context.Context, noticed, logged *version.Release) time
 			slog.String("error", err.Error()))
 		return retry
 	}
+	newest := info.Newest
 	if newest.Compare(*noticed) <= 0 {
 		return every // no newer release, or its notice went out
 	}

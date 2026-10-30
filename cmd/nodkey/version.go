@@ -44,7 +44,8 @@ type versionCheck struct {
 var realVersionCheck = versionCheck{
 	isTerminal: isTerminal,
 	newest: func(ctx context.Context, own nodkeyversion.Release) (nodkeyversion.Release, error) {
-		return release.New(own).Latest(ctx)
+		info, err := release.New(own).Lookup(ctx)
+		return info.Newest, err
 	},
 }
 

@@ -2973,8 +2973,9 @@ cannot write to stdout.
 
 The lookup, of `nodkey version` and of the broker (step 10 of the start):
 
-- `GET https://api.github.com/repos/code6x/nodkey/releases/latest`,
-  without a login, with the headers `Accept: application/vnd.github+json`,
+- `GET https://api.github.com/repos/code6x/nodkey/releases?per_page=20`:
+  one call for the list of the last 20 releases, without a login, with
+  the headers `Accept: application/vnd.github+json`,
   `X-GitHub-Api-Version: 2022-11-28` and `User-Agent: nodkey/<version>`.
   So GitHub learns the address and the version (THREAT-MODEL.md T34).
 - It uses the proxy from the environment, as the Telegram code does
@@ -2986,10 +2987,22 @@ The lookup, of `nodkey version` and of the broker (step 10 of the start):
 - The TCP connection, the TLS handshake and the headers of the answer
   each have 10 seconds, and the whole lookup 30 seconds. The answer is
   at most 1 MiB; a larger one is an error.
-- It reads only `tag_name`, `draft` and `prerelease`, with exactly these
-  names, and ignores the other keys. A draft, a prerelease, a missing
-  key, or a tag that is not `v` and a release version, such as `v0.3.0`,
-  is an error.
+- The answer must be a JSON list of at most 20 objects. Of each one it
+  reads only `tag_name`, `draft`, `prerelease` and `body`, with exactly
+  these names, and ignores the other keys. A missing key (other than `body`), or
+  a key of a wrong type in any release, is an error. `body` may be a
+  string, `null` or missing. Drafts, prereleases and tags that are not
+  `v` and a release version, such as `v0.3.0`, do not count. The newest
+  release is the highest version that counts; a list without one is an
+  error.
+- A release that counts is a security release when its notes have the
+  line `### Security` (trailing spaces and `\r` do not matter). Only the
+  first 64 KiB of the notes are read: the Security section comes first.
+  Under that line, up to the next line that starts with `#`, it takes at
+  most 3 advisory IDs in the strict form `GHSA-xxxx-xxxx-xxxx`, where
+  each `x` is one of `23456789cfghjmpqrvwx`, as words of their own. It
+  finds every security release newer than this nodkey among the last 20
+  releases, so a skipped one is not lost. Nothing else of the notes is ever used.
 - 403 and 429 mean that GitHub limits the calls without a login from
   this address for now. Any other status but 200 is an error with only
   the status.

@@ -926,8 +926,13 @@ one in `SSL_CERT_FILE` or `SSL_CERT_DIR` (DESIGN.md section 7).
   the check fail. The notice and the line of `nodkey version` show only
   release versions, which are digits and dots, and a link that nodkey
   makes from the version: never text or a link from the answer. A tag
-  that is not `vX.Y.Z`, a draft, a prerelease, a redirect, or an answer
-  over 1 MiB is an error. Each error gives one line with a fixed text,
+  that is not `vX.Y.Z`, a draft or a prerelease does not count. A list
+  without a release that counts, a redirect, or an answer over 1 MiB is
+  an error. From the notes, nodkey reads only the line `### Security`
+  and at most 3 IDs in the strict GHSA form, in the first 64 KiB. A
+  false answer can mark a release as a security release, or hide the
+  mark. A security release older than the last 20 releases is not
+  found. Each error gives one line with a fixed text,
   and no notice.
 - It cannot install anything. The notice only says what to run.
   `nodkey update` checks the attestation of the release and the version
