@@ -56,6 +56,7 @@ type fakeTelegram struct {
 	connects    []proxyRequest            // what the proxy was asked to connect to, and by which start
 	changed     chan struct{}             // closed and made new on each change
 	newestTag   string                    // the tag of the newest release at the fake GitHub
+	security    bool                      // the newest release at the fake GitHub is a security release
 	github      []http.Header             // the headers of each call to the fake GitHub
 }
 
@@ -99,6 +100,7 @@ func newFakeTelegram(t *testing.T, opts brokerOptions) *fakeTelegram {
 		refusePolls: opts.refusePolls,
 		changed:     make(chan struct{}),
 		newestTag:   opts.newestRelease,
+		security:    opts.securityRelease,
 	}
 	if f.newestTag == "" {
 		f.newestTag = "v0.2.0" // the version of seamReleaseVersion
@@ -357,11 +359,15 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // serveGitHub answers like GitHub's API: the list of releases of nodkey,
 // with one release, newestTag. The other fields hold text and a link that the broker
-// must never show.
+// must never show. With security, its notes have the line "### Security".
 func (f *fakeTelegram) serveGitHub(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.github = append(f.github, r.Header.Clone())
 	tag := f.newestTag
+	notes := "<b>not this text</b>"
+	if f.security {
+		notes = "### Security\n\n* <b>not this text</b>\n"
+	}
 	f.notifyLocked()
 	f.mu.Unlock()
 	if r.Method != http.MethodGet || r.URL.Path != "/repos/code6x/nodkey/releases" ||
@@ -370,7 +376,7 @@ func (f *fakeTelegram) serveGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeTelegram(w, http.StatusOK, fmt.Sprintf(`[{"tag_name":%q,"draft":false,"prerelease":false,`+
-		`"name":"not this name","html_url":"https://example.com/not-this-link","body":"<b>not this text</b>"}]`, tag))
+		`"name":"not this name","html_url":"https://example.com/not-this-link","body":%q}]`, tag, notes))
 }
 
 // githubCalls returns the headers of each call to the fake GitHub.

@@ -44,6 +44,9 @@ type Check struct {
 	// loud sends the notice about a security release, with a sound.
 	loud func(ctx context.Context, msg string) error
 	log  *slog.Logger
+	// share gets the newest security release after each lookup that
+	// worked (OnSecurity); nil for none.
+	share func(newest version.Release, ok bool)
 	// wait waits for d, or until ctx ends. It is a field only so that a
 	// test can use a fake.
 	wait func(ctx context.Context, d time.Duration) error
@@ -64,6 +67,15 @@ func NewCheck(own version.Release, first time.Duration, lookup func(ctx context.
 	}
 	return &Check{own: own, first: first, lookup: lookup, notice: notice, loud: loud, log: log, wait: sleep}
 }
+
+// OnSecurity makes the check give share the newest security release that
+// each lookup that worked found, also one that is not newer than the
+// broker, with ok set; or ok false when the list has none. A failed lookup
+// changes nothing, so share keeps what it has. share runs in the goroutine
+// of Run, and must not block. nodkey broker passes the broker's
+// Service.SetSecurity, which tells the clients (DESIGN.md section 10).
+// Call it before Run.
+func (c *Check) OnSecurity(share func(newest version.Release, ok bool)) { c.share = share }
 
 // Run checks for a newer release until ctx ends. It never stops on its
 // own. The wait, a lookup or a notice that runs when ctx ends is
@@ -88,6 +100,13 @@ func (c *Check) once(ctx context.Context, noticed, logged *version.Release) time
 		c.log.Warn("release: cannot check for a newer release of nodkey; the next check is in 1 hour",
 			slog.String("error", err.Error()))
 		return retry
+	}
+	if c.share != nil {
+		if n := len(info.Security); n > 0 {
+			c.share(info.Security[n-1].Version, true)
+		} else {
+			c.share(version.Release{}, false)
+		}
 	}
 	if fixes, ids := info.SecurityNewer(c.own); len(fixes) > 0 {
 		return c.security(ctx, fixes, ids)

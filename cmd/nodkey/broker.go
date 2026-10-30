@@ -488,6 +488,8 @@ func (b *brokerParts) startCheck(notice, loud broker.NoticeFunc) {
 		return
 	}
 	check := release.NewCheck(own, releaseFirstWait, release.New(own).Lookup, notice, loud, b.log)
+	// The service tells the clients about a newer security release.
+	check.OnSecurity(b.svc.SetSecurity)
 	ctx, cancel := context.WithCancel(context.Background())
 	b.stopCheck = cancel
 	b.checkDone = make(chan struct{})

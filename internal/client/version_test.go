@@ -302,3 +302,106 @@ func TestVersionWithTheRealBroker(t *testing.T) {
 		t.Errorf("exit code %d, stderr %q", code, safe(stderr))
 	}
 }
+
+// warnSecurity is the line about the security release 0.3.1 for a client
+// on 0.3.0.
+const warnSecurity = "nodkey: SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.3.0. " +
+	"Ask the owner of the broker host to update this host: run nodkey update as root."
+
+// TestSecurityWarning: the client takes the header api.SecurityUpdateHeader
+// only when it holds one release version that is newer than the client's
+// release. It ignores any other value, and a client that is not a
+// release. The line holds only fixed text and the two versions.
+func TestSecurityWarning(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		own    string
+		values []string
+		want   string
+	}{
+		{"0.3.0", []string{"0.3.1"}, "SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey " +
+			"0.3.0. Ask the owner of the broker host to update this host: run nodkey update as root."},
+		{"0.3.0", []string{"1.0.0"}, "SECURITY UPDATE: nodkey 1.0.0 fixes a security problem. This is nodkey " +
+			"0.3.0. Ask the owner of the broker host to update this host: run nodkey update as root."},
+		{"0.3.0", []string{"0.3.0"}, ""},
+		{"0.3.0", []string{"0.2.9"}, ""},
+		{"0.3.0", []string{"0.3.1-rc1"}, ""},
+		{"0.3.0", []string{"v0.3.1"}, ""},
+		{"0.3.0", []string{"1.2"}, ""},
+		{"0.3.0", []string{"0.3.01"}, ""},
+		{"0.3.0", []string{" 0.3.1"}, ""},
+		{"0.3.0", []string{"0.3.1<b>BAD</b>"}, ""},
+		{"0.3.0", []string{"BAD"}, ""},
+		{"0.3.0", []string{""}, ""},
+		{"0.3.0", []string{"0.3." + strings.Repeat("9", 4096)}, ""},
+		{"0.3.0", []string{"0.3.1", "0.3.1"}, ""},
+		{"0.3.0", nil, ""},
+		{"dev", []string{"0.3.1"}, ""},
+		{"", []string{"0.3.1"}, ""},
+		{"1a2b3c4", []string{"0.3.1"}, ""},
+	} {
+		b := &Broker{}
+		var lines []string
+		b.warnVersions(tt.own, func(text string) { lines = append(lines, text) })
+		h := http.Header{api.VersionHeader: {tt.own}}
+		if tt.values != nil {
+			h[api.SecurityUpdateHeader] = tt.values
+		}
+		b.versions.check(h)
+		var want []string
+		if tt.want != "" {
+			want = []string{tt.want}
+		}
+		if !slices.Equal(lines, want) {
+			t.Errorf("client %q, header %.40q: lines %q, want %q", tt.own, tt.values, lines, want)
+		}
+	}
+}
+
+// TestSecurityWarningOnce: the line comes at most once, also for many
+// answers and for another security release later.
+func TestSecurityWarningOnce(t *testing.T) {
+	t.Parallel()
+	b := &Broker{}
+	var lines []string
+	b.warnVersions("0.3.0", func(text string) { lines = append(lines, text) })
+	for _, v := range []string{"0.3.1", "0.3.1", "0.3.2", "0.4.0"} {
+		b.versions.check(http.Header{api.VersionHeader: {"0.3.0"}, api.SecurityUpdateHeader: {v}})
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "nodkey 0.3.1 fixes") {
+		t.Errorf("lines %q, want one about 0.3.1", lines)
+	}
+}
+
+// TestRunSecurityWarning: nodkey run prints the line on stderr, once, and
+// the command still runs; a denied request prints it too, before the last
+// line.
+func TestRunSecurityWarning(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusOK, http.StatusForbidden} {
+		body := secretsAnswer(t, "GH_TOKEN", madeUp("value"))
+		if status != http.StatusOK {
+			body = `{"error":"` + http.StatusText(status) + `"}`
+		}
+		inner := answer(status, body)
+		fb := newFakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set(api.VersionHeader, "0.3.0")
+			w.Header().Set(api.SecurityUpdateHeader, "0.3.1")
+			inner(w, r)
+		})
+		fx := &fakeExec{}
+		r := testRunner(fb.b, []string{"HOME=/home/dev"}, fx)
+		r.version = "0.3.0"
+		code, stderr := runIn(t.Context(), r, "--secret", "GH_TOKEN=github-token", "--", self(t))
+		lines := linesOf(stderr)
+		want := []string{warnSecurity}
+		if status != http.StatusOK {
+			want = append(want, "nodkey: denied (exit 77)")
+		} else if code != exitOK || len(fx.ran()) != 1 {
+			t.Fatalf("exit code %d, stderr %q; want the command to run", code, safe(stderr))
+		}
+		if !slices.Equal(lines, want) {
+			t.Errorf("status %d: stderr %q, want %q", status, safe(stderr), want)
+		}
+	}
+}

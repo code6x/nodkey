@@ -41,6 +41,7 @@ type checkRun struct {
 	noticeErr error         // the result of the next tries
 	gate      chan struct{} // if set, each try waits until it is closed, or its context ends
 	deadlines []time.Duration
+	shared    []string // each value that the check shared (OnSecurity); "none" for ok false
 
 	nextSecurity []Security // the security releases of each next lookup; only the test goroutine uses it
 }
@@ -71,6 +72,7 @@ func startCheck(t *testing.T, own version.Release) *checkRun {
 	r := &checkRun{t: t, lookups: make(chan lookup), waits: make(chan time.Duration), ticks: make(chan struct{}),
 		done: make(chan struct{}), logs: &syncBuffer{}}
 	c := NewCheck(own, FirstWait, r.latest, r.notice, r.loud, slog.New(slog.NewTextHandler(r.logs, nil)))
+	c.OnSecurity(r.share)
 	c.wait = func(ctx context.Context, d time.Duration) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -142,6 +144,17 @@ func (r *checkRun) latest(ctx context.Context) (Info, error) {
 	case <-ctx.Done():
 		return Info{}, ctx.Err()
 	}
+}
+
+// share records what the check shares with the broker's service.
+func (r *checkRun) share(newest version.Release, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !ok {
+		r.shared = append(r.shared, "none")
+		return
+	}
+	r.shared = append(r.shared, newest.String())
 }
 
 // loud is the notice with a sound. Its texts start with "LOUD " in tries
@@ -453,5 +466,27 @@ func TestCheckSecurity(t *testing.T) {
 		"run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or " +
 		"newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1"; tries[0] != want {
 		t.Errorf("the notice:\n%s\nwant:\n%s", tries[0], want)
+	}
+}
+
+// TestCheckSharesSecurity: after each lookup that worked, the check shares
+// the newest security release of the list, also one that is not newer
+// than the broker, or none when the list has none. A failed lookup shares
+// nothing, so the last value stays.
+func TestCheckSharesSecurity(t *testing.T) {
+	r := startCheck(t, rel(0, 3, 0))
+	r.nextSecurity = []Security{{Version: rel(0, 2, 5)}, {Version: rel(0, 2, 9)}} // oldest first, as the lookup sorts them
+	r.mustRound(rel(0, 3, 0), nil, 24*time.Hour)
+	r.nextSecurity = []Security{{Version: rel(0, 3, 1)}, {Version: rel(0, 3, 4)}}
+	r.mustRound(rel(0, 3, 4), nil, 24*time.Hour)
+	r.mustRound(version.Release{}, errors.New("cannot reach GitHub: the lookup timed out"), time.Hour)
+	r.nextSecurity = nil
+	r.mustRound(rel(0, 3, 4), nil, 24*time.Hour)
+	r.stop()
+	r.mu.Lock()
+	got := strings.Join(r.shared, " ")
+	r.mu.Unlock()
+	if want := "0.2.9 0.3.4 none"; got != want {
+		t.Errorf("shared %q, want %q", got, want)
 	}
 }
