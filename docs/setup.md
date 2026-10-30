@@ -1380,8 +1380,9 @@ nodkey preapprove --secret backup-token \
   --reason "job nightly-backup"
 ```
 
-The message shows the secret, the uses and the time, in the broker's
-local time. After **Approve**, the command prints the ID of the grant and
+`--from` is optional (default: now): without it, the grant starts when
+you ask for it. The message shows the secret, the uses and the time, in
+the broker's local time. After **Approve**, the command prints the ID of the grant and
 ends. The message keeps one **Revoke** button. At 03:00 the job runs
 `nodkey run` as usual, and gets the secret without a tap. Each use sends
 a silent notice to the notice chat. When the uses are gone, or at 04:00,

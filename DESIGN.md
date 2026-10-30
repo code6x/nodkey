@@ -1297,8 +1297,9 @@ and its uses are counted. It hands out nothing by itself.
 /v1/preapprove` (section 10), with the kind `preapprove` in the audit
 log. It names secrets (`--secret`, up to 32), or a key with a remote user
 and hosts (`--key`, `--user`, `--host`, checked as for `nodkey
-ssh-grant`, section 13), the first moment (`--from`), the end (`--until`),
-the number of uses (`--uses`) and a claimed reason. A time is RFC 3339
+ssh-grant`, section 13), the first moment (`--from`, optional: without
+it, the client sends the current time), the end (`--until`), the number
+of uses (`--uses`) and a claimed reason. A time is RFC 3339
 with a UTC offset (`2026-10-28T03:00:00+02:00`), or without an offset
 (`2026-10-28T03:00`), which the broker reads as its local time. The
 seconds may be left out; a part of a second is refused. A local time that
@@ -2739,7 +2740,7 @@ nodkey broker [--config FILE]
 nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
-nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --from TIME --until TIME --uses N [--reason TEXT]
+nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
 nodkey preapprove --secret NAME... (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM) --until TIME [--from TIME] [--uses N] --grant-token FILE [--reason TEXT]
 nodkey preapprove --cancel ID
 nodkey keygen --out FILE
@@ -2992,7 +2993,8 @@ file cannot be saved, the command does not run (exit 77).
 
 `nodkey preapprove` asks for a scheduled grant (section 8) and waits for
 the tap, as `nodkey ssh-grant` does. The times are read as section 8
-says; the client only checks their form. After an approval it prints the
+says; the client only checks their form. Without `--from`, the client
+sends the current time, as for a standing grant. After an approval it prints the
 ID of the grant alone on stdout, so a script can keep it for `--cancel`,
 and its last line on stderr is `nodkey: grant ID: 2 uses from
 2026-10-28T03:00:00+02:00 until 2026-10-28T04:00:00+02:00 (exit 0)`, with
