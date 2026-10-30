@@ -429,3 +429,19 @@ func netReason(err error) string {
 	}
 	return "the connection failed"
 }
+
+// SecurityFixes returns the text that names the security releases vs, such
+// as "nodkey 0.3.1 fixes a security problem" or "nodkey 0.3.1 and 0.3.4 fix
+// security problems". vs holds release versions, so the text holds only
+// fixed words, digits and dots. vs must not be empty.
+func SecurityFixes(vs []version.Release) string {
+	names := make([]string, len(vs))
+	for i, v := range vs {
+		names[i] = v.String()
+	}
+	if len(names) == 1 {
+		return "nodkey " + names[0] + " fixes a security problem"
+	}
+	return "nodkey " + strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1] +
+		" fix security problems"
+}

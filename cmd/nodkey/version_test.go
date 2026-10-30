@@ -20,6 +20,7 @@ import (
 type fakeVersionCheck struct {
 	terminal bool
 	newest   nodkeyversion.Release
+	security []release.Security
 	err      error
 
 	mu       sync.Mutex
@@ -31,7 +32,7 @@ type fakeVersionCheck struct {
 func (f *fakeVersionCheck) check() versionCheck {
 	return versionCheck{
 		isTerminal: func(io.Writer) bool { return f.terminal },
-		newest: func(ctx context.Context, own nodkeyversion.Release) (nodkeyversion.Release, error) {
+		lookup: func(ctx context.Context, own nodkeyversion.Release) (release.Info, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.lookups++
@@ -39,7 +40,7 @@ func (f *fakeVersionCheck) check() versionCheck {
 			if dl, ok := ctx.Deadline(); ok {
 				f.timeLeft = time.Until(dl)
 			}
-			return f.newest, f.err
+			return release.Info{Newest: f.newest, Security: f.security}, f.err
 		},
 	}
 }
@@ -61,8 +62,8 @@ func rel(major, minor, patch int) nodkeyversion.Release {
 // it could not check. stdout is the same in every case, and the exit code
 // is 0, also after an error.
 func TestVersionCheck(t *testing.T) {
-	newer := `nodkey: a newer release is out: nodkey 0.3.0; to update, run "sudo nodkey update"; ` +
-		"release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0\n"
+	newer := "nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root; " +
+		"what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0\n"
 	for _, tt := range []struct {
 		name   string
 		newest nodkeyversion.Release
@@ -173,5 +174,47 @@ func TestVersionRealCheck(t *testing.T) {
 	if code := runVersion(nil, "0.2.0", &stdout, &stderr, realVersionCheck); code != exitOK ||
 		stdout.String() != "nodkey 0.2.0\n" || stderr.Len() != 0 {
 		t.Errorf("exit code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestVersionSecurity: a security release newer than this nodkey, also one
+// older than the newest release, gives one red SECURITY UPDATE line. With
+// NO_COLOR it has no colour. A security release that is not newer gives
+// the normal line.
+func TestVersionSecurity(t *testing.T) {
+	sec := func(vs ...nodkeyversion.Release) []release.Security {
+		var out []release.Security
+		for _, v := range vs {
+			out = append(out, release.Security{Version: v})
+		}
+		return out
+	}
+	one := "SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.3.0. " +
+		"Update now: run nodkey update as root. Checked notes: nodkey update --notes."
+	for _, tt := range []struct {
+		name     string
+		noColor  string
+		newest   nodkeyversion.Release
+		security []release.Security
+		want     string
+	}{
+		{"security", "", rel(0, 3, 1), sec(rel(0, 3, 1)), "\x1b[31m" + one + "\x1b[0m\n"},
+		{"NO_COLOR", "1", rel(0, 3, 1), sec(rel(0, 3, 1)), one + "\n"},
+		{"a skipped one", "1", rel(0, 3, 2), sec(rel(0, 3, 1)), one + "\n"},
+		{"two", "1", rel(0, 4, 0), sec(rel(0, 3, 1), rel(0, 4, 0)),
+			"SECURITY UPDATE: nodkey 0.3.1 and 0.4.0 fix security problems. This is nodkey 0.3.0. " +
+				"Update now: run nodkey update as root. Checked notes: nodkey update --notes.\n"},
+		{"not newer", "", rel(0, 3, 0), sec(rel(0, 2, 9), rel(0, 3, 0)), "nodkey: this is the newest release\n"},
+		{"not newer, a normal newer one", "", rel(0, 3, 2), sec(rel(0, 3, 0)), "nodkey: a newer release is out: nodkey 0.3.2;"},
+	} {
+		t.Setenv("NO_COLOR", tt.noColor)
+		f := &fakeVersionCheck{terminal: true, newest: tt.newest, security: tt.security}
+		var stdout, stderr bytes.Buffer
+		if code := runVersion(nil, "0.3.0", &stdout, &stderr, f.check()); code != exitOK || stdout.String() != "nodkey 0.3.0\n" {
+			t.Errorf("%s: exit code %d, stdout %q", tt.name, code, stdout.String())
+		}
+		if got := stderr.String(); !strings.HasPrefix(got, tt.want) || strings.Count(got, "\n") != 1 {
+			t.Errorf("%s: stderr %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
