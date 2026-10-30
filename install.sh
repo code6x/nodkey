@@ -6,7 +6,7 @@
 # user downloads. docs/setup.md (section 2) shows how to run it, and
 # THREAT-MODEL.md (T20) says what it trusts.
 #
-#   sh install.sh [--version X.Y.Z] [--bin-dir DIR] [--gh PATH] [--reinstall]
+#   sh install.sh [--version X.Y.Z] [--bin-dir DIR] [--gh PATH] [--reinstall | --notes]
 #
 # nodkey update runs the copy of this script that is built into nodkey,
 # with --bin-dir set to the directory of its own file.
@@ -62,7 +62,7 @@ max_big=67108864  # 64 MiB: the tarballs of nodkey and of gh
 
 usage() {
 	cat <<EOF
-Usage: sh install.sh [--version X.Y.Z] [--bin-dir DIR] [--gh PATH] [--reinstall]
+Usage: sh install.sh [--version X.Y.Z] [--bin-dir DIR] [--gh PATH] [--reinstall | --notes]
 
 Install nodkey from a release on GitHub, or update it. Run it as root on
 the host itself: the broker host or an agent machine. Never run it as the
@@ -75,6 +75,9 @@ user of the agent.
                    which only root can change (default: download gh
                    $gh_version and check its SHA-256)
   --reinstall      install also when this version is installed already
+  --notes          check the release in the same way, but install nothing:
+                   run the new, checked nodkey to print its changes since
+                   the installed version
   --help           print this help
 
 Before it installs anything, it checks the SHA-256 and the build
@@ -284,6 +287,10 @@ parse_args() {
 			reinstall=1
 			shift
 			;;
+		--notes)
+			notes=1
+			shift
+			;;
 		--help | -h)
 			usage
 			exit 0
@@ -293,6 +300,9 @@ parse_args() {
 			;;
 		esac
 	done
+	if [ -n "$reinstall" ] && [ -n "$notes" ]; then
+		usage_error "--notes installs nothing, so it does not go with --reinstall"
+	fi
 	case $bin_dir in
 	/*) ;;
 	*) usage_error "--bin-dir must be an absolute path" ;;
@@ -443,6 +453,10 @@ check_installed() {
 			installed=
 		fi
 	fi
+	if [ -n "$notes" ]; then
+		check_installed_notes
+		return 0
+	fi
 	if [ -z "$installed" ]; then
 		if [ -e "$target" ]; then
 			say "$target has an unknown version. nodkey $version will replace it."
@@ -473,6 +487,21 @@ check_installed() {
 		say "Replacing nodkey $installed with the older nodkey $version, as --version asks."
 		;;
 	esac
+}
+
+# check_installed_notes is check_installed for --notes. The changes are
+# those after the installed version, so it must be known, and older than
+# the release.
+check_installed_notes() {
+	if [ -z "$installed" ]; then
+		die "$target has an unknown version, so it is not known which changes are new"
+	fi
+	compare_versions "$version" "$installed"
+	if [ "$cmp" != 1 ]; then
+		say "$target says that it is nodkey $installed, and nodkey $version is not newer. No changes to show."
+		exit 0
+	fi
+	say "Checking nodkey $version to print its changes since nodkey $installed. This installs nothing."
 }
 
 # download_release gets the tarball for this machine, SHA256SUMS and the
@@ -576,6 +605,47 @@ unpack() {
 	fi
 }
 
+# show_notes runs the new nodkey from the temporary directory, after all
+# the checks, to print its changes since the installed version (--notes).
+# It checks first that the new nodkey says it is nodkey $version, as
+# install_new does. It installs nothing.
+show_notes() {
+	chmod 0700 "$tmp/new/nodkey" || die "cannot make the new nodkey a program"
+	new_out=$("$tmp/new/nodkey" version </dev/null) || die "the new nodkey does not run (if programs cannot run in $tmp_parent, set TMPDIR to a directory that only root can write, such as /root)"
+	if [ "$new_out" != "nodkey $version" ]; then
+		die "the new nodkey does not say that it is nodkey $version"
+	fi
+	say "The checked nodkey $version says what is new:"
+	say ""
+	"$tmp/new/nodkey" changes --since "$installed" </dev/null ||
+		die "the new nodkey cannot print its changes; read the release notes: https://github.com/$repo/releases/tag/v$version"
+	say ""
+	if [ -n "$want_version" ]; then
+		say "Nothing was installed. To install it, run as root: nodkey update --version $version"
+	else
+		say "Nothing was installed. To install it, run as root: nodkey update"
+	fi
+}
+
+# print_changes runs the new file to print its changes since the old
+# version, after an update to a newer version. A failure here does not
+# fail the update: the new file is in place already.
+print_changes() {
+	if [ -z "$installed" ]; then
+		return 0
+	fi
+	compare_versions "$version" "$installed"
+	if [ "$cmp" != 1 ]; then
+		return 0
+	fi
+	say "What is new since nodkey $installed:"
+	say ""
+	if ! "$target" changes --since "$installed" </dev/null; then
+		say "The new nodkey cannot print its changes. Read the release notes: https://github.com/$repo/releases/tag/v$version"
+	fi
+	say ""
+}
+
 # install_new copies the new nodkey into the directory of the old one,
 # under a new name, and checks that it says it is nodkey $version, and
 # nothing else (step 8). Then it renames it over the old file (step 9). A
@@ -615,6 +685,7 @@ main() {
 	want_version=
 	gh=
 	reinstall=
+	notes=
 	tmp=
 	tmp_target=
 	trap cleanup EXIT
@@ -633,7 +704,12 @@ main() {
 	get_gh
 	verify_attestation
 	unpack
+	if [ -n "$notes" ]; then
+		show_notes
+		return 0
+	fi
 	install_new
+	print_changes
 	print_restart
 }
 

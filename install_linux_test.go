@@ -907,36 +907,47 @@ func TestInstallDenies(t *testing.T) {
 			sums(fmt.Sprintf("%x  %s\n", sha256.Sum256(data), tarball))(in)
 		}, checked: true, want: "cannot take nodkey out of " + tarball},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			in := newInstaller(t)
-			in.latest("v0.2.0")
-			in.release("0.2.0", says("nodkey 0.2.0"))
-			in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
-			if tt.setup != nil {
-				tt.setup(in)
+		// Each check denies in the same way with --notes, which installs
+		// nothing and must run no new nodkey before the checks pass.
+		for _, notes := range []bool{false, true} {
+			name := tt.name
+			if notes {
+				name += ", with --notes"
 			}
-			args := tt.args
-			if args == nil {
-				args = []string{"--gh", in.gh}
-			}
-			before := files(t, in.bin)
-			r := in.run(args...)
-			want := strings.NewReplacer("BIN", in.bin, "DIR", in.dir).Replace(tt.want)
-			in.checkFailed(r, 1, want, before)
-			if in.ghChecked() != tt.checked {
-				t.Errorf("gh attestation verify ran: %v, want %v", in.ghChecked(), tt.checked)
-			}
-			if urls := in.urls(); tt.noCurl && len(urls) != 0 {
-				t.Errorf("curl got %q, want no call", urls)
-			}
-			if runs := append(in.log("nodkey-runs"), in.log("gh")...); tt.noRun && len(runs) != 0 {
-				t.Errorf("the script ran a nodkey or a gh: %q", runs)
-			}
-			// The new nodkey runs only after the attestation passed.
-			if ranNew := slices.ContainsFunc(in.log("nodkey-runs"), func(s string) bool { return s == "amd64" }); ranNew && !tt.checked {
-				t.Error("the new nodkey ran, but the attestation was not checked")
-			}
-		})
+			t.Run(name, func(t *testing.T) {
+				in := newInstaller(t)
+				in.latest("v0.2.0")
+				in.release("0.2.0", says("nodkey 0.2.0"))
+				in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
+				if tt.setup != nil {
+					tt.setup(in)
+				}
+				args := tt.args
+				if args == nil {
+					args = []string{"--gh", in.gh}
+				}
+				if notes {
+					args = append(slices.Clone(args), "--notes")
+				}
+				before := files(t, in.bin)
+				r := in.run(args...)
+				want := strings.NewReplacer("BIN", in.bin, "DIR", in.dir).Replace(tt.want)
+				in.checkFailed(r, 1, want, before)
+				if in.ghChecked() != tt.checked {
+					t.Errorf("gh attestation verify ran: %v, want %v", in.ghChecked(), tt.checked)
+				}
+				if urls := in.urls(); tt.noCurl && len(urls) != 0 {
+					t.Errorf("curl got %q, want no call", urls)
+				}
+				if runs := append(in.log("nodkey-runs"), in.log("gh")...); tt.noRun && len(runs) != 0 {
+					t.Errorf("the script ran a nodkey or a gh: %q", runs)
+				}
+				// The new nodkey runs only after the attestation passed.
+				if ranNew := slices.ContainsFunc(in.log("nodkey-runs"), func(s string) bool { return s == "amd64" }); ranNew && !tt.checked {
+					t.Error("the new nodkey ran, but the attestation was not checked")
+				}
+			})
+		}
 	}
 }
 
@@ -948,12 +959,169 @@ func TestInstallRunsNoNewFileBeforeTheCheck(t *testing.T) {
 	in.release("0.2.0", says("nodkey 0.2.0"))
 	in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
 	in.env = append(in.env, "FAKE_GH_EXIT=1")
-	before := files(t, in.bin)
-	r := in.run("--gh", in.gh)
-	in.checkFailed(r, 1, "gh attestation verify failed", before)
-	// Only the installed nodkey ran, for its version.
-	if runs := in.log("nodkey-runs"); !slices.Equal(runs, []string{"installed"}) {
-		t.Errorf("these copies of nodkey ran: %q, want only the installed one", runs)
+	for i, args := range [][]string{{"--gh", in.gh}, {"--gh", in.gh, "--notes"}} {
+		before := files(t, in.bin)
+		r := in.run(args...)
+		in.checkFailed(r, 1, "gh attestation verify failed", before)
+		// Only the installed nodkey ran, for its version.
+		want := slices.Repeat([]string{"installed"}, i+1)
+		if runs := in.log("nodkey-runs"); !slices.Equal(runs, want) {
+			t.Errorf("%q: these copies of nodkey ran: %q, want only the installed one", args, runs)
+		}
+	}
+}
+
+// changesNodkey is a fake nodkey of version that logs each run with its
+// arguments, and for "changes" prints a line with them and exits with
+// code.
+func changesNodkey(note, version string, code int) []byte {
+	return fmt.Appendf(nil, "#!/bin/sh\n# A fake nodkey (%[1]s).\n"+
+		"echo \"%[1]s $*\" >>\"$FAKE_LOGS/nodkey-runs\"\n"+
+		"case $1 in\nversion) echo 'nodkey %[2]s' ;;\nchanges) echo \"CHANGES $*\"; exit %[3]d ;;\nesac\n",
+		note, version, code)
+}
+
+// TestInstallNotes: --notes checks the release as an install does, runs
+// the new nodkey from the temporary directory to print its changes, and
+// installs nothing.
+func TestInstallNotes(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string // a part of stdout
+	}{
+		{name: "the newest release", want: "Nothing was installed. To install it, run as root: nodkey update\n"},
+		{name: "a release with --version", args: []string{"--version", "0.2.0"},
+			want: "Nothing was installed. To install it, run as root: nodkey update --version 0.2.0\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			in := newInstaller(t)
+			in.latest("v0.2.0")
+			in.release("0.2.0", func(arch string) []byte { return changesNodkey(arch, "0.2.0", 0) })
+			in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
+			before := files(t, in.bin)
+			r := in.run(append([]string{"--gh", in.gh, "--notes"}, tt.args...)...)
+			if r.code != 0 {
+				t.Fatalf("exit code %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+			}
+			for _, want := range []string{"This installs nothing.", "The checked nodkey 0.2.0 says what is new:\n\nCHANGES changes --since 0.1.0\n", tt.want} {
+				if !strings.Contains(r.stdout, want) {
+					t.Errorf("stdout does not say %q:\n%s", want, r.stdout)
+				}
+			}
+			if after := files(t, in.bin); !maps.Equal(after, before) {
+				t.Errorf("the bin directory changed: %v", slices.Sorted(maps.Keys(after)))
+			}
+			if !in.ghChecked() {
+				t.Error("gh attestation verify did not run")
+			}
+			if runs, want := in.log("nodkey-runs"), []string{"installed", "amd64 version", "amd64 changes --since 0.1.0"}; !slices.Equal(runs, want) {
+				t.Errorf("runs of nodkey %q, want %q", runs, want)
+			}
+			in.checkTmpGone()
+		})
+	}
+}
+
+// TestInstallNotesDenies: --notes shows nothing for an installed version
+// that is unknown, the same or newer; and fails when the new nodkey
+// cannot print its changes. It installs nothing.
+func TestInstallNotesDenies(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		installed []byte
+		args      []string
+		code      int
+		want      string // a part of stdout, or of the last line of stderr
+	}{
+		{name: "the same version", installed: fakeNodkey("installed", "nodkey 0.2.0"),
+			want: "BIN/nodkey says that it is nodkey 0.2.0, and nodkey 0.2.0 is not newer. No changes to show."},
+		{name: "a newer version", installed: fakeNodkey("installed", "nodkey 0.3.0"),
+			want: "and nodkey 0.2.0 is not newer"},
+		{name: "an older --version", installed: fakeNodkey("installed", "nodkey 0.3.0"), args: []string{"--version", "0.2.0"},
+			want: "and nodkey 0.2.0 is not newer"},
+		{name: "an unknown version", installed: fakeNodkey("installed", "nodkey dev"), code: 1,
+			want: "BIN/nodkey has an unknown version, so it is not known which changes are new"},
+		{name: "no installed file", code: 1, want: "BIN/nodkey has an unknown version"},
+		{name: "a failed changes", installed: fakeNodkey("installed", "nodkey 0.1.0"), code: 1,
+			want: "the new nodkey cannot print its changes"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			in := newInstaller(t)
+			in.latest("v0.2.0")
+			in.release("0.2.0", func(arch string) []byte { return changesNodkey(arch, "0.2.0", 3) })
+			if tt.installed != nil {
+				in.installed(tt.installed)
+			}
+			before := files(t, in.bin)
+			r := in.run(append([]string{"--gh", in.gh, "--notes"}, tt.args...)...)
+			want := strings.ReplaceAll(tt.want, "BIN", in.bin)
+			if tt.code != 0 {
+				in.checkFailed(r, tt.code, want, before)
+				return
+			}
+			if r.code != 0 || !strings.Contains(r.stdout, want) {
+				t.Errorf("exit code %d, stdout:\n%s\nwant 0 and %q", r.code, r.stdout, want)
+			}
+			if after := files(t, in.bin); !maps.Equal(after, before) {
+				t.Errorf("the bin directory changed: %v", slices.Sorted(maps.Keys(after)))
+			}
+			if in.ghChecked() || slices.ContainsFunc(in.log("nodkey-runs"), func(s string) bool { return strings.HasPrefix(s, "amd64") }) {
+				t.Error("the release was checked or run, with nothing to show")
+			}
+			in.checkTmpGone()
+		})
+	}
+	// --notes and --reinstall do not go together.
+	in := newInstaller(t)
+	in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
+	in.checkFailed(in.run("--gh", in.gh, "--notes", "--reinstall"), 64, "--notes installs nothing", files(t, in.bin))
+}
+
+// TestInstallPrintsChanges: after an update to a newer version, the new
+// file prints its changes since the old version. If it cannot, a note
+// says so and the update still succeeds. A reinstall or a downgrade prints
+// no changes.
+func TestInstallPrintsChanges(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		installed string
+		args      []string
+		code      int // the exit code of the new nodkey changes
+		want      string
+		runs      []string // the runs of the new file
+	}{
+		{name: "an update", installed: "0.1.0", want: "What is new since nodkey 0.1.0:\n\nCHANGES changes --since 0.1.0\n",
+			runs: []string{"amd64 version", "amd64 changes --since 0.1.0", "amd64 version"}},
+		{name: "a failed changes", installed: "0.1.0", code: 64,
+			want: "The new nodkey cannot print its changes. Read the release notes: https://github.com/code6x/nodkey/releases/tag/v0.2.0\n",
+			runs: []string{"amd64 version", "amd64 changes --since 0.1.0", "amd64 version"}},
+		{name: "a reinstall", installed: "0.2.0", args: []string{"--reinstall"},
+			runs: []string{"amd64 version", "amd64 version"}},
+		{name: "a downgrade", installed: "0.3.0", args: []string{"--version", "0.2.0"},
+			runs: []string{"amd64 version", "amd64 version"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			in := newInstaller(t)
+			in.latest("v0.2.0")
+			in.release("0.2.0", func(arch string) []byte { return changesNodkey(arch, "0.2.0", tt.code) })
+			in.installed(fakeNodkey("installed", "nodkey "+tt.installed))
+			r := in.run(append([]string{"--gh", in.gh}, tt.args...)...)
+			if r.code != 0 || !strings.Contains(r.stdout, tt.want) || !strings.Contains(r.stdout, "Restart what still runs the old version") {
+				t.Errorf("exit code %d, stdout:\n%s\nwant 0 and %q", r.code, r.stdout, tt.want)
+			}
+			if tt.want == "" && strings.Contains(r.stdout, "CHANGES") {
+				t.Errorf("changes were printed:\n%s", r.stdout)
+			}
+			if got := readFile(t, filepath.Join(in.bin, "nodkey")); string(got) != string(changesNodkey("amd64", "0.2.0", tt.code)) {
+				t.Error("the new nodkey is not installed")
+			}
+			runs := slices.DeleteFunc(in.log("nodkey-runs"), func(s string) bool { return s == "installed" })
+			if !slices.Equal(runs, tt.runs) {
+				t.Errorf("runs of the new nodkey %q, want %q", runs, tt.runs)
+			}
+			in.checkTmpGone()
+		})
 	}
 }
 

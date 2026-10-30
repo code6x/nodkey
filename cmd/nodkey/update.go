@@ -14,10 +14,10 @@ import (
 	"github.com/code6x/nodkey"
 )
 
-const updateUsage = `Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]
+const updateUsage = `Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]
 
 Install the newest release of nodkey in place of the file of this nodkey,
-or the release X.Y.Z. Run it as root: sudo nodkey update.
+or the release X.Y.Z. Run it as root.
 
 It runs the install script that is built into this nodkey (install.sh of
 the repository). So the code that checks the new release comes from the
@@ -25,13 +25,20 @@ build that you installed and checked before, not fresh from the network.
 Before it replaces the file, the script checks the SHA-256 and the build
 attestation of the release, and the version of the new nodkey. It
 restarts nothing. Then restart the broker (systemctl restart nodkey,
-which ends all grants) and each nodkey ssh-agent.
+which ends all grants) and each nodkey ssh-agent. After an update to a
+newer version, it prints the changes since the old version.
+
+With --notes, it downloads and checks the release in the same way, but
+installs nothing: it runs the new, checked nodkey to print the changes
+since this version (nodkey changes), with the security fixes first.
 
   --version X.Y.Z  install this release, also one older than this nodkey
   --gh PATH        check the attestation with this gh, 2.93.0 or newer,
                    which only root can change (default: download gh and
                    check its SHA-256)
   --reinstall      install also when this version is installed already
+  --notes          install nothing; print the changes of the checked
+                   release since this version
 
 Exit codes: 0 done or nothing to do, 1 failure, 64 wrong usage.
 `
@@ -105,6 +112,7 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	}}
 	flags.Var(&gh, "gh", "check the attestation with the gh at `PATH`")
 	reinstall := flags.Bool("reinstall", false, "install also when this version is installed already")
+	notes := flags.Bool("notes", false, "install nothing; print the changes of the checked release")
 	if err := flags.Parse(args); err != nil {
 		return parseErrorCode(err)
 	}
@@ -112,8 +120,13 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		flags.Usage()
 		return exitUsage
 	}
+	if *reinstall && *notes {
+		_, _ = io.WriteString(stderr, "--notes installs nothing, so it does not go with --reinstall\n")
+		flags.Usage()
+		return exitUsage
+	}
 	if geteuid() != 0 {
-		return fail(stderr, exitFailure, "nodkey update must run as root: run sudo nodkey update")
+		return fail(stderr, exitFailure, "nodkey update must run as root: run it as root")
 	}
 	exe, err := executable()
 	if err != nil {
@@ -140,6 +153,9 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *reinstall {
 		scriptArgs = append(scriptArgs, "--reinstall")
+	}
+	if *notes {
+		scriptArgs = append(scriptArgs, "--notes")
 	}
 	return runInstallScript(nodkey.InstallScript, scriptArgs, scriptEnv(), stdout, stderr)
 }

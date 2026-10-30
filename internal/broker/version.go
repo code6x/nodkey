@@ -126,7 +126,7 @@ func versionTexts(client, claimed, own string, diff version.Diff) (line, text st
 	case version.OtherOlder:
 		return "broker: a client says that it runs an older nodkey than the broker; update nodkey there",
 			"The client " + client + " says that it runs nodkey " + claimed + ", which is older than nodkey " +
-				own + " on the broker. To update it, run there: sudo nodkey update"
+				own + " on the broker. To update it, run as root there: nodkey update"
 	default: // version.OtherNewer
 		return "broker: a client says that it runs a newer nodkey than the broker; update nodkey on the broker host",
 			"The client " + client + " says that it runs nodkey " + claimed + ", which is newer than nodkey " +

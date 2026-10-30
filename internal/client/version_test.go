@@ -18,7 +18,7 @@ import (
 // The warnings of the tests below.
 const (
 	warnClientOlder = `nodkey: warning: this machine runs nodkey 0.1.0, which is older than nodkey 0.2.0 on the ` +
-		`broker; to update this machine, run "sudo nodkey update"`
+		`broker; to update this machine, run "nodkey update" as root`
 	warnBrokerOlder = `nodkey: warning: the broker runs nodkey 0.1.0, which is older than nodkey 0.2.0 on this ` +
 		`machine; to update the broker, run "nodkey update" as root on the broker host`
 	warnNotSent = `nodkey: warning: the broker runs an older nodkey that does not send its version, and this ` +
@@ -254,7 +254,7 @@ func TestSSHAgentVersion(t *testing.T) {
 		strings.Replace(warnBrokerOlder, "0.1.0", "0.1.1", 1),
 		warnNotSent,
 		`nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; ` +
-			`to update this machine, run "sudo nodkey update"`,
+			`to update this machine, run "nodkey update" as root`,
 		"nodkey: stopped by SIGTERM (exit 143)",
 	}
 	if got := linesOf(stderr.String()); !slices.Equal(got, want) {

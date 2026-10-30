@@ -84,6 +84,8 @@ func TestUpdateUsage(t *testing.T) {
 		{"an empty gh", []string{"update", "--gh="}, exitUsage, "want an absolute path"},
 		{"two gh", []string{"update", "--gh", "/usr/bin/gh", "--gh", "/usr/local/bin/gh"}, exitUsage, "give it once"},
 		{"a value for --reinstall", []string{"update", "--reinstall=maybe"}, exitUsage, "invalid boolean value"},
+		{"a value for --notes", []string{"update", "--notes=maybe"}, exitUsage, "invalid boolean value"},
+		{"--notes with --reinstall", []string{"update", "--notes", "--reinstall"}, exitUsage, "does not go with --reinstall"},
 		{"-h", []string{"update", "-h"}, exitOK, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,7 +94,7 @@ func TestUpdateUsage(t *testing.T) {
 			if code := run(tt.args, strings.NewReader(""), &stdout, &stderr); code != tt.code {
 				t.Errorf("exit code %d, want %d", code, tt.code)
 			}
-			if !strings.Contains(stderr.String(), "Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]") ||
+			if !strings.Contains(stderr.String(), "Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]") ||
 				!strings.Contains(stderr.String(), tt.want) {
 				t.Errorf("stderr = %q, want the usage and %q", stderr.String(), tt.want)
 			}
@@ -102,12 +104,12 @@ func TestUpdateUsage(t *testing.T) {
 		})
 	}
 	var stdout bytes.Buffer
-	if run([]string{"help"}, strings.NewReader(""), &stdout, &bytes.Buffer{}); !strings.Contains(stdout.String(), "\n  update [--version X.Y.Z] [--gh PATH] [--reinstall]\n") {
+	if run([]string{"help"}, strings.NewReader(""), &stdout, &bytes.Buffer{}); !strings.Contains(stdout.String(), "\n  update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]\n") {
 		t.Errorf("help does not list update: %q", stdout.String())
 	}
 }
 
-// TestUpdateNeedsRoot: as another user, nodkey update says to use sudo,
+// TestUpdateNeedsRoot: as another user, nodkey update says to run it as root,
 // and runs nothing.
 func TestUpdateNeedsRoot(t *testing.T) {
 	got := fakeUpdate(t, 1000, "/usr/local/bin/nodkey", exitOK)
@@ -115,7 +117,7 @@ func TestUpdateNeedsRoot(t *testing.T) {
 	if code := run([]string{"update"}, strings.NewReader(""), &stdout, &stderr); code != exitFailure {
 		t.Errorf("exit code %d, want %d", code, exitFailure)
 	}
-	if want := "nodkey: nodkey update must run as root: run sudo nodkey update (exit 1)\n"; stderr.String() != want {
+	if want := "nodkey: nodkey update must run as root: run it as root (exit 1)\n"; stderr.String() != want {
 		t.Errorf("stderr = %q, want %q", stderr.String(), want)
 	}
 	if stdout.Len() != 0 || got.calls != 0 {
@@ -169,6 +171,8 @@ func TestUpdateRunsTheBuiltInScript(t *testing.T) {
 		{[]string{"--reinstall=false"}, []string{"--bin-dir", dir}},
 		{[]string{"--reinstall", "--gh", "/usr/bin/gh", "--version", "0.2.0"},
 			[]string{"--bin-dir", dir, "--version", "0.2.0", "--gh", "/usr/bin/gh", "--reinstall"}},
+		{[]string{"--notes"}, []string{"--bin-dir", dir, "--notes"}},
+		{[]string{"--notes", "--version", "0.3.0"}, []string{"--bin-dir", dir, "--version", "0.3.0", "--notes"}},
 	} {
 		got := fakeUpdate(t, 0, link, exitOK)
 		var stdout, stderr bytes.Buffer

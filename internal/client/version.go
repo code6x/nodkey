@@ -131,7 +131,7 @@ func versionWarning(own, broker string, diff version.Diff) string {
 			` on this machine; to update the broker, run "nodkey update" as root on the broker host`
 	case version.OtherNewer:
 		return "warning: this machine runs nodkey " + own + ", which is older than nodkey " + broker +
-			` on the broker; to update this machine, run "sudo nodkey update"`
+			` on the broker; to update this machine, run "nodkey update" as root`
 	}
 	return ""
 }
