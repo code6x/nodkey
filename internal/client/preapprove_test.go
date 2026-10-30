@@ -224,7 +224,6 @@ func TestPreapproveUsage(t *testing.T) {
 		"no key and no secret":       {"--from", "2026-10-15T12:00", "--until", "2026-10-15T13:00", "--uses", "1"},
 		"no user":                    drop(key, "--user"),
 		"no host":                    drop(key, "--host"),
-		"no from":                    drop(key, "--from"),
 		"no until":                   drop(key, "--until"),
 		"no uses":                    drop(key, "--uses"),
 		"a key and a secret":         append(slices.Clone(key), "--secret", "x"),
@@ -258,6 +257,16 @@ func TestPreapproveUsage(t *testing.T) {
 		if code != exitUsage || stdout != "" || !strings.HasPrefix(stderr, "nodkey preapprove: ") ||
 			!strings.HasSuffix(stderr, `see "nodkey preapprove --help" (exit 64)`+"\n") || strings.Count(stderr, "\n") != 1 {
 			t.Errorf("%s: exit code %d, stdout %q, stderr %.200q; want 64 and one line", name, code, stdout, stderr)
+		}
+	}
+	// The errors for a missing --until or --uses are as before.
+	for option, want := range map[string]string{
+		"--until": "give the end with --until TIME, such as --until 2026-10-28T04:00",
+		"--uses":  "give the number of uses with --uses N",
+	} {
+		_, _, stderr := preIn(t.Context(), testGranter(nil, nil), drop(drop(key, "--from"), option)...)
+		if !strings.HasPrefix(stderr, "nodkey preapprove: "+want+";") {
+			t.Errorf("no %s: stderr %q, want %q", option, stderr, want)
 		}
 	}
 	for _, help := range []string{"-h", "--help", "-help"} {
@@ -299,6 +308,36 @@ func flatHosts(n int) []string {
 		out = append(out, "--host", "h"+string(rune('a'+i)))
 	}
 	return out
+}
+
+// TestPreapproveFromDefault: without --from, the request of a scheduled
+// grant, for secrets or for a key, starts at the current time; with
+// --from, it starts at the time given.
+func TestPreapproveFromDefault(t *testing.T) {
+	t.Parallel()
+	secret := []string{"--secret", "s", "--until", "2026-10-15T13:00:00Z", "--uses", "1"}
+	key := []string{"--key", "deploy", "--user", "deploy", "--host", "web-1", "--until", "2026-10-15T13:00:00Z", "--uses", "1"}
+	for _, tt := range []struct {
+		name string
+		args []string
+		from string
+	}{
+		{"secret without --from", secret, noon.Format(time.RFC3339)},
+		{"key without --from", key, noon.Format(time.RFC3339)},
+		{"secret with --from", append(slices.Clone(secret), "--from", "2026-10-15T12:30"), "2026-10-15T12:30"},
+		{"key with --from", append(slices.Clone(key), "--from", "2026-10-15T12:30"), "2026-10-15T12:30"},
+	} {
+		sb := newStandingBroker(t, "")
+		code, stdout, stderr := preIn(t.Context(), testGranter(sb.b, nil), tt.args...)
+		if code != exitOK || stdout != testGrantID+"\n" {
+			t.Fatalf("%s: exit code %d, stdout %q, stderr %q", tt.name, code, stdout, stderr)
+		}
+		bodies, _ := sb.bodies()
+		var req api.PreapproveRequest
+		if len(bodies) != 1 || json.Unmarshal([]byte(bodies[0]), &req) != nil || req.From != tt.from || req.Windows != nil {
+			t.Errorf("%s: requests %q, want one from %q", tt.name, bodies, tt.from)
+		}
+	}
 }
 
 // TestPreapproveRequest: the body for secrets and for a key has the fields
