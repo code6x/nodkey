@@ -36,8 +36,14 @@ nothing. Examples:
 The title may name advisory IDs in the form `GHSA-xxxx-xxxx-xxxx`.
 
 A `security` pull request puts its line in a `### Security` section. This
-section comes first in CHANGELOG.md and in the release notes. nodkey reads
-this line in the notes of a release to flag it as a security release.
+section comes first in CHANGELOG.md and in the release notes. The update
+notices of nodkey will use this section to flag a security release (issue
+#122).
+
+Do not name an unfixed problem in public. Fix a privately reported problem
+in the temporary private fork of its GitHub security advisory, and merge it
+from there just before the release. Name the advisory ID in a public title
+only after the advisory is published.
 
 For a breaking change, add `!` after the type. For example:
 `feat!: change the config file format`.
@@ -50,7 +56,8 @@ The check runs again by itself.
 This repository allows only squash merges. When you merge a pull request,
 GitHub makes one commit on `main`. The commit message is only the pull
 request title. release-please reads this title. For `security`, `feat`,
-`fix`, `perf`, `revert` and `docs`, the title also becomes a line in the changelog.
+`fix`, `perf`, `revert` and `docs`, the title also becomes a line in the
+changelog.
 
 release-please also reads the description of each merged pull request. A
 `BEGIN_COMMIT_OVERRIDE` block there replaces the commit message, even after
