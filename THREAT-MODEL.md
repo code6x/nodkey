@@ -1129,16 +1129,17 @@ for the person who sets up nodkey, and they must not become a way to get
 a secret or to change a decision. They change nothing. The broker check
 does not decrypt a credential: it reads the unit with `systemctl cat`, and
 only checks that the credential files exist. It opens the private files
-of the broker only to run the broker's own owner and mode checks, and it
-never reads their content. It never calls Telegram, so it is never a
+of the broker only to run the broker's own owner, mode and ACL checks,
+and it never reads their content. It never calls Telegram, so it is never a
 second `getUpdates` poller, which would make the broker stop with exit
 code 76 (T6). Its only network calls are the `/v1/keys` call to the broker
 and, without `--offline`, the check for a newer release on GitHub (T34).
 The call to the broker needs no tap, and a pinned client learns the
-broker's version in any case (T33). It shows the error lines of the last
-start of the service from the journal: at most 5 lines of at most 300
+broker's version in any case (T33). It shows the last error lines of the
+service in the journal since the boot: at most 5 lines of at most 300
 bytes, with each byte that is not printable shown as `?`. They are the
-broker's own log lines, which hold no secret.
+broker's own log lines, which hold no secret. It runs as root, so it
+runs `systemctl` and `journalctl` only from a fixed system `PATH`.
 
 ## 7. Assumptions
 

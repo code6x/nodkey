@@ -3173,19 +3173,30 @@ root. The default config is `/etc/nodkey/broker.toml`. It is read only
 too. It starts nothing, decrypts no credential, and never calls Telegram.
 Its checks, in this order:
 
-1. `config`: the broker config loads, as `nodkey broker` loads it.
+1. `config`: the broker config loads, as `nodkey broker` loads it. The
+   config file and `known_hosts` are checked for root, who runs the
+   check, not for the user of the unit.
 2. `unit`: `systemctl cat` shows the unit `nodkey.service`, with its user
    and its encrypted credentials. Only the files of the credentials must
    exist; nothing is decrypted.
 3. `files`: the files that the broker reads pass the broker's own checks
-   (section 14) for the user of the unit.
+   (section 14) for the user of the unit, which must not have the user ID
+   0. The files in `${CREDENTIALS_DIRECTORY}` are skipped: they are there
+   only while the service runs. The checks of owner and mode accept a file
+   of root, so they do not show that the user cannot read a file; the
+   broker then fails at its start, and `service` shows why.
 4. `systemd`: the version of systemd.
 5. `cgroup v2`: the machine uses cgroup v2.
-6. `swap`: whether there is swap on a disk.
+6. `swap`: swap only on zram or on a dm-crypt device. Swap on another
+   device, such as a plain LVM volume, fails.
 7. `core_pattern`: `kernel.core_pattern` does not pass core dumps to a socket.
-8. `service`: whether the service runs. If not, it shows the error lines of
-   its last start from the journal: at most 5 lines of at most 300 bytes,
-   with each byte that is not printable shown as `?`.
+8. `service`: whether the service runs. If not, it shows the last error
+   lines of the service in the journal since the boot: at most 5 lines of
+   at most 300 bytes, with each byte that is not printable shown as `?`.
+
+It runs `systemctl` and `journalctl` from `/usr/bin:/bin:/usr/sbin:/sbin`,
+never from the `PATH` of root's shell. In the text form, each control or
+format character of a detail or of what is wrong is shown as `?`.
 
 A check is skipped when a check that it needs failed: on a client, `broker`
 needs `config`, and `broker version` needs `broker`; on the broker host,

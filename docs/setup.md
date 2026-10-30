@@ -1785,15 +1785,15 @@ add `--json`. On a machine with no access to GitHub, add `--offline` to
 
 ```
 $ nodkey doctor
-ok   version: nodkey 0.2.0 is the newest release
+ok   version: nodkey 0.3.0; the newest release
 ok   config: /home/agent/.config/nodkey/client.toml
-FAIL broker: cannot connect to the broker
-     why: without the broker, nodkey run and nodkey ssh-agent cannot get an answer
-     fix: check the address in the client config, the firewall, and that the broker runs
+FAIL broker: cannot connect to the broker at 192.0.2.10:7743: connect: connection refused
+     why: nodkey run, ssh-agent, ssh-grant and preapprove need the broker
+     fix: check that the broker runs (systemctl status nodkey on the broker host), broker and broker_pin in the client config, and that the pin of this client's TLS key is in the broker config
      see: docs/setup.md section 14
 skip broker version: needs broker
 ok   ssh: OpenSSH 9.6
-ok   ssh agent: SSH_AUTH_SOCK=/run/user/1000/nodkey/agent.sock
+ok   ssh agent: the socket of nodkey ssh-agent
 ```
 
 The broker logs each problem in the journal: `journalctl -u nodkey`. An
