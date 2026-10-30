@@ -78,8 +78,8 @@ func TestSSHAgentUsage(t *testing.T) {
 				}
 				return
 			}
-			if last := lastLine(out); code != exitUsage || !strings.HasPrefix(out, agentUsage) ||
-				!strings.HasPrefix(last, "nodkey: "+tt.want) || !strings.HasSuffix(last, " (exit 64)") {
+			if last := lastLine(out); code != exitUsage || last != strings.TrimSuffix(out, "\n") ||
+				!strings.HasPrefix(last, "nodkey ssh-agent: "+tt.want) || !strings.HasSuffix(last, `; see "nodkey ssh-agent --help" (exit 64)`) {
 				t.Errorf("exit code %d, stderr %q; want 64 and %q", code, out, tt.want)
 			}
 		})

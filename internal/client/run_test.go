@@ -516,7 +516,7 @@ func TestRunHelp(t *testing.T) {
 	} {
 		fx := &fakeExec{}
 		code, stderr := runIn(t.Context(), testRunner(nil, nil, fx), args...)
-		if last := lastLine(stderr); code != exitUsage || last != "nodkey: --help must be the only argument (exit 64)" {
+		if last := lastLine(stderr); code != exitUsage || last != `nodkey run: --help must be the only argument; see "nodkey run --help" (exit 64)` {
 			t.Errorf("nodkey run %q: exit code %d, last line %q; want 64", args, code, safe(last))
 		}
 		if len(fx.ran()) != 0 {

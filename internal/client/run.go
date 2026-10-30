@@ -140,8 +140,7 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 	}
 	o, err := parseArgs(args)
 	if err != nil {
-		_, _ = io.WriteString(stderr, runUsage)
-		return fail(stderr, exitUsage, err.Error())
+		return UsageError(stderr, "run", err.Error())
 	}
 	// Look for the command before anyone is asked: a person must never
 	// approve a command that cannot start. path is absolute.
@@ -258,6 +257,20 @@ func requestFailed(ctx context.Context, stderr io.Writer, err error) int {
 func fail(w io.Writer, code int, reason string) int {
 	_, _ = fmt.Fprintf(w, "nodkey: %s (exit %d)\n", oneLine(reason), code)
 	return code
+}
+
+// UsageError writes the one line of a usage error of the command cmd
+// (DESIGN.md section 15), "nodkey <cmd>: <reason>; see "nodkey <cmd>
+// --help" (exit 64)", with no usage text, and returns 64. The reason must
+// not hold a secret or an uncapped text from the other side.
+func UsageError(w io.Writer, cmd, reason string) int {
+	name := "nodkey"
+	if cmd != "" {
+		name += " " + cmd
+	}
+	_, _ = fmt.Fprintf(w, "%s: %s; see \"%s --help\" (exit %d)\n",
+		name, oneLine(reason), name, exitUsage)
+	return exitUsage
 }
 
 // warnLine writes "nodkey: " and text as one line, such as a warning about

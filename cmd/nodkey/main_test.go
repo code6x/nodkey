@@ -15,7 +15,7 @@ func TestRun(t *testing.T) {
 		wantStdout string
 		wantStderr string // a part of stderr; "" means stderr must be empty
 	}{
-		{name: "no arguments", args: nil, wantCode: exitUsage, wantStderr: usageText},
+		{name: "no arguments", args: nil, wantCode: exitUsage, wantStderr: `nodkey: give a command; see "nodkey --help"`},
 		{name: "unknown command", args: []string{"bogus"}, wantCode: exitUsage, wantStderr: `unknown command "bogus"`},
 		{name: "unknown flag", args: []string{"-bogus"}, wantCode: exitUsage, wantStderr: "flag provided but not defined"},
 		{name: "-h", args: []string{"-h"}, wantCode: exitOK, wantStderr: usageText},
@@ -23,13 +23,13 @@ func TestRun(t *testing.T) {
 		{name: "version", args: []string{"version"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},
 		{name: "--version", args: []string{"--version"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},
 		{name: "-version", args: []string{"-version"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},
-		{name: "--version with an argument", args: []string{"--version", "extra"}, wantCode: exitUsage, wantStderr: "Usage: nodkey version"},
+		{name: "--version with an argument", args: []string{"--version", "extra"}, wantCode: exitUsage, wantStderr: `nodkey version: unexpected argument "extra"; see "nodkey version --help"`},
 		{name: "--version --offline", args: []string{"--version", "--offline"}, wantCode: exitOK, wantStdout: "nodkey " + version + "\n"},
 		{name: "help --help", args: []string{"help", "--help"}, wantCode: exitOK, wantStdout: usageText},
 		{name: "help help", args: []string{"help", "help"}, wantCode: exitOK, wantStdout: usageText},
 		{name: "help of an unknown command", args: []string{"help", "bogus"}, wantCode: exitUsage, wantStderr: `unknown command "bogus"`},
-		{name: "help with two commands", args: []string{"help", "run", "update"}, wantCode: exitUsage, wantStderr: "Usage: nodkey help [COMMAND]"},
-		{name: "version with an argument", args: []string{"version", "extra"}, wantCode: exitUsage, wantStderr: "Usage: nodkey version"},
+		{name: "help with two commands", args: []string{"help", "run", "update"}, wantCode: exitUsage, wantStderr: `nodkey help: give at most one command; see "nodkey help --help"`},
+		{name: "version with an argument", args: []string{"version", "extra"}, wantCode: exitUsage, wantStderr: `nodkey version: unexpected argument "extra"; see "nodkey version --help"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

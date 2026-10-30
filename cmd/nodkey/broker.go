@@ -138,14 +138,10 @@ func runBroker(args []string, stderr io.Writer) int {
 			printBrokerUsage(stderr)
 			return exitOK
 		}
-		log.Error("nodkey broker: wrong usage", slog.String("error", err.Error()))
-		printBrokerUsage(stderr)
-		return exitUsage
+		return parseErrorCode(stderr, "broker", err)
 	}
 	if fs.NArg() > 0 {
-		log.Error("nodkey broker: wrong usage: it takes no arguments, only --config FILE")
-		printBrokerUsage(stderr)
-		return exitUsage
+		return usageFail(stderr, "broker", fmt.Sprintf("unexpected argument %.64q; it takes only --config FILE", fs.Arg(0)))
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

@@ -94,9 +94,13 @@ func TestUpdateUsage(t *testing.T) {
 			if code := run(tt.args, strings.NewReader(""), &stdout, &stderr); code != tt.code {
 				t.Errorf("exit code %d, want %d", code, tt.code)
 			}
-			if !strings.Contains(stderr.String(), "Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]") ||
-				!strings.Contains(stderr.String(), tt.want) {
-				t.Errorf("stderr = %q, want the usage and %q", stderr.String(), tt.want)
+			if tt.code == exitOK {
+				if !strings.Contains(stderr.String(), "Usage: nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]") {
+					t.Errorf("stderr = %q, want the usage", stderr.String())
+				}
+			} else if !strings.HasPrefix(stderr.String(), "nodkey update: ") || !strings.Contains(stderr.String(), tt.want) ||
+				strings.Count(stderr.String(), "\n") != 1 {
+				t.Errorf("stderr = %q, want one usage line with %q", stderr.String(), tt.want)
 			}
 			if stdout.Len() != 0 || got.calls != 0 {
 				t.Errorf("stdout %q, %d runs of the script; want nothing", stdout.String(), got.calls)

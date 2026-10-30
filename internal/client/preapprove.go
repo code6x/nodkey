@@ -129,8 +129,7 @@ func (g granter) runPreapprove(ctx context.Context, args []string, stdout, w io.
 	}
 	o, err := parsePreapproveArgs(args)
 	if err != nil {
-		_, _ = io.WriteString(stderr, preapproveUsage)
-		return fail(stderr, exitUsage, err.Error())
+		return UsageError(stderr, "preapprove", err.Error())
 	}
 	reason := o.reason
 	if !o.reasonSet {

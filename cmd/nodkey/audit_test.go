@@ -151,10 +151,10 @@ func TestAuditVerify(t *testing.T) {
 		{name: "unknown flag", args: []string{"audit", "verify", path, "--bogus"}, wantCode: exitUsage,
 			wantStderr: "flag provided but not defined"},
 		{name: "help of verify", args: []string{"audit", "verify", "-h"}, wantCode: exitOK, wantStderr: auditUsageText},
-		{name: "audit alone", args: []string{"audit"}, wantCode: exitUsage, wantStderr: auditUsageText},
+		{name: "audit alone", args: []string{"audit"}, wantCode: exitUsage, wantStderr: `nodkey audit: give a command: "verify"; see "nodkey audit --help"`},
 		{name: "audit help", args: []string{"audit", "help"}, wantCode: exitOK, wantStdout: auditUsageText},
 		{name: "unknown audit command", args: []string{"audit", "bogus"}, wantCode: exitUsage,
-			wantStderr: `nodkey: audit: unknown command "bogus"`},
+			wantStderr: `nodkey audit: unknown command "bogus"; see "nodkey audit --help"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

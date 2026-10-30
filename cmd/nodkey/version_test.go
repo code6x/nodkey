@@ -156,8 +156,9 @@ func TestVersionUsage(t *testing.T) {
 		f := &fakeVersionCheck{terminal: true, newest: rel(0, 3, 0)}
 		var stdout, stderr bytes.Buffer
 		code := runVersion(tt.args, "0.2.0", &stdout, &stderr, f.check())
-		if code != tt.code || stdout.Len() != 0 || !strings.Contains(stderr.String(), "Usage: nodkey version [--offline]") ||
-			f.count() != 0 {
+		if code != tt.code || stdout.Len() != 0 || f.count() != 0 ||
+			(tt.code == exitOK) != strings.Contains(stderr.String(), "Usage: nodkey version [--offline]") ||
+			(tt.code == exitUsage && strings.Count(stderr.String(), "\n") != 1) {
 			t.Errorf("%q: exit code %d, stdout %q, stderr %q, %d lookups", tt.args, code, stdout.String(), stderr.String(),
 				f.count())
 		}

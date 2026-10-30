@@ -56,17 +56,15 @@ func TestRunUsage(t *testing.T) {
 			t.Parallel()
 			fx := &fakeExec{}
 			code, stderr := runIn(t.Context(), testRunner(nil, nil, fx), tt.args...)
-			if !strings.HasPrefix(stderr, runUsage) {
-				t.Errorf("stderr = %q; want the usage first", safe(stderr))
-			}
 			if tt.want == "" {
 				if code != exitOK || stderr != runUsage {
 					t.Errorf("exit code %d, stderr %q; want 0 and only the usage", code, safe(stderr))
 				}
 				return
 			}
-			if last := lastLine(stderr); code != exitUsage || !strings.HasPrefix(last, "nodkey: ") ||
-				!strings.Contains(last, tt.want) || !strings.HasSuffix(last, " (exit 64)") {
+			if last := lastLine(stderr); code != exitUsage || last != strings.TrimSuffix(stderr, "\n") ||
+				!strings.HasPrefix(last, "nodkey run: ") || !strings.Contains(last, tt.want) ||
+				!strings.HasSuffix(last, `; see "nodkey run --help" (exit 64)`) {
 				t.Errorf("exit code %d, last line %q; want 64 and %q", code, safe(last), tt.want)
 			}
 			if len(fx.ran()) != 0 {
@@ -101,9 +99,9 @@ func TestRunDeniedVars(t *testing.T) {
 		fx := &fakeExec{}
 		code, stderr := runIn(t.Context(), testRunner(fb.b, nil, fx), "--secret", "GH_TOKEN=github-token",
 			"--secret", tt.name+"=npm-token", "--", self(t))
-		want := "nodkey: --secret " + tt.name + "=...: " + tt.want + " (exit 64)"
-		if last := lastLine(stderr); code != exitUsage || last != want || !strings.HasPrefix(stderr, runUsage) {
-			t.Errorf("%s: exit code %d, last line %q; want 64, the usage and %q", tt.name, code, safe(last), want)
+		want := "nodkey run: --secret " + tt.name + "=...: " + tt.want + `; see "nodkey run --help" (exit 64)`
+		if last := lastLine(stderr); code != exitUsage || last != want || strings.Count(stderr, "\n") != 1 {
+			t.Errorf("%s: exit code %d, last line %q; want 64, one line and %q", tt.name, code, safe(last), want)
 		}
 		if len(fx.ran()) != 0 {
 			t.Errorf("%s: the command started", tt.name)

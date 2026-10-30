@@ -95,8 +95,7 @@ func (f *checkedFlag) Set(s string) error {
 // replaces the file of this program with a release.
 func runUpdate(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("nodkey update", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.Usage = func() { _, _ = io.WriteString(stderr, updateUsage) }
+	flags.SetOutput(io.Discard)
 	want := checkedFlag{check: func(s string) error {
 		if !versionPattern.MatchString(s) {
 			return errors.New("want X.Y.Z, such as 0.2.0")
@@ -114,16 +113,16 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	reinstall := flags.Bool("reinstall", false, "install also when this version is installed already")
 	notes := flags.Bool("notes", false, "install nothing; print the changes of the checked release")
 	if err := flags.Parse(args); err != nil {
-		return parseErrorCode(err)
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = io.WriteString(stderr, updateUsage)
+		}
+		return parseErrorCode(stderr, "update", err)
 	}
 	if flags.NArg() > 0 {
-		flags.Usage()
-		return exitUsage
+		return usageFail(stderr, "update", fmt.Sprintf("unexpected argument %.64q", flags.Arg(0)))
 	}
 	if *reinstall && *notes {
-		_, _ = io.WriteString(stderr, "--notes installs nothing, so it does not go with --reinstall\n")
-		flags.Usage()
-		return exitUsage
+		return usageFail(stderr, "update", "--notes installs nothing, so it does not go with --reinstall")
 	}
 	if geteuid() != 0 {
 		return fail(stderr, exitFailure, "nodkey update must run as root: run it as root")

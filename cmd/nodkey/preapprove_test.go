@@ -15,8 +15,8 @@ func TestPreapproveCommand(t *testing.T) {
 	if code := run([]string{"preapprove"}, strings.NewReader(""), &stdout, &stderr); code != exitUsage {
 		t.Errorf("nodkey preapprove: exit code %d, want %d", code, exitUsage)
 	}
-	if !strings.HasPrefix(stderr.String(), "Usage: nodkey preapprove ") ||
-		!strings.HasSuffix(stderr.String(), "or the key with --key NAME (exit 64)\n") {
+	if !strings.HasPrefix(stderr.String(), "nodkey preapprove: give the secrets") ||
+		!strings.HasSuffix(stderr.String(), `see "nodkey preapprove --help" (exit 64)`+"\n") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	stderr.Reset()

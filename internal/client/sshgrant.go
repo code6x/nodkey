@@ -115,8 +115,7 @@ func (g granter) run(ctx context.Context, args []string, w io.Writer) int {
 	}
 	o, err := parseGrantArgs(args)
 	if err != nil {
-		_, _ = io.WriteString(stderr, grantUsage)
-		return fail(stderr, exitUsage, err.Error())
+		return UsageError(stderr, "ssh-grant", err.Error())
 	}
 	reason := o.reason
 	if !o.reasonSet {
