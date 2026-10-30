@@ -298,7 +298,8 @@ func (tr *trial) makeDir() error {
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tr.dir, 0o700); err != nil { // the umask may have removed bits; it never adds them
+	// The umask may have removed bits of the owner; it never adds any.
+	if err := os.Chmod(tr.dir, 0o700); err != nil { //nolint:gosec // G302: a directory, private to its owner.
 		return err
 	}
 	f, err := os.OpenFile(filepath.Join(tr.dir, tryLockFile), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
@@ -312,7 +313,7 @@ func (tr *trial) makeDir() error {
 // removeStaleTryDir removes dir, the directory of an earlier trial, when
 // it holds a lock file that no trial holds.
 func removeStaleTryDir(dir string) error {
-	f, err := os.OpenFile(filepath.Join(dir, tryLockFile), os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(filepath.Join(dir, tryLockFile), os.O_RDWR|syscall.O_NOFOLLOW, 0) //nolint:gosec // G304: the lock file of the trial's own directory.
 	if err != nil {
 		return fmt.Errorf("%s exists and is not the directory of a trial; remove it, then start nodkey try again", dir)
 	}
@@ -383,7 +384,7 @@ func tryConfig(dir string, clientPin config.Pin) *config.Broker {
 
 // writeTryClientConfig writes the client config of the trial.
 func writeTryClientConfig(path, addr string, brokerPin config.Pin, key string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: a new file in the trial's own directory.
 	if err != nil {
 		return err
 	}
