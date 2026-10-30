@@ -3298,9 +3298,9 @@ that is built into the binary (`go:embed`) for the releases newer than
 If none of them has a security fix, it prints one line,
 `No security fixes after nodkey X.Y.Z, up to nodkey A.B.C.`, with
 `A.B.C` the newest release in its changelog, and then the changes, under
-`# CHANGES`. It names `A.B.C` because a later release may have a fix. It exits with 0,
-with 64 on wrong usage, such as an `X.Y.Z` that is not a release version,
-and with 1 on any other error. Control and direction characters in the
+`# CHANGES`. It names `A.B.C` because a later release may have a fix.
+It exits with 0, with 64 on wrong usage, such as an `X.Y.Z` that is not
+a release version, and with 1 on any other error. Control and direction characters in the
 text print as `?`. The text comes from the attested release, not from
 GitHub's API.
 
