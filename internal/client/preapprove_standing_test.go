@@ -79,8 +79,10 @@ func TestPreapproveStanding(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "grant.token")
 	code, stdout, stderr := preIn(t.Context(), testGranter(sb.b, nil), standingArgs(file)...)
 	mustNotLeak(t, tok.Reveal(), stdout, stderr)
-	if code != exitOK || stdout != testGrantID+"\n" {
-		t.Fatalf("exit code %d, stdout %q, stderr %q", code, stdout, stderr)
+	want := "nodkey: standing grant " + testGrantID + ": 1 use in each window, daily 03:00-05:00 (broker time), " +
+		"from 2026-10-15T12:00:00Z until 2026-12-28T00:00:00Z (exit 0)\n"
+	if code != exitOK || stdout != testGrantID+"\n" || !strings.HasSuffix(stderr, want) {
+		t.Fatalf("exit code %d, stdout %q, stderr %q; want the last line %q", code, stdout, stderr, want)
 	}
 	got, err := os.ReadFile(file) //nolint:gosec // G304: a test path.
 	if err != nil || string(got) != tok.Reveal()+"\n" {
@@ -121,8 +123,10 @@ func TestPreapproveStandingWeeklyOwnFile(t *testing.T) {
 	code, _, stderr := preIn(t.Context(), testGranter(sb.b, nil),
 		"--secret", "s", "--weekly", "thu,mon", "03:00-05:00", "--from", "2026-10-16T00:00", "--until", "2026-12-28T00:00",
 		"--uses", "3", "--grant-token", file)
-	if code != exitOK {
-		t.Fatalf("exit code %d, stderr %q", code, stderr)
+	want := "nodkey: standing grant " + testGrantID + ": 3 uses in each window, weekly mon,thu 03:00-05:00 (broker time), " +
+		"from 2026-10-15T12:00:00Z until 2026-12-28T00:00:00Z (exit 0)\n"
+	if code != exitOK || !strings.HasSuffix(stderr, want) {
+		t.Fatalf("exit code %d, stderr %q; want the last line %q", code, stderr, want)
 	}
 	if got, _ := os.ReadFile(file); string(got) != tok.Reveal()+"\n" { //nolint:gosec // G304: a test path.
 		t.Error("the token file was not replaced")
@@ -223,8 +227,9 @@ func TestPreapproveScheduledUnchanged(t *testing.T) {
 	sb := newStandingBroker(t, "")
 	code, stdout, stderr := preIn(t.Context(), testGranter(sb.b, nil),
 		"--secret", "s", "--from", "2026-10-15T12:00:00Z", "--until", "2026-10-15T13:00:00Z", "--uses", "2")
-	if code != exitOK || stdout != testGrantID+"\n" {
-		t.Fatalf("exit code %d, stdout %q, stderr %q", code, stdout, stderr)
+	want := "nodkey: grant " + testGrantID + ": 2 uses from 2026-10-15T12:00:00Z until 2026-12-28T00:00:00Z (exit 0)\n"
+	if code != exitOK || stdout != testGrantID+"\n" || !strings.HasSuffix(stderr, want) {
+		t.Fatalf("exit code %d, stdout %q, stderr %q; want the last line %q", code, stdout, stderr, want)
 	}
 	bodies, _ := sb.bodies()
 	if strings.Contains(bodies[0], "windows") {
