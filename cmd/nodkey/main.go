@@ -54,6 +54,8 @@ Commands:
   doctor [--offline] [--json]
             check the setup of this client, read only, and say how to
             fix each problem
+  doctor broker [--config FILE] [--json]
+            the same for the broker host; run it as root
   version [--offline]
             print the version; on a terminal, also say if a newer
             release is out
@@ -111,7 +113,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "changes":
 		return runChanges(rest, stdout, stderr)
 	case "doctor":
-		return runDoctor(rest, stdout, stderr, realDoctorEnv)
+		return runDoctor(rest, stdout, stderr, realDoctorEnv, realBrokerDoctorEnv)
 	case "version":
 		return runVersion(rest, version, stdout, stderr, realVersionCheck)
 	case "help":

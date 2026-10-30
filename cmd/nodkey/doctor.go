@@ -8,9 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/code6x/nodkey/internal/client"
+	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/doctor"
 	"github.com/code6x/nodkey/internal/release"
 	nodkeyversion "github.com/code6x/nodkey/internal/version"
@@ -20,6 +24,7 @@ import (
 const sshVersionTimeout = 5 * time.Second
 
 const doctorUsage = `Usage: nodkey doctor [--offline] [--json]
+       nodkey doctor broker [--config FILE] [--json]
 
 Check the setup of this client, read only, as the user of the agent:
 this nodkey's version and a newer release, the client config and the
@@ -33,13 +38,28 @@ it, and the docs section. It changes nothing, and reads no secret value.
   --offline  do not ask GitHub for a newer release
   --json     print the result as JSON (DESIGN.md section 15)
 
+nodkey doctor broker checks the broker host, as root: the broker config
+(default /etc/nodkey/broker.toml), loaded as nodkey broker loads it but
+without starting anything; the unit nodkey.service, its user and its
+encrypted credentials (nothing is decrypted); the files that the broker
+reads, with the broker's own checks for the user of the unit; systemd,
+cgroup v2, swap and kernel.core_pattern; and whether the service runs,
+with the error lines of its last start from the journal. It never calls
+Telegram.
+
+  --config FILE  the broker config
+
 The exit code is 0 when every check passes, 1 otherwise, and 64 on
 wrong usage.
 `
 
 // runDoctor runs nodkey doctor with args (after "doctor") and returns the
 // exit code. env makes the checks; tests give fakes.
-func runDoctor(args []string, stdout, stderr io.Writer, env func(offline bool) doctor.ClientEnv) int {
+func runDoctor(args []string, stdout, stderr io.Writer, env func(offline bool) doctor.ClientEnv,
+	brokerEnv func(path string) doctor.BrokerEnv) int {
+	if len(args) > 0 && args[0] == "broker" {
+		return runDoctorBroker(args[1:], stdout, stderr, brokerEnv)
+	}
 	fs := flag.NewFlagSet("nodkey doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	offline := fs.Bool("offline", false, "do not ask GitHub")
@@ -54,6 +74,25 @@ func runDoctor(args []string, stdout, stderr io.Writer, env func(offline bool) d
 		return usageFail(stderr, "doctor", fmt.Sprintf("unexpected argument %.64q", fs.Arg(0)))
 	}
 	r := doctor.Run(doctor.ClientChecks(context.Background(), env(*offline)))
+	return writeReport(r, *asJSON, stdout)
+}
+
+// runDoctorBroker runs nodkey doctor broker with args (after "broker").
+func runDoctorBroker(args []string, stdout, stderr io.Writer, env func(path string) doctor.BrokerEnv) int {
+	fs := flag.NewFlagSet("nodkey doctor broker", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	path := fs.String("config", defaultBrokerConfig, "the broker config")
+	asJSON := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = io.WriteString(stderr, doctorUsage)
+		}
+		return parseErrorCode(stderr, "doctor", err)
+	}
+	if fs.NArg() > 0 {
+		return usageFail(stderr, "doctor", fmt.Sprintf("unexpected argument %.64q", fs.Arg(0)))
+	}
+	r := doctor.Run(doctor.BrokerChecks(env(*path)))
 	return writeReport(r, *asJSON, stdout)
 }
 
@@ -98,4 +137,61 @@ func realDoctorEnv(offline bool) doctor.ClientEnv {
 		env.ConfigPath = path
 	}
 	return env
+}
+
+// systemdTimeout bounds each call of systemctl and journalctl.
+const systemdTimeout = 10 * time.Second
+
+// output runs a program with a timeout, and returns its stdout.
+func output(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), systemdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	return string(out), err
+}
+
+// realBrokerDoctorEnv is the BrokerEnv of a real broker host, for the
+// config at path. Outside the unit, ${CREDENTIALS_DIRECTORY} is not set:
+// it stands for the directory where systemd puts the credentials, and
+// no check reads a file in it.
+func realBrokerDoctorEnv(path string) doctor.BrokerEnv {
+	credDir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if credDir == "" {
+		credDir = "/run/credentials/" + doctor.Unit
+		// Only this process sees it: config.ExpandPath reads it.
+		_ = os.Setenv("CREDENTIALS_DIRECTORY", credDir)
+	}
+	return doctor.BrokerEnv{
+		ConfigPath: path,
+		CredDir:    credDir,
+		ReadConfig: config.ReadBroker,
+		UnitText:   func() (string, error) { return output("systemctl", "cat", "--", doctor.Unit) },
+		LookupUser: func(name string) (uint32, error) {
+			u, err := user.Lookup(name)
+			if err != nil {
+				return 0, err
+			}
+			id, err := strconv.ParseUint(u.Uid, 10, 32)
+			return uint32(id), err
+		},
+		CheckFiles: func(b *config.Broker, self uint32, skip func(string) bool) error {
+			return b.CheckFilesAs(self, skip)
+		},
+		Stat:           os.Stat,
+		ReadFile:       os.ReadFile,
+		SystemdVersion: func() (string, error) { return output("systemctl", "--version") },
+		Service: func() (string, []string, error) {
+			state, err := output("systemctl", "show", "--property=ActiveState", "--value", "--", doctor.Unit)
+			state = strings.TrimSpace(state)
+			if err != nil || state == "active" {
+				return state, nil, err
+			}
+			out, err := output("journalctl", "--unit="+doctor.Unit, "--boot", "--priority=err",
+				"--lines=5", "--output=cat", "--no-pager", "--quiet")
+			if err != nil {
+				return state, nil, nil
+			}
+			return state, strings.Split(strings.TrimSpace(out), "\n"), nil
+		},
+	}
 }
