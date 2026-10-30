@@ -642,7 +642,7 @@ lists at most 3 advisory IDs in the strict GHSA form, says that the flag
 comes from GitHub's answer and is not checked, and points to the checked
 notes. The link is made from the newest version and ends the text. A
 try that times out after Telegram took the message is tried again 1 hour
-later, so the phone rarely rings twice in one daily check:
+later, so the phone rarely rings more than once in one daily check:
 
 ```
 ⚠️ SECURITY UPDATE: <security releases>. The broker runs nodkey 0.2.0. Advisories: GHSA-xxxx-xxxx-xxxx. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1

@@ -186,8 +186,9 @@ func PageURL(r version.Release) string { return pageURL + r.String() }
 // on any answer but 200 with a list in the expected form that has a
 // release that counts. 403 and 429 give ErrRateLimit. The error text is
 // fixed, with at most the HTTP status: it never holds text or a header of
-// the answer, or Go's error text, which can name the proxy. So the error may go to a terminal or the journal as
-// it is. When it returns, no dial of it goes on.
+// the answer, or Go's error text, which can name the proxy. So the error
+// may go to a terminal or the journal as it is. When it returns, no dial
+// of it goes on.
 func (c *Client) Lookup(ctx context.Context) (Info, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
