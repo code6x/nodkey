@@ -1191,6 +1191,9 @@ broker after each change of the config or of `known_hosts`:
 systemctl restart nodkey
 ```
 
+Check the setup with `sudo nodkey doctor broker`
+([section 14](#14-when-something-does-not-work)).
+
 ## 11. A client on the agent machine
 
 ### The key and the config of the client
@@ -1236,6 +1239,9 @@ must not be able to change the file. The client refuses it then:
 ```sh
 chmod 0600 ~/.config/nodkey/client.toml
 ```
+
+Check the setup with `nodkey doctor`
+([section 14](#14-when-something-does-not-work)).
 
 ### The first request
 
@@ -1767,6 +1773,28 @@ changed unit, and restart the broker. At the end, remove the old public
 key from the target hosts.
 
 ## 14. When something does not work
+
+First run `nodkey doctor` on the agent machine, as the user of the agent,
+and `sudo nodkey doctor broker` on the broker host. They only read: they
+change nothing and show no secret value. Each check prints one line. A
+check that fails says what is wrong, why it matters, how to fix it, and
+which part of the docs to read. A check is `skip` when one that it needs
+failed. The exit code is 0 only when every check is `ok`. For a script,
+add `--json`. On a machine with no access to GitHub, add `--offline` to
+`nodkey doctor`.
+
+```
+$ nodkey doctor
+ok   version: nodkey 0.2.0 is the newest release
+ok   config: /home/agent/.config/nodkey/client.toml
+FAIL broker: cannot connect to the broker
+     why: without the broker, nodkey run and nodkey ssh-agent cannot get an answer
+     fix: check the address in the client config, the firewall, and that the broker runs
+     see: docs/setup.md section 14
+skip broker version: needs broker
+ok   ssh: OpenSSH 9.6
+ok   ssh agent: SSH_AUTH_SOCK=/run/user/1000/nodkey/agent.sock
+```
 
 The broker logs each problem in the journal: `journalctl -u nodkey`. An
 error names the file, the section or the key, never a secret value.

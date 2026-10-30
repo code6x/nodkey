@@ -90,6 +90,7 @@ One static Go binary holds all parts. The subcommand picks the role:
 | `nodkey keygen` | both | Make a TLS key pair for the broker or a client. Print its pin. |
 | `nodkey audit verify` | trusted machine | Check the hash chain of an audit log. |
 | `nodkey update` | both, as root | Install a release in place of this binary, with the install script that is built into it (section 18). |
+| `nodkey doctor` | both | Check the setup, read only, and say how to fix what is wrong (section 15). |
 | `nodkey version` | both | Print the version. On a terminal, also say if a newer release is out. |
 
 Inside the broker, the approver and the stores sit behind small Go
@@ -2744,6 +2745,8 @@ nodkey preapprove --cancel ID
 nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]
+nodkey doctor [--offline] [--json]
+nodkey doctor broker [--config FILE] [--json]
 nodkey version [--offline]
 nodkey --version [--offline]
 nodkey help [COMMAND]
@@ -3151,6 +3154,64 @@ Unix socket until `SIGINT` or `SIGTERM` (section 6). It holds no SSH key.
 - It exits with 64 on wrong usage, with 69 when the client config or the
   TLS key cannot be read (as `nodkey run`), and with 1 when it cannot make
   its socket.
+
+`nodkey doctor [--offline] [--json]` checks the setup of a client, as the
+user of the agent. It is read only: it changes nothing, and it reads no
+secret value. It runs these checks, in this order:
+
+1. `version`: the version of this nodkey, and a newer release. With
+   `--offline` it does not ask GitHub.
+2. `config`: the client config and the TLS key load.
+3. `broker`: the call to the broker, which is the key list of `nodkey
+   ssh-agent`. It needs no tap on the phone.
+4. `broker version`: the version of the broker, from that call.
+5. `ssh`: `ssh -V` runs, and the version is OpenSSH 8.9 or newer.
+6. `ssh agent`: `SSH_AUTH_SOCK` is set and names a socket.
+
+`nodkey doctor broker [--config FILE] [--json]` checks the broker host, as
+root. The default config is `/etc/nodkey/broker.toml`. It is read only
+too. It starts nothing, decrypts no credential, and never calls Telegram.
+Its checks, in this order:
+
+1. `config`: the broker config loads, as `nodkey broker` loads it.
+2. `unit`: `systemctl cat` shows the unit `nodkey.service`, with its user
+   and its encrypted credentials. Only the files of the credentials must
+   exist; nothing is decrypted.
+3. `files`: the files that the broker reads pass the broker's own checks
+   (section 14) for the user of the unit.
+4. `systemd`: the version of systemd.
+5. `cgroup v2`: the machine uses cgroup v2.
+6. `swap`: whether there is swap on a disk.
+7. `core_pattern`: `kernel.core_pattern` does not pass core dumps to a socket.
+8. `service`: whether the service runs. If not, it shows the error lines of
+   its last start from the journal: at most 5 lines of at most 300 bytes,
+   with each byte that is not printable shown as `?`.
+
+A check is skipped when a check that it needs failed: on a client, `broker`
+needs `config`, and `broker version` needs `broker`; on the broker host,
+`unit` needs `config`, and `files` needs `unit`. The other checks need
+nothing.
+
+Each line of the text form is `ok   NAME: detail`, `skip NAME: needs
+OTHER`, or, for a failed check, `FAIL NAME: what is wrong` and three
+lines that start with `     why:`, `     fix:` and `     see:`. With
+`--json` the output is one object and one line break:
+
+```
+{"ok": BOOL, "checks": [{"name": "...", "status": "ok"|"FAIL"|"skip", "detail": "...", "what": "...", "why": "...", "fix": "...", "docs": "..."}]}
+```
+
+`detail`, `what`, `why`, `fix` and `docs` are left out when they are empty.
+`ok` is true when every status is `ok`. The names are, in order: for the
+client `version`, `config`, `broker`, `broker version`, `ssh`, `ssh agent`;
+for the broker `config`, `unit`, `files`, `systemd`, `cgroup v2`, `swap`,
+`core_pattern`, `service`. A later release may add fields and checks. It
+keeps the names and the meaning of the existing ones, so a script can rely
+on them.
+
+`nodkey doctor` exits with 0 when every check is `ok`, with 1 when any
+check is `FAIL` or `skip`, or when it cannot write to stdout, and with 64
+on wrong usage.
 
 `nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]`
 takes `FILE` before or after the options.
