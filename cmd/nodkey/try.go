@@ -313,12 +313,18 @@ func (tr *trial) makeDirOnce() error {
 	if err := os.Chmod(tr.dir, 0o700); err != nil { //nolint:gosec // G302: a directory, private to its owner.
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(tr.dir, tryLockFile), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	// The lock file gets its name only after it is locked. So another
+	// start never finds it unlocked while this trial runs.
+	lock := filepath.Join(tr.dir, tryLockFile)
+	f, err := os.OpenFile(lock+".new", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: the trial's own directory.
 	if err != nil {
 		return err
 	}
 	tr.lock = f
-	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return err
+	}
+	return os.Rename(lock+".new", lock)
 }
 
 // makeDir makes the directory of the trial. When it fails after the
