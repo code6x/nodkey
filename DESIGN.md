@@ -25,7 +25,7 @@ what it protects against, and what it does not.
 | request | One ask: a set of secrets for one command, one SSH signature, or one SSH pre-approval. |
 | grant | A short permission. It comes from an "Approve N min" tap. |
 | rule | The setting per secret or key: always ask, ask with a time window, or never ask. |
-| store | Where secret values live: Bitwarden Secrets Manager (`bws`) or the Bitwarden Password Manager (`bw`). |
+| store | Where secret values live: Bitwarden Secrets Manager (`bws`), the Bitwarden Password Manager (`bw`) or a vault of 1Password (`1password`). |
 | verified | Shown in a message and checked by the broker. The agent cannot fake it. |
 | claimed | Shown in a message but sent by the client. The agent can write anything there. |
 
@@ -101,15 +101,39 @@ cannot use them: no flag, config key or variable turns them on
 (THREAT-MODEL.md, T38).
 
 Inside the broker, the approver and the stores sit behind small Go
-interfaces. Version 1 has one approver (Telegram) and two stores (`bws`,
-`bw`). Others, such as ntfy or `sops`, can be added later without changing
-the rest.
+interfaces. Version 1 has one approver (Telegram) and three stores (`bws`,
+`bw`, `1password`). Others, such as ntfy or `sops`, can be added later
+without changing the rest.
 
 Dependencies are kept small on purpose: the Go standard library,
 `golang.org/x/crypto` (`ssh`, `ssh/agent`) and one TOML parser. The
 Telegram client is our own small HTTP code. We do not link the Bitwarden
 SDK; its license is not a standard open-source license. We run the `bws`
 and `bw` programs instead.
+
+The `1password` store is the one exception, and it is the owner's choice
+(issue #126). The broker links the official 1Password Go SDK,
+`github.com/1password/onepassword-sdk-go` v0.4.1 (MIT license). Its cost:
+
+- **Size.** The SDK carries a prebuilt WebAssembly core of about 9.5 MB.
+  It runs inside the broker with wazero and Extism. The binary grew from
+  15,223,920 to 33,967,096 bytes (Go 1.27.1, linux/amd64). Every client
+  carries this too, because nodkey is one binary.
+- **A 0.x API.** The SDK may change in a minor version. The store hides it
+  behind one small interface (`opItems`, section 17), so a change stays in
+  one file. Update it on purpose, never by accident, and read the change
+  log first.
+- **Foreign code in the broker's process.** The WebAssembly core runs in
+  the broker's memory, next to the keys and the tokens. wazero keeps it in
+  a sandbox of its own, and the SDK lets the core reach only the hosts of
+  1Password: `*.1password.com`, `*.1password.ca`, `*.1password.eu` and
+  1Password's own test domains. We trust the SDK and its core (THREAT-MODEL.md,
+  section 3). The core makes its requests with Go's HTTP client, so
+  `HTTPS_PROXY` applies (checked in the source of Extism's `http_request`
+  host function, go-sdk v1.7.1).
+- **Names sent out.** The SDK tells 1Password an integration name,
+  `nodkey`, and the version of nodkey. This is like the `User-Agent` that
+  the check for a newer release sends to GitHub (THREAT-MODEL.md, T34).
 
 ## 5. Flow: secrets for one command
 
@@ -2288,7 +2312,8 @@ anyone who breaks into the broker host gets the whole vault. So nodkey
 supports `bw` only with a separate Bitwarden account that holds nothing but
 the items nodkey may hand out. Bitwarden Secrets Manager (`bws`) does not
 have these problems: its machine-account token can see only the projects
-you give it. For both stores, some Bitwarden accounts can read the same
+you give it. A 1Password service account is like it: its token reads only
+the vault you give it (T39). For `bws` and `bw`, some Bitwarden accounts can read the same
 secrets in Bitwarden's own apps, without nodkey: for `bw` the separate
 account, and for `bws` at least the owners and admins of the
 organization. These accounts must never be logged in on an agent machine
@@ -2552,6 +2577,11 @@ type = "bw"
 program = "/usr/local/bin/bw"
 password_file = "${CREDENTIALS_DIRECTORY}/bw-master-password"
 
+[store.op]                           # 1Password: no `program`
+type = "1password"
+vault = "abcdefghijklmnopqrstuvwxyz" # the ID of the vault, 26 small letters and digits
+token_file = "${CREDENTIALS_DIRECTORY}/op-token"
+
 [secret.github-token]
 store = "main"
 id = "00000000-0000-0000-0000-000000000000"
@@ -2560,6 +2590,13 @@ ask = "window"
 window = "15m"
 preapprove = true                   # optional; default false: `nodkey preapprove` may ask for it
 standing = true                     # optional; default false: standing grants (only `always`, `window`)
+
+[secret.deploy-token]
+store = "op"
+id = "abcdefghijklmnopqrstuvwxyz"   # the ID of the item, never its name
+field = "password"                  # optional; a field's ID or title; default "password"
+clients = ["laptop"]
+ask = "always"
 
 [key.deploy]
 file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
@@ -2628,6 +2665,15 @@ More rules:
   the item must be a login item, and nodkey hands out its password. An
   item in the trash or in the archive is refused, because `bw` still
   returns such an item by its ID.
+- A `1password` store has `type`, `vault` and `token_file`, and no
+  `program` (that is an error). `vault` is required, only for this type,
+  and is 26 small letters and digits: the ID of the vault, never its name.
+  For a secret in such a store, `id` is the ID of the item, also 26 small
+  letters and digits, never a name or a UUID. `field` is optional: the ID
+  or the title of a field, 1 to 128 bytes, with no control character.
+  Without it, the field is `"password"`. `field` is an error for a secret
+  in a `bws` or `bw` store. The broker hands out the value of that one
+  field.
 - `clients` and `hosts` list each name once. `notice_chat_id` is not 0.
   A `window` is 1 minute to 8 hours.
   `timeout` is 15 s to 10 min. `ssh_timeout` is 15 s to 110 s, below
@@ -2690,7 +2736,7 @@ any problem:
   the broker user or root, and group and others must not be able to write
   to it. It may be a symbolic link.
 - The `bws` token file is read once, at start; the broker keeps the token
-  in memory. The `bw` password file is checked at start and again before
+  in memory. So is the token file of a `1password` store. The `bw` password file is checked at start and again before
   each unlock, also that it holds 1 byte to 1 MiB; bw reads it itself
   (section 11).
 - For a `bw` store, each directory in bw's `PATH` (section 16) must pass
@@ -3433,6 +3479,10 @@ as root. Without `TMPDIR`, the script uses `/tmp`.
   holds keys, tokens and, for a moment, secret values. So the broker host
   uses encrypted swap or none, and no hibernation (section 11).
 
+A `1password` store runs no program. The rules for it are in
+[The 1password store](#the-1password-store), below the rules for the
+programs.
+
 ### Store programs
 
 The broker runs `bws` and `bw` like this (`internal/store`):
@@ -3531,6 +3581,54 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   is more traffic, but the account holds only the items that nodkey may
   hand out (section 11).
 
+### The 1password store
+
+The `1password` store has no program. It calls the 1Password SDK inside
+the broker (section 4, `internal/store/onepassword.go`). The rules of the
+programs still hold in the same words where they make sense:
+
+- **Login.** At start, the broker reads the token file once and logs in.
+  If the login fails, the broker still starts, and the next fetch tries
+  again. The client is kept after a login. `Close` clears the token and
+  drops the client.
+- **A fetch.** The broker passes `ITEM_ID/FIELD`. The store calls
+  `Items.Get(vault, item)`, with the vault from the config. It checks that
+  the item ID and the vault ID in the answer are the asked ones, and
+  refuses an item over 1 MiB (the fields and the notes together).
+- **The field.** The store looks for the field by its ID first, and then
+  by its title. If two fields have the asked title, the request is denied
+  and the error says to name the field by its ID. A value that is empty or
+  has a NUL byte is refused, as for `bws` and `bw`.
+- **Memory.** The store copies the value and drops the item. Go cannot
+  clear the strings that the SDK made, so this is best effort, as for the
+  programs.
+- **Time limit.** Login and get together have the 30 seconds of the
+  stores. The SDK's calls do not stop when a context ends. So `Fetch` stops
+  waiting at the time limit and denies, and the hung call keeps its place.
+  The SDK runs every call in one core, under one lock, so there is one
+  place for all 1password stores together: a hung call cannot be followed
+  by an endless row of new ones. While it hangs, every 1password store
+  denies at its time limit.
+- **Errors.** An error is a fixed text. The text of the SDK is never
+  shown or logged, because it can repeat the request or the token (T19).
+  The errors are: `ErrOPFailed` ("1Password refused the request, or could
+  not be reached": a missing item, a wrong or expired token, and a network
+  error all look the same), `ErrRateLimited`, `ErrNoField`,
+  `ErrManyFields` and `ErrTooLarge`.
+- **Rate limit.** 1Password limits the requests of a service account
+  (seen 2026-10-29,
+  [rate limits](https://www.1password.dev/service-accounts/rate-limits/)).
+  Individual and Families: 1,000 requests a day for the whole account, and
+  1,000 reads an hour for each token. Teams: 5,000 a day. Business: 50,000
+  a day. When 1Password says the limit is reached, the broker denies the
+  request, and the log line says why. It also sends one alert to the phone
+  for each store in each hour: "The store NAME reached the rate limit of
+  1Password ...". It sends no second alert for the same store within the
+  hour.
+- **Sandbox.** wazero needs memory that is writable and executable. The
+  example unit does not set `MemoryDenyWriteExecute=yes`, which `bw`
+  needs off too.
+
 ## 17. Testing
 
 - **Unit tests** for each package: config, rules and grants (with a fake
@@ -3568,6 +3666,16 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   order of the start and the stop, the exit codes, that core dumps are
   off, a store that does not start, the notice about a newer release,
   and a canary from the request to the fake Telegram server, end to end.
+- **Fake 1Password**: the `1password` store reaches the SDK through a
+  small interface, `opItems` (`internal/store/onepassword_test.go`). The
+  tests use a fake behind it and check the deny paths: a missing item, an
+  item of another vault or with another ID, an item over 1 MiB, a field by
+  ID and by title, two fields with one title, a missing field, an empty
+  value, a NUL byte, a wrong token, a login that fails and then works, a
+  call that hangs past the time limit, and the token file. The broker's
+  tests check the rate limit and its one alert an hour. Canary values must
+  not appear in any error. No test reaches the real 1Password
+  or loads the real WebAssembly core for a request.
 - **Fake stores**: the test binary of `internal/store` acts like `bws` or
   `bw` when it runs under that name. It records its arguments and its
   environment, so the tests can check that no token, password or session
@@ -3673,6 +3781,12 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   Telegram Web, the client used in the test, the buttons went away right
   after the first tap. So only the unit tests check a double tap, such
   as those with the fake Telegram server above.
+- **One manual test with a real 1Password account** (optional), as
+  check 16 in the same guide. It checks a real vault, a real service
+  account and the real rate limit counter. It must write down the number
+  of requests for one fetch, measured with `op service-account ratelimit`
+  before and after. Without this number, a user cannot know how many
+  fetches a day the account allows.
 
 ## 18. Build, CI and releases
 

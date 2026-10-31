@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Limits of the [telegram] timeouts.
@@ -175,22 +177,27 @@ type StoreType string
 const (
 	StoreBWS StoreType = "bws" // Bitwarden Secrets Manager; uses Store.TokenFile
 	StoreBW  StoreType = "bw"  // Bitwarden Password Manager; uses Store.PasswordFile
+	// StoreOnePassword is 1Password with a service account, through the
+	// 1Password SDK; uses Store.TokenFile and Store.Vault, and no program.
+	StoreOnePassword StoreType = "1password"
 )
 
 // Store is a [store.NAME] section: where secret values live.
 type Store struct {
 	Name         string
 	Type         StoreType
-	Program      string // the bws or bw program
-	TokenFile    string // StoreBWS only: the machine account token
+	Program      string // the bws or bw program; empty for StoreOnePassword
+	TokenFile    string // StoreBWS: the machine account token; StoreOnePassword: the service account token
 	PasswordFile string // StoreBW only: the master password
+	Vault        string // StoreOnePassword only: the vault's ID
 }
 
 // Secret is a [secret.NAME] section.
 type Secret struct {
 	Name    string
 	Store   string   // a name in Broker.Stores
-	ID      string   // the item's ID in the store, a UUID
+	ID      string   // the item's ID in the store: a UUID, or for 1password a 1Password ID
+	Field   string   // 1password only: the field's ID or title; "password" when the config has none
 	Clients []string // the names in Broker.Clients that may ask for it
 	Rule    Rule
 }
@@ -256,10 +263,12 @@ type (
 		Program      string  `toml:"program"`
 		TokenFile    *string `toml:"token_file"`
 		PasswordFile *string `toml:"password_file"`
+		Vault        *string `toml:"vault"`
 	}
 	secretSection struct {
 		Store   string   `toml:"store"`
 		ID      string   `toml:"id"`
+		Field   *string  `toml:"field"`
 		Clients []string `toml:"clients"`
 		ruleKeys
 	}
@@ -274,6 +283,28 @@ type (
 // uuidPattern is the form of an item ID in bws and bw. An exact ID also
 // keeps "bw get" from searching items by name.
 var uuidPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+
+// opIDPattern is the form of a vault ID and an item ID in 1Password. An
+// ID, never a name, names the item, as for bws and bw.
+var opIDPattern = regexp.MustCompile(`^[a-z0-9]{26}$`)
+
+// maxFieldLen is the longest field of a [secret.*] section of a 1password
+// store, in bytes.
+const maxFieldLen = 128
+
+// validField reports whether f can name a field of a 1Password item: 1 to
+// maxFieldLen bytes of valid UTF-8, with no control character.
+func validField(f string) bool {
+	if f == "" || len(f) > maxFieldLen || !utf8.ValidString(f) {
+		return false
+	}
+	for _, r := range f {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 
 // LoadBroker reads the broker config file at path and checks it. It reads
 // the known_hosts file that the config names, and checks the other files
@@ -648,13 +679,33 @@ func (b *Broker) addStores(m map[string]storeSection) error {
 			st.TokenFile, err = storeFile(sec, st.Type, "token_file", s.TokenFile, "password_file", s.PasswordFile)
 		case StoreBW:
 			st.PasswordFile, err = storeFile(sec, st.Type, "password_file", s.PasswordFile, "token_file", s.TokenFile)
+		case StoreOnePassword:
+			st.TokenFile, err = storeFile(sec, st.Type, "token_file", s.TokenFile, "password_file", s.PasswordFile)
 		case "":
-			err = fmt.Errorf(`%s: is missing; use "bws" or "bw"`, place(sec, "type"))
+			err = fmt.Errorf(`%s: is missing; use "bws", "bw" or "1password"`, place(sec, "type"))
 		default:
-			err = fmt.Errorf(`%s: must be "bws" or "bw"`, place(sec, "type"))
+			err = fmt.Errorf(`%s: must be "bws", "bw" or "1password"`, place(sec, "type"))
 		}
 		if err != nil {
 			return err
+		}
+		if st.Type == StoreOnePassword {
+			// The 1Password SDK runs in the broker: there is no program.
+			if s.Program != "" {
+				return fmt.Errorf(`%s: is not allowed with type = "1password"`, place(sec, "program"))
+			}
+			if s.Vault == nil {
+				return fmt.Errorf(`%s: is missing; type = "1password" needs it`, place(sec, "vault"))
+			}
+			if !opIDPattern.MatchString(*s.Vault) {
+				return fmt.Errorf(`%s: must be the vault's ID, 26 small letters and digits`, place(sec, "vault"))
+			}
+			st.Vault = *s.Vault
+			b.Stores[name] = st
+			continue
+		}
+		if s.Vault != nil {
+			return fmt.Errorf("%s: is not allowed with type = %q", place(sec, "vault"), st.Type)
 		}
 		if st.Program, err = parsePath(sec, "program", s.Program); err != nil {
 			return err
@@ -697,9 +748,27 @@ func (b *Broker) addSecrets(m map[string]secretSection) error {
 		if s.ID == "" {
 			return fmt.Errorf("%s: is missing", place(sec, "id"))
 		}
-		if !uuidPattern.MatchString(s.ID) {
-			return fmt.Errorf(`%s: must be the item's ID in the store, a UUID such as "00000000-0000-0000-0000-000000000000"`,
-				place(sec, "id"))
+		var field string
+		if b.Stores[s.Store].Type == StoreOnePassword {
+			if !opIDPattern.MatchString(s.ID) {
+				return fmt.Errorf(`%s: must be the item's ID in 1Password, 26 small letters and digits`, place(sec, "id"))
+			}
+			field = "password"
+			if s.Field != nil {
+				field = *s.Field
+			}
+			if !validField(field) {
+				return fmt.Errorf("%s: must be a field's ID or title: 1 to %d characters, with no control character",
+					place(sec, "field"), maxFieldLen)
+			}
+		} else {
+			if s.Field != nil {
+				return fmt.Errorf("%s: is allowed only with a store of type = \"1password\"", place(sec, "field"))
+			}
+			if !uuidPattern.MatchString(s.ID) {
+				return fmt.Errorf(`%s: must be the item's ID in the store, a UUID such as "00000000-0000-0000-0000-000000000000"`,
+					place(sec, "id"))
+			}
 		}
 		clients, err := b.clientList(sec, s.Clients)
 		if err != nil {
@@ -720,7 +789,7 @@ func (b *Broker) addSecrets(m map[string]secretSection) error {
 			}
 			never[item] = name
 		}
-		b.Secrets[name] = Secret{Name: name, Store: s.Store, ID: s.ID, Clients: clients, Rule: rule}
+		b.Secrets[name] = Secret{Name: name, Store: s.Store, ID: s.ID, Field: field, Clients: clients, Rule: rule}
 	}
 	return nil
 }
@@ -858,7 +927,7 @@ func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
 	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
 		s := b.Stores[name]
 		switch s.Type {
-		case StoreBWS:
+		case StoreBWS, StoreOnePassword:
 			private = append(private, file{place(sectionName("store", name), "token_file"), s.TokenFile, false})
 		case StoreBW:
 			private = append(private, file{place(sectionName("store", name), "password_file"), s.PasswordFile, false})
@@ -894,6 +963,9 @@ func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
 		checked = append(checked, checkedFile{f.where, fi, f.key})
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
+		if b.Stores[name].Type == StoreOnePassword {
+			continue // no program: the SDK is part of nodkey
+		}
 		where := place(sectionName("store", name), "program")
 		fi, err := checkProgramAs(b.Stores[name].Program, self)
 		if err != nil {

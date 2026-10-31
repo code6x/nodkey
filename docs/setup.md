@@ -65,8 +65,9 @@ You need:
 - **Telegram on your phone.** This Telegram account approves the
   requests.
 - **A store for the secret values**: Bitwarden Secrets Manager (`bws`),
-  or a separate account of the Bitwarden Password Manager (`bw`). If you
-  use nodkey only for SSH logins, you need no store.
+  a separate account of the Bitwarden Password Manager (`bw`), or a vault
+  of 1Password (`1password`). If you use nodkey only for SSH logins, you
+  need no store.
 
 The broker host is the root of trust. Root on it, or a copy of its
 memory, gives every key and token (THREAT-MODEL.md section 5, item 5).
@@ -427,7 +428,8 @@ of your own. Only your taps count.
 For each value, the broker runs the program of the store: `bws` or `bw`
 ([DESIGN.md section 16](../DESIGN.md#store-programs)). The program gets
 a token or the master password from the broker, so it must be the real
-program, and nobody else may change it.
+program, and nobody else may change it. A `1password` store runs no
+program: see [1password](#1password-a-vault-only-for-nodkey).
 
 ### Where bws and bw come from
 
@@ -576,6 +578,87 @@ in the example config, `[store.backup-job]` with the credential
 `bws-token-backup`. Now even a mistake in the config cannot hand out
 another secret through that store. Its token can read only that one
 project.
+
+### 1password: a vault only for nodkey
+
+The `1password` store uses the official 1Password SDK inside the broker.
+There is no program to install. The SDK is version 0.x and carries a
+WebAssembly core of about 9.5 MB, so the `nodkey` binary is about 34 MB
+(DESIGN.md section 4 has the details). The core may reach only the hosts
+of 1Password. It uses Go's HTTP client, so `HTTPS_PROXY` applies.
+
+**Use a vault only for nodkey.** 1Password does not let a service account
+read the built-in Personal, Private or Employee vault, or the default
+Shared vault
+([service accounts](https://www.1password.dev/service-accounts/get-started/),
+seen 2026-10-29). Everyone who can open the vault in 1Password's own
+apps reads its items with no tap, so give it to no more people than
+needed ([section 9](#the-1password-vault-and-who-can-open-it)).
+
+In 1Password, on a trusted computer ([section 1](#where-you-do-the-setup)):
+
+1. Make a vault for nodkey. Put into it only the items that nodkey may
+   hand out.
+2. Make a service account. Give it the permission `read_items` only, on
+   that vault only, and set an expiry. **These permissions cannot change
+   later.** If you need a change, make a new service account and a new
+   token, then revoke the old one.
+3. Copy the token. It is shown only once.
+4. Copy the ID of the vault and the ID of each item. An ID is 26 small
+   letters and digits. A name does not work. The vault goes into `vault`,
+   and the item into `id`, in the config.
+
+On the broker host, make the credential, as for bws:
+
+```sh
+systemd-ask-password -n "1Password service account token:" |
+  systemd-creds encrypt --with-key="$WITH_KEY" --name=op-token - /etc/nodkey/credentials/op-token.cred
+```
+
+Add `LoadCredentialEncrypted=op-token:/etc/nodkey/credentials/op-token.cred`
+to the unit ([section 8](#8-the-systemd-unit)). The config
+([section 7](#7-the-config-file)) is:
+
+```toml
+[store.op]
+type = "1password"
+vault = "VAULT_ID"
+token_file = "${CREDENTIALS_DIRECTORY}/op-token"
+
+[secret.github-token]
+store = "op"
+id = "ITEM_ID"
+field = "password"   # optional
+```
+
+A `1password` store has no `program`; that is an error. `field` is the ID
+or the title of a field of the item, and the default is `password`. If two
+fields have the same title, the broker denies the request: name the field
+by its ID. A value that is empty is denied too. The broker hands out the
+value of that one field. An item over 1 MiB is denied.
+
+The broker logs in at start. If the login fails, the broker still starts,
+and the next request tries again. When 1Password refuses a request, or
+cannot be reached, the error is always the same text, whatever the cause:
+a missing item, a wrong or expired token, or the network. The broker
+never shows the text of the SDK, because it can repeat the token. Check
+the vault ID, the item ID and the expiry of the token first.
+
+**Rate limits.** 1Password limits the requests of a service account (seen
+2026-10-29,
+[rate limits](https://www.1password.dev/service-accounts/rate-limits/)):
+
+| plan | limit |
+|---|---|
+| Individual and Families | 1,000 requests a day for the whole account, and 1,000 reads an hour for each token |
+| Teams | 5,000 requests a day |
+| Business | 50,000 requests a day |
+
+At the limit, the broker denies the request, and the log says why. The
+broker also sends one alert to your phone for each store in each hour.
+One fetch can cost more than one request. To see how many, run
+`op service-account ratelimit` before and after a fetch
+([docs/manual-telegram-test.md](manual-telegram-test.md), check 16).
 
 ### bw: a separate Bitwarden account
 
@@ -802,6 +885,11 @@ type = "bw"
 program = "/usr/local/bin/bw"
 password_file = "${CREDENTIALS_DIRECTORY}/bw-master-password"
 
+[store.op]                           # 1Password: no `program`
+type = "1password"
+vault = "abcdefghijklmnopqrstuvwxyz" # the ID of the vault, 26 small letters and digits
+token_file = "${CREDENTIALS_DIRECTORY}/op-token"
+
 [secret.github-token]
 store = "main"
 id = "00000000-0000-0000-0000-000000000000"
@@ -809,6 +897,13 @@ clients = ["laptop"]
 ask = "window"
 window = "15m"
 preapprove = true                   # new in 0.3.0; optional; default false: allows `nodkey preapprove`
+
+[secret.deploy-token]
+store = "op"
+id = "abcdefghijklmnopqrstuvwxyz"   # the ID of the item, never its name
+field = "password"                  # optional; a field's ID or title; default "password"
+clients = ["laptop"]
+ask = "always"
 
 [key.deploy]
 file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
@@ -870,13 +965,16 @@ its TLS key. Make that key on the agent machine first
 ([section 11](#the-key-and-the-config-of-the-client)). The name shows in
 each message as `machine:`.
 
-**`[store.NAME]`.** `type` is `bws` with a `token_file`, or `bw` with a
-`password_file`. `program` is the absolute path of the program.
+**`[store.NAME]`.** `type` is `bws` with a `token_file`, `bw` with a
+`password_file`, or `1password` with a `vault` and a `token_file`.
+`program` is the absolute path of the program; a `1password` store has
+none.
 
 **`[secret.NAME]`.** The name is what the client asks for, and what the
 message shows. `store` names a store section, and `id` is the UUID of
-the item in that store. `clients` lists the clients that may ask for
-it.
+the item in that store (for `1password`, the 26-character ID of the
+item, and `field` may name the field). `clients` lists the clients that
+may ask for it.
 
 **`[key.NAME]`.** `file` is the credential with the SSH key. `clients`
 lists the clients that may use it. `hosts` lists the names in the
@@ -1000,13 +1098,15 @@ What the settings do:
 
 What the unit leaves out on purpose:
 
-- `MemoryDenyWriteExecute=yes`: bw runs on Node.js, which needs memory
-  that is writable and executable.
+- `MemoryDenyWriteExecute=yes`: bw runs on Node.js, and the 1Password SDK
+  runs its core with wazero. Both need memory that is writable and
+  executable.
 - `PrivateUsers=yes`: the credentials and the config, owned by root,
   would look owned by `nobody`, and the broker would refuse them.
 - `PrivateNetwork=`, `IPAddressDeny=` and the like: the broker must
   reach Telegram, and GitHub for the check for a newer release, and
-  `bws` and `bw` must reach Bitwarden. Do not add them.
+  `bws` and `bw` must reach Bitwarden, and the 1Password SDK must reach
+  1Password. Do not add them.
 
 After `systemctl daemon-reload`, `systemd-analyze security nodkey` shows
 how much the sandbox limits the broker.
@@ -1059,6 +1159,27 @@ separate account. T32 has the full lists.
   ([Bitwarden's guide](https://bitwarden.com/help/setup-two-step-login/)).
   A code by email does not help if you read that email on an agent
   machine.
+
+### The 1Password vault and who can open it
+
+Anyone who can open the nodkey vault in 1Password's own apps reads its
+items with no tap and no entry in the audit log
+([THREAT-MODEL.md T39](../THREAT-MODEL.md#6-threats-and-answers)). So can
+everyone who holds the token of its service account: a leaked token reads
+the whole vault until it expires or is revoked.
+
+- Use a vault only for nodkey, with only the items that nodkey may hand
+  out, and give it to no more people and groups than needed.
+- Never log in to an account that can open the vault on a machine where
+  an agent runs. Do not add your main account to the vault if it is
+  logged in there.
+- The service account has `read_items` only, on that vault only, and an
+  expiry. Its permissions cannot change later.
+- The token is an encrypted systemd credential on the broker host, never
+  a file on an agent machine.
+- After each change, check who is a member of the vault and which service
+  accounts can read it.
+- Turn on two-step login for the accounts that can open the vault.
 
 ### Swap and hibernation
 
@@ -1725,6 +1846,9 @@ Install them in the same way as the first time
 checked, owned by root. Then check that the next request for a secret
 works. The login of bw stays in the home directory of the store.
 
+The 1Password SDK is part of the `nodkey` binary, so it changes with
+nodkey ([A new version of nodkey](#a-new-version-of-nodkey)).
+
 ### A new TLS key for the broker
 
 Make a new key and its credential as in
@@ -1754,6 +1878,16 @@ then **Revoke current token**. Then make the credential again as in
 at once when the token may have leaked. When Telegram no longer takes
 the old token, the broker stops with exit code 77, and systemd does not
 start it again until you do.
+
+### A new 1Password token
+
+The permissions of a service account cannot change. So for a new token,
+or a change of vault or permission, make a new service account first, with
+`read_items` only, on the nodkey vault only, and with an expiry. Make the
+credential `op-token` again, restart the broker, check that the next
+request works, and then delete the old service account in 1Password. Put
+the date of the expiry in your calendar: after it, every request for the
+store is denied.
 
 ### A new bws token or bw master password
 

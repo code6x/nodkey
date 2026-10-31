@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -182,7 +183,11 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 		}
 		sec := rq.s.cfg.Secrets[name]
 		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
-		v, err := rq.s.stores[sec.Store].Fetch(fctx, sec.ID)
+		ref := sec.ID
+		if sec.Field != "" {
+			ref += "/" + sec.Field // a 1password store: the item and its field
+		}
+		v, err := rq.s.stores[sec.Store].Fetch(fctx, ref)
 		cancel()
 		if err != nil {
 			v.Clear()
@@ -195,6 +200,9 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 			rq.s.log.Warn("broker: a store failed; the request is denied",
 				slog.String("request_id", rq.sub.RequestID), slog.String("store", sec.Store),
 				slog.String("error", errorText(err)))
+			if errors.Is(err, store.ErrRateLimited) {
+				rq.s.rateLimited(sec.Store)
+			}
 			rq.fail(audit.CodeStoreFailed)
 			return nil, false
 		}

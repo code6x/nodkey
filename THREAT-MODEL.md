@@ -19,7 +19,7 @@ access to another machine and asks a person before each use.
 | asset | where it lives |
 |---|---|
 | SSH private keys | broker memory; encrypted credentials on the broker host's disk |
-| secret-store access (`bws` token, `bw` master password and session key) | broker host |
+| secret-store access (`bws` token, `bw` master password and session key, 1Password service account token) | broker host |
 | secret values | the store; for a moment the broker; after approval, the one command on the agent machine |
 | the approval decision | Telegram, the broker |
 | the audit log | broker host, and hash copies in the broker's journal |
@@ -38,6 +38,7 @@ access to another machine and asks a person before each use.
 | the network between client and broker | Not trusted. |
 | target SSH hosts | Trusted to be who their host key says. |
 | the secret stores and the `bws` / `bw` programs | Trusted. Install them from the official source and check what you install. |
+| 1Password's servers, and the 1Password SDK with its WebAssembly core | Trusted. The SDK runs inside the broker's process, and 1Password's servers answer it. Both could hand out a wrong value, or keep the token and the vault. Use the official SDK at a version you checked, and a service account that can read one vault only (see T39). |
 | the Bitwarden accounts that can read the secrets of the stores | Trusted. Anyone who can use such an account can read these secrets in Bitwarden's own apps, with no tap. So these accounts must not be logged in on any agent machine (see T32). |
 | GitHub's API (`api.github.com`) | Trusted only to name the newest release. A false answer can only give a wrong notice or hide one; it cannot install anything (see T34). |
 
@@ -96,7 +97,8 @@ Read this part carefully. These are real limits.
 9. **Anyone who can use a Bitwarden account that can read the secrets can
    read them**, without nodkey and without a tap. That includes a login
    on the agent machine: the web app in a browser, the browser extension,
-   the desktop app or the CLI (see T32).
+   the desktop app or the CLI (see T32). The same holds for everyone who
+   can open the nodkey vault in 1Password's apps (see T39).
 
 ## 6. Threats and answers
 
@@ -474,6 +476,12 @@ Risk that remains:
   current log began, and keep the old file.
 
 **T18. The store programs leak a token.**
+(For the `1password` store, there is no program and no environment. The
+token is read from its file once, kept in the broker's memory, and passed
+only to the SDK. The broker clears it in `Close`, best effort. The
+SDK's error text is never shown or logged, because it can repeat the
+request or the token. The errors are fixed texts, and a test checks them
+with a canary token. Section 3 says how far the SDK is trusted.)
 Tokens and the `bw` session go in environment variables, never on the
 command line, so other users cannot see them in the process list. The `bw`
 master password is not in a variable either: bw reads the password file
@@ -781,6 +789,18 @@ Risk that remains: a process that leaves the program's process group (for
 example with `setsid`) is not killed; systemd stops it when the service
 stops. Such a process keeps the token or the session key in its
 environment.
+
+The `1password` store has no program to kill. Its answers are checked in
+the same spirit: the item ID and the vault ID in the answer must be the
+asked ones, an item over 1 MiB is refused, an empty value or one with a
+NUL byte is refused, and a field title that two fields share is denied.
+The SDK's calls do not stop when a context ends. So the broker stops
+waiting after 30 seconds and denies, and a hung call keeps its place:
+there is one place for all 1password stores, as the SDK runs one call
+at a time. Risk that remains: a hung call keeps running in the broker,
+with its memory, until it ends or the broker stops, and every 1password
+store denies until then. A rate limit of 1Password denies the request, and one alert a
+store an hour goes to the phone.
 
 **T30. Another user on the agent machine uses the agent socket.**
 With the socket, a user could ask for signatures in the name of this
@@ -1173,6 +1193,45 @@ the trial, or read its fake values. That is fine: they open nothing. A
 person who copies the trial's way of working to a real setup loses the
 phone. The last lines of `nodkey try` and the guides say what a real setup
 adds: a separate broker host, a store, Telegram and the rules.
+
+**T39. Everyone who can open the nodkey vault in 1Password reads its items,
+with no tap.**
+nodkey keeps the service account token on the broker host, so the agent
+gets a secret only through the broker. But a person who can open the vault
+in 1Password's own apps reads its items there. Such a read needs no tap,
+and nodkey's audit log does not show it. This is the same problem as T32,
+for 1Password. A common setup keeps the main 1Password account logged in
+on the agent machine, in a browser extension, the desktop app or the CLI.
+The agent may be root there, and it can read what these apps show.
+These can read the items of the vault:
+- every account that is a member of the vault, with its own permission or
+  through a group;
+- the people who manage the 1Password account, as far as its rules let
+  them manage or recover vaults (check the rules of your plan);
+- every service account that you give the vault, and everyone who holds
+  its token. The token reads the whole vault with no tap.
+
+What to do:
+- Make a vault only for nodkey. 1Password does not let a service account
+  read the built-in Personal, Private or Employee vault, or the default
+  Shared vault
+  ([service accounts](https://www.1password.dev/service-accounts/get-started/),
+  seen 2026-10-29), so a vault of its own is needed in any case.
+- Put into it only the items that nodkey may hand out.
+- Give the vault to no more people and groups than needed. Do not add your
+  main account if it is logged in on an agent machine.
+- Make the service account with the permission `read_items` only, on that
+  vault only, and with an expiry. These permissions cannot change later: a
+  change means a new service account and a new token.
+- Keep the token as an encrypted systemd credential on the broker host, as
+  the `bws` token is. Never put it on an agent machine.
+- After each change, check who is a member of the vault and which service
+  accounts can read it.
+- Turn on two-step login for the accounts that can open the vault.
+
+Risk that remains: real. nodkey cannot see a read in 1Password's own apps
+or with the token, and it cannot check where an account is logged in. A
+leaked token reads the whole vault until it expires or is revoked.
 
 ## 7. Assumptions
 
