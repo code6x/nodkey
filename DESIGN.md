@@ -49,7 +49,7 @@ what it protects against, and what it does not.
 
 ## 3. Not in version 1
 
-- ntfy, a passkey web page, a phone app.
+- A passkey web page, a phone app.
 - An HTTP proxy that injects credentials.
 - An MCP server.
 - Windows and macOS. Version 1 is Linux only.
@@ -61,7 +61,7 @@ what it protects against, and what it does not.
   holds plain host keys, and the broker signs only with plain keys.
 - Keys in hardware (TPM or YubiKey) through an upstream agent.
 - Filtering secrets out of the command's output.
-- More than one approver.
+- More than one approver, and Telegram and ntfy on one broker at once.
 
 Each of these can become a GitHub issue later.
 
@@ -74,7 +74,7 @@ Each of these can become a GitHub issue later.
 │  ├─ nodkey run ... -- cmd   │  mTLS      │  ├─ SSH private keys (memory) │
 │  └─ ssh / git / ansible     │ ─────────▶ │  ├─ runs bws / bw             │
 │       │ SSH_AUTH_SOCK       │            │  ├─ audit log                 │
-│       ▼                     │            │  └─ Telegram long polling ───┼──▶ Telegram ──▶ phone
+│       ▼                     │            │  └─ Telegram or ntfy ────────┼──▶ Telegram or ntfy ──▶ phone
 │  nodkey ssh-agent           │            │                              │
 └────────────────────────────┘            └──────────────────────────────┘
 ```
@@ -101,14 +101,16 @@ cannot use them: no flag, config key or variable turns them on
 (THREAT-MODEL.md, T38).
 
 Inside the broker, the approver and the stores sit behind small Go
-interfaces. Version 1 has one approver (Telegram) and three stores (`bws`,
-`bw`, `1password`). Others, such as ntfy or `sops`, can be added later
-without changing the rest.
+interfaces. There are two approvers, Telegram and ntfy (section 7), and
+three stores (`bws`, `bw`, `1password`). A broker uses one approver: its
+config has `[telegram]` or `[ntfy]` (section 14). Others, such as `sops`,
+can be added later without changing the rest.
 
 Dependencies are kept small on purpose: the Go standard library,
 `golang.org/x/crypto` (`ssh`, `ssh/agent`) and one TOML parser. The
 Telegram client is our own small HTTP code. We do not link the Bitwarden
-SDK; its license is not a standard open-source license. We run the `bws`
+SDK; its license is not a standard open-source license. The ntfy client is
+our own small HTTP code too. We run the `bws`
 and `bw` programs instead.
 
 The `1password` store is the one exception, and it is the owner's choice
@@ -1207,6 +1209,108 @@ Not masked, for example:
   client gets one such notice in each start, rarely more than one, and
   at most one try a minute.
 
+### ntfy details
+
+[ntfy](https://ntfy.sh) is an open-source push service that can be
+self-hosted. A broker with `[ntfy]` in its config (section 14) uses it
+in place of Telegram. The message shows the same lines as on Telegram,
+as plain text: the first line is the title. The rules of the core stay:
+the first valid answer wins, and a late or second answer changes
+nothing. What differs:
+
+- **Two topics.** The broker publishes each message to the request
+  topic. The person's phone subscribes to it. The buttons answer on the
+  answer topic. Only the broker reads it. The two must differ. One access
+  token (`token_file`) publishes and reads.
+- **The buttons.** A request gets the buttons that it allows, as on
+  Telegram: Approve once, Approve N min, Deny. Each is an ntfy `http`
+  action: the phone sends a POST to the answer topic of the same server,
+  with the body `{"request":"<id>","action":"once","value":"<value>"}`
+  (the action is `once`, `window`, `deny` or `revoke`). The phone then
+  clears the notification. The broker reads the answer topic with a
+  long-lived subscription, so it needs no open port, and the phone never
+  connects to the broker.
+- **The value.** Each button gets its own value: 16 random bytes from
+  `crypto/rand`, as base64url. It is only in the message and in the
+  broker's memory, never in the audit log or the journal. It is not the
+  request ID. ntfy does not say who pressed a button, so the value is the
+  only proof. An answer counts only when all of these are true:
+  - its body has exactly the form above, as Go's `json.Marshal` writes
+    it, with no other field and no attachment;
+  - its request waits for an answer, and its message has a button of
+    that action;
+  - its value is the value of that button, compared in constant time.
+    The value of the Deny button never approves, and the value of
+    another request never counts;
+  - the approval core takes it (section 7 above: the request, the time,
+    the action).
+
+  After an answer that counted, or that came too late, the broker forgets
+  the values of that request. So the same answer sent again does nothing.
+  The broker keeps the values of at most 4,096 requests; then a new
+  request is denied.
+- **Who answered.** ntfy cannot say. So the core takes an ntfy answer
+  without a user ID, and the `decision` entry has `user_id` 0 and
+  `channel`, `ntfy:` and the answer topic (section 9). Anyone who can read
+  the request topic can answer: whoever runs the server, and whoever may
+  read the topic (THREAT-MODEL.md).
+- **Refused answers.** Anyone who may write to the answer topic can send
+  an answer, so an answer that does not count is only logged, never
+  written to the audit log (ntfy has no `foreign_tap` entry). At most 20
+  such log lines go out in a minute, for refused answers, lines that are
+  not valid JSON and lines over 16 KiB together. The broker counts the
+  others, and logs how many it dropped.
+- **A press too early.** A press can come before the server confirmed the
+  message. Then the broker logs it and does nothing, and the value stays.
+  But the phone has cleared the notification, so the request only
+  expires, unless the same answer comes again.
+- **When a request ends,** the broker replaces its message: the same
+  sequence ID, the same lines, the result in place of the expiry (the same
+  results as on Telegram), and no buttons. A scheduled grant that started
+  keeps one Revoke button, with a new value. When the grant ends, the
+  message is replaced again, without buttons.
+- **Priorities.** A request: 4 (high). A notice of a "never ask" use, the
+  message after its request ended, the notice about the version of a
+  client, and the notice about a newer release: 2 (low). An alert, and
+  the notice about a newer release that fixes a security problem: 5
+  (urgent).
+- **Size.** ntfy sends a message over 4,096 bytes as an attachment. The
+  broker never does: it shortens the claimed lines, as for Telegram, so
+  the text stays under 4,096 bytes and the whole JSON body under 7,168
+  bytes (ntfy refuses a body over 8,192 bytes). If the message still does
+  not fit, the request is denied.
+- **The subscription.** The broker reads `<server>/<answer topic>/json`
+  with the token. The first connection asks only for new messages. When
+  the connection ends, the broker connects again and asks for the
+  messages since the last one it read (or since its start), so no answer
+  is lost. It waits 1 second before that, then twice as long each time,
+  at most 30 seconds. The wait goes back to 1 second only after a message
+  or a keepalive came, so a server that closes each connection at once
+  does not get a new connection each second. ntfy sends a keepalive every
+  45 seconds; after 2 minutes without a line, the broker connects again.
+- **A refused token.** If the server answers the subscription with 401
+  or 403, only a new token or new access rules help. Then no answer can
+  come any more, as when Telegram's polling stops for good (above), and
+  `nodkey broker` exits with code 77 (section 15).
+- **Sending.** A message, an end, an alert or a notice about a release
+  goes out with at most 3 tries: after a network error, code 429 or a
+  server error, it waits 0.5 seconds, then twice as long, at most 4
+  seconds, and never past the end of the request. A notice of a use gets
+  one try. Each try takes at most 15 seconds. A message can come twice
+  after a network error; only the message that the server confirmed has
+  the values that the broker keeps. At most 20 notices of uses go out in
+  any 60 seconds, as on Telegram.
+- **The server.** It must use `https`. The client needs TLS 1.2 or newer,
+  follows no redirect, and uses the proxy from the environment, as the
+  Telegram code does. The token goes only in the `Authorization` header,
+  never in a URL. No error and no log line holds the token, a value, Go's
+  error text or the server's text.
+- **Not on ntfy.** The command `/grants`, the warning before a standing
+  grant ends (so no Renew button), the weekly summary and the alarm
+  message of a standing grant (section 8) are Telegram only. With ntfy,
+  the `grant_alarm` entry is still written, but no alarm reaches the
+  phone.
+
 ## 8. Rules and grants
 
 Each secret and each key has a rule:
@@ -1718,7 +1822,9 @@ and the alarm comes. Run the job as its own system user (see
   request ID, the client, the names, the verified host if any, and the
   claimed command and reason (masked as in section 7).
 - The `request` entry holds the exact message text the approver saw. The
-  `decision` entry holds the Telegram user ID that answered.
+  `decision` entry holds the Telegram user ID that answered. With ntfy,
+  `user_id` is 0 and `channel` says where the answer came from (section
+  7).
 - No entry ever holds a secret value, a signature, or the data that was
   signed. `cause` and `code` hold fixed codes, never an error message,
   because an error message can hold text from a store program or from the
@@ -1752,13 +1858,13 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `broker_started` | `version` |
 | `broker_stopped` | none |
 | `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
-| `decision` | the request fields; `user_id`: the Telegram user that answered; `answer`: `approve_once`, `approve_window`, `deny` or `renew`; `window_minutes` for `approve_window`; for `renew`, the fields of the new standing grant (a new `request_id` and `grant_id`, `not_before` the time of the tap) and `renew_of`, the ID of the grant it renews |
+| `decision` | the request fields; `user_id`: the Telegram user that answered, or 0 with ntfy; `channel`: only with ntfy, `ntfy:` and the answer topic, such as `ntfy:nodkey-answers`; `answer`: `approve_once`, `approve_window`, `deny` or `renew`; `window_minutes` for `approve_window`; for `renew`, the fields of the new standing grant (a new `request_id` and `grant_id`, `not_before` the time of the tap) and `renew_of`, the ID of the grant it renews |
 | `grant_used` | the request fields; `via`: `grant`, `never_rule`, `scheduled` or `standing` (then `grant_id` is in the request fields); for `standing` also `new_token_hash` |
 | `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked`, `stopped`, `alarm` or `renewed`; `uses_left` |
 | `grant_alarm` | the request fields; `grant_id` (none for an unknown token); `cause`: `old_token`, `over_uses`, `outside_window`, `unknown_token` or `missed_window` |
 | `secret_sent`, `signed` | the request fields |
 | `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
-| `foreign_tap` | `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7). An entry with cause `edited_message` can belong to a Deny that counted: its `data` is `d:` and the request ID, and that request has a `decision` entry with `deny` |
+| `foreign_tap` | Telegram only. `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7). An entry with cause `edited_message` can belong to a Deny that counted: its `data` is `d:` and the request ID, and that request has a `decision` entry with `deny` |
 | `error` | the request fields, if the failure is about one request; `code`: `store_failed`, `sign_failed`, `approver_failed` or `poll_conflict` |
 | `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
 
@@ -2542,6 +2648,15 @@ notice_chat_id = 123456789          # optional; default: the approver's chat
 timeout = "120s"                    # secrets
 ssh_timeout = "90s"                 # SSH signatures
 
+# Or, in place of [telegram] (never both):
+# [ntfy]
+# server = "https://ntfy.example.com"
+# request_topic = "nodkey-requests"  # the phone subscribes here
+# answer_topic = "nodkey-answers"    # the buttons answer here; only the broker reads it
+# token_file = "${CREDENTIALS_DIRECTORY}/ntfy-token"
+# timeout = "120s"
+# ssh_timeout = "90s"
+
 [updates]
 check = true                        # optional; false: never ask GitHub for a newer release
 
@@ -2674,6 +2789,17 @@ More rules:
   Without it, the field is `"password"`. `field` is an error for a secret
   in a `bws` or `bw` store. The broker hands out the value of that one
   field.
+- The config has exactly one approval channel: `[telegram]` or `[ntfy]`.
+  Both at once is an error.
+- In `[ntfy]`, `server`, `request_topic`, `answer_topic` and `token_file`
+  are required. `server` starts with `https://` and has a host and an
+  optional path, but no user name, query or fragment. A topic is 1 to 64
+  letters, digits, `_` or `-`, and the two topics differ. The token file
+  holds one access token: 8 to 256 printable ASCII characters without
+  space; space around it is fine. The token must be allowed to publish
+  to the request topic and to read the answer topic. `timeout` and
+  `ssh_timeout` are as in `[telegram]`. There is no `notice_chat_id`:
+  notices go to the request topic.
 - `clients` and `hosts` list each name once. `notice_chat_id` is not 0.
   A `window` is 1 minute to 8 hours.
   `timeout` is 15 s to 10 min. `ssh_timeout` is 15 s to 110 s, below
@@ -2857,8 +2983,8 @@ it started before.
    the broker denies the requests for its secrets until the store works
    (each request tries again), and the approver gets one alert for all
    such stores, at step 9.
-6. It makes the broker's service, the Telegram approver (it reads the bot
-   token) and the approval core. It checks the client pins.
+6. It makes the broker's service, the approver of `[telegram]` or `[ntfy]`
+   (it reads the bot token or the access token) and the approval core. It checks the client pins.
 7. It opens the `listen` address. Nothing reads from it yet: a client
    that connects waits. So an address that is not there yet, such as at
    boot before the private network is up, stops the start here: before
@@ -2866,7 +2992,8 @@ it started before.
    broker again later, and no alert goes out each time.
 8. It writes the `broker_started` entry. No later step of the start can
    fail.
-9. It starts to poll Telegram, and sends the alerts that waited. It sends
+9. It starts to poll Telegram, or the subscription to the ntfy answer
+   topic, and sends the alerts that waited. It sends
    them at the same time, each on its own, so a slow try of one alert
    does not delay the others. They can reach the phone in any order.
    After a power cut, the host can be up before Telegram can be reached.
@@ -2906,7 +3033,8 @@ order:
    is still running is cancelled, also the dial of a lookup. After this
    step, it sends no request and no notice.
 2. The polling: the `getUpdates` call that waits is cancelled and its
-   connection closed (section 7). From now on no answer counts: every
+   connection closed (section 7). With ntfy, the subscription is
+   cancelled. From now on no answer counts: every
    request that waits for the person is denied. The scheduled grants are
    dropped, with their `grant_ended` entries and the edits of their
    messages (together at most 5 seconds). Then the broker sends the stop
@@ -2944,7 +3072,7 @@ kills it.
 | 1 | any other end: the start failed, the polling stopped for another reason (such as another refusal of `getUpdates` than 401, 404 or 409), the server failed, or the stop was not clean, such as when the `broker_stopped` entry could not be written |
 | 64 | wrong usage |
 | 76 | Telegram reported a polling conflict (section 7): the bot token may be stolen. Make a new bot token, then start the broker. |
-| 77 | Telegram does not accept the bot token: `getUpdates` got 401 or 404, such as for a revoked token or a bot that is gone. Put a new token into the token file, then start the broker. |
+| 77 | The approval channel does not accept the token: Telegram's `getUpdates` got 401 or 404, such as for a revoked token or a bot that is gone, or the ntfy server answered the subscription with 401 or 403. Put a new token into the token file, or fix the access rules of the server, then start the broker. |
 
 The example unit lists 64, 76 and 77 in `RestartPreventExitStatus=`:
 only a person can fix these, and a new start with the same setup would
@@ -3640,7 +3768,14 @@ programs still hold in the same words where they make sense:
   restart, a message that someone else edited, with an Approve and a
   Deny on it, also after a flood of forged taps, polling conflict, code
   429 and server errors, and a canary bot token that must not appear in
-  any error or log line). A child process checks the HTTP client with
+  any error or log line). The ntfy approver runs against a fake ntfy
+  server with tokens made by the test: a wrong value, the value of
+  another request or of another button, a late answer, a second answer,
+  a replayed answer, an answer that is not in the exact form, a flood of
+  bad answers and of long lines, a lost subscription, a server that
+  closes each connection at once, no keepalive, a refused token, the
+  size of the message and of the body, and a token that must not appear
+  in any error or log line. A child process checks the HTTP client with
   `GODEBUG=http2debug=2` and a proxy. The lookup of a newer release runs
   against a fake GitHub server: every kind of answer that is not valid,
   403 and 429, a redirect, a time-out, an answer over 1 MiB, and, in a
@@ -3666,6 +3801,9 @@ programs still hold in the same words where they make sense:
   order of the start and the stop, the exit codes, that core dumps are
   off, a store that does not start, the notice about a newer release,
   and a canary from the request to the fake Telegram server, end to end.
+  With `[ntfy]`, the command runs against a fake ntfy server: a press of
+  Approve once approves a request, and a refused token stops the broker
+  with code 77, without the token in the log.
 - **Fake 1Password**: the `1password` store reaches the SDK through a
   small interface, `opItems` (`internal/store/onepassword_test.go`). The
   tests use a fake behind it and check the deny paths: a missing item, an
