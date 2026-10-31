@@ -25,7 +25,7 @@ what it protects against, and what it does not.
 | request | One ask: a set of secrets for one command, one SSH signature, or one SSH pre-approval. |
 | grant | A short permission. It comes from an "Approve N min" tap. |
 | rule | The setting per secret or key: always ask, ask with a time window, or never ask. |
-| store | Where secret values live: Bitwarden Secrets Manager (`bws`), the Bitwarden Password Manager (`bw`) or a vault of 1Password (`1password`). |
+| store | Where secret values live: Bitwarden Secrets Manager (`bws`), the Bitwarden Password Manager (`bw`) a vault of 1Password (`1password`) or a project of Infisical (`infisical`). |
 | verified | Shown in a message and checked by the broker. The agent cannot fake it. |
 | claimed | Shown in a message but sent by the client. The agent can write anything there. |
 
@@ -102,7 +102,7 @@ cannot use them: no flag, config key or variable turns them on
 
 Inside the broker, the approver and the stores sit behind small Go
 interfaces. There are two approvers, Telegram and ntfy (section 7), and
-three stores (`bws`, `bw`, `1password`). A broker uses one approver: its
+four stores (`bws`, `bw`, `1password`, `infisical`). A broker uses one approver: its
 config has `[telegram]` or `[ntfy]` (section 14). Others, such as `sops`,
 can be added later without changing the rest.
 
@@ -136,6 +136,27 @@ The `1password` store is the one exception, and it is the owner's choice
 - **Names sent out.** The SDK tells 1Password an integration name,
   `nodkey`, and the version of nodkey. This is like the `User-Agent` that
   the check for a newer release sends to GitHub (THREAT-MODEL.md, T34).
+
+The `infisical` store is the second exception, also the owner's choice
+(issue #127). The broker links the official Infisical Go SDK,
+`github.com/infisical/go-sdk` v0.9.1 (MIT license), and `resty` v2.13.1
+for its HTTP code. Its cost:
+
+- **Size.** The binary grew from 26,727,592 to 31,711,336 bytes (+18.7 %;
+  `-trimpath -ldflags="-s -w"`). The `go` line of `go.mod` moved to 1.26.10,
+  which the SDK needs. The SDK's `packages/util` pulls in 42 more modules
+  (the AWS SDK, Google Cloud, gRPC and others) for its other login
+  methods, though nodkey uses two calls only.
+- **How it is used.** The SDK's client takes no `http.Client` and no
+  context, reads the client ID and secret from the environment when they
+  are empty, and logs to stderr. So the store calls only its exported
+  request functions, `CallUniversalAuthLogin` and `CallRetrieveSecretV3`,
+  with its own `resty` client: no retry, no redirect, no log, no cache, no
+  refresh goroutine, the context of the call on each request, and a cap of
+  1 MiB on each answer. `HTTPS_PROXY` applies.
+- **Updates.** Update the SDK on purpose, never by accident. The fallback
+  is our own small HTTP code, as for Telegram.
+- **Names sent out.** The `User-Agent` is `nodkey/` and the version.
 
 ## 5. Flow: secrets for one command
 
@@ -2419,7 +2440,8 @@ supports `bw` only with a separate Bitwarden account that holds nothing but
 the items nodkey may hand out. Bitwarden Secrets Manager (`bws`) does not
 have these problems: its machine-account token can see only the projects
 you give it. A 1Password service account is like it: its token reads only
-the vault you give it (T39). For `bws` and `bw`, some Bitwarden accounts can read the same
+the vault you give it (T39). An Infisical machine identity is too: it
+reads only the project you give it (T41). For `bws` and `bw`, some Bitwarden accounts can read the same
 secrets in Bitwarden's own apps, without nodkey: for `bw` the separate
 account, and for `bws` at least the owners and admins of the
 organization. These accounts must never be logged in on an agent machine
@@ -2697,6 +2719,12 @@ type = "1password"
 vault = "abcdefghijklmnopqrstuvwxyz" # the ID of the vault, 26 small letters and digits
 token_file = "${CREDENTIALS_DIRECTORY}/op-token"
 
+[store.inf]                          # Infisical: no `program`
+type = "infisical"
+server = "https://app.infisical.com" # https; the EU cloud or your own server
+client_id = "00000000-0000-0000-0000-000000000000" # of the machine identity
+client_secret_file = "${CREDENTIALS_DIRECTORY}/infisical-secret"
+
 [secret.github-token]
 store = "main"
 id = "00000000-0000-0000-0000-000000000000"
@@ -2710,6 +2738,15 @@ standing = true                     # optional; default false: standing grants (
 store = "op"
 id = "abcdefghijklmnopqrstuvwxyz"   # the ID of the item, never its name
 field = "password"                  # optional; a field's ID or title; default "password"
+clients = ["laptop"]
+ask = "always"
+
+[secret.ci-token]
+store = "inf"
+project = "00000000-0000-0000-0000-000000000000" # the ID of the project
+environment = "prod"                # the slug of the environment
+path = "/"                          # the folder; required, no default
+name = "CI_TOKEN"                   # the name of the secret
 clients = ["laptop"]
 ask = "always"
 
@@ -2789,6 +2826,17 @@ More rules:
   Without it, the field is `"password"`. `field` is an error for a secret
   in a `bws` or `bw` store. The broker hands out the value of that one
   field.
+- An `infisical` store has `type`, `server`, `client_id` and
+  `client_secret_file`, and no `program`, `password_file` or `vault`.
+  `server` is an https URL with no user, query or fragment, up to 256
+  bytes. `client_id` is a UUID. A secret in such a store has `project` (the
+  ID of the project, a UUID or 24 hex digits, never a name),
+  `environment` (the slug, 1 to 64 letters, digits, `-` and `_`), `path`
+  (`/`, or `/` and folder names, no `/` at the end) and `name` (1 to 256
+  letters, digits, `_`, `-` and `.`). All four are required: `path` has no
+  default, because a default `/` could quietly pick a secret of the same
+  name in another folder. `id` is an error there, and `project`,
+  `environment`, `path` and `name` are errors in any other store.
 - The config has exactly one approval channel: `[telegram]` or `[ntfy]`.
   Both at once is an error.
 - In `[ntfy]`, `server`, `request_topic`, `answer_topic` and `token_file`
@@ -2862,7 +2910,8 @@ any problem:
   the broker user or root, and group and others must not be able to write
   to it. It may be a symbolic link.
 - The `bws` token file is read once, at start; the broker keeps the token
-  in memory. So is the token file of a `1password` store. The `bw` password file is checked at start and again before
+  in memory. So are the token file of a `1password` store and the client
+  secret file of an `infisical` store. The `bw` password file is checked at start and again before
   each unlock, also that it holds 1 byte to 1 MiB; bw reads it itself
   (section 11).
 - For a `bw` store, each directory in bw's `PATH` (section 16) must pass
@@ -3609,7 +3658,7 @@ as root. Without `TMPDIR`, the script uses `/tmp`.
 
 A `1password` store runs no program. The rules for it are in
 [The 1password store](#the-1password-store), below the rules for the
-programs.
+programs. So is the one for [The infisical store](#the-infisical-store).
 
 ### Store programs
 
@@ -3757,6 +3806,36 @@ programs still hold in the same words where they make sense:
   example unit does not set `MemoryDenyWriteExecute=yes`, which `bw`
   needs off too.
 
+### The infisical store
+
+The `infisical` store has no program. It calls two functions of the
+Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
+
+- **Login.** At start, the broker reads the client secret file once and
+  logs in with Universal Auth (`POST /api/v1/auth/universal-auth/login`).
+  If the login fails, the broker still starts, and the next fetch tries
+  again. The access token stays in memory only. The store logs in again 10
+  seconds before the TTL of the token ends, or once after a 401 on a kept
+  token. A second 401, or a 403, denies. `Close` clears the client secret
+  and the token.
+- **A fetch.** The store reads one secret by project ID, environment,
+  path and name, of the type `shared`, with no imports and no expanded
+  references. It checks that the name, environment, project and path in
+  the answer are the asked ones. An answer over 1 MiB is refused.
+- **The value.** An empty value or a NUL byte is refused, as for the other
+  stores. A value with `${` is refused too, so that the tap shows every
+  secret that goes out.
+- **Time limit.** Login and read together have the 30 seconds of the
+  stores, and a call stops when its context ends. At most 4 calls run at
+  the same time for one store.
+- **Errors.** An error is a fixed text. The text of the SDK and the text
+  of the server are never shown or logged (T19). The errors are
+  `ErrInfFailed`, `ErrInfLogin`, `ErrInfDenied`, `ErrInfNotFound`,
+  `ErrInfTooLarge`, `ErrInfReference` and `ErrInfRateLimited`.
+- **Rate limit.** A 429 denies the request. It matches `ErrRateLimited`,
+  so the broker sends one alert to the phone for each store in each hour,
+  as for 1Password. Limits of the free cloud plan were not measured.
+
 ## 17. Testing
 
 - **Unit tests** for each package: config, rules and grants (with a fake
@@ -3814,6 +3893,14 @@ programs still hold in the same words where they make sense:
   tests check the rate limit and its one alert an hour. Canary values must
   not appear in any error. No test reaches the real 1Password
   or loads the real WebAssembly core for a request.
+- **Fake Infisical**: the tests of the `infisical` store use a fake
+  server over HTTPS (`internal/store/infisical_test.go`) and check the deny
+  paths: a wrong project, environment, path or name in the answer, a
+  missing secret, an empty value, a NUL byte, a `${` value, a refused
+  login, an access token that ended, a time-out, an answer that is too
+  large or encoded, and the client secret file. A canary test checks that
+  the client secret and the access token appear in no log, error or audit
+  entry. No test reaches the real Infisical.
 - **Fake stores**: the test binary of `internal/store` acts like `bws` or
   `bw` when it runs under that name. It records its arguments and its
   environment, so the tests can check that no token, password or session
@@ -3925,6 +4012,10 @@ programs still hold in the same words where they make sense:
   of requests for one fetch, measured with `op service-account ratelimit`
   before and after. Without this number, a user cannot know how many
   fetches a day the account allows.
+- **One manual test with a real Infisical machine identity** (optional),
+  as check 17 in the same guide. It checks a real project, the Viewer
+  role, the TTLs and the refusal of a secret that the identity may not
+  read.
 
 ## 18. Build, CI and releases
 
