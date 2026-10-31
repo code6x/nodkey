@@ -118,6 +118,9 @@ type client struct {
 	http  *http.Client
 	base  string
 	token botToken
+	// prefix is HTML that goes before the text of every message that
+	// the client sends or edits; "" for none.
+	prefix string
 
 	// The times and the sleep are fields, so tests can make them short.
 	timeout     time.Duration // one try of a method other than getUpdates
@@ -258,8 +261,25 @@ func (c *client) call(ctx context.Context, method string, params, result any) er
 	}
 }
 
+// withPrefix returns params with c.prefix before the text of a message.
+func (c *client) withPrefix(params any) any {
+	if c.prefix == "" {
+		return params
+	}
+	switch v := params.(type) {
+	case sendMessageParams:
+		v.Text = c.prefix + v.Text
+		return v
+	case editMessageTextParams:
+		v.Text = c.prefix + v.Text
+		return v
+	}
+	return params
+}
+
 // callOnce makes one call of method. timeout bounds the whole call.
 func (c *client) callOnce(ctx context.Context, method string, params, result any, timeout time.Duration) *apiError {
+	params = c.withPrefix(params)
 	if err := ctx.Err(); err != nil {
 		return &apiError{method: method, reason: "stopped before the call", err: err}
 	}
@@ -523,6 +543,10 @@ type (
 
 	user struct {
 		ID int64 `json:"id"`
+		// FirstName and Username are read only by Pair, to show who sent
+		// /start.
+		FirstName string `json:"first_name"`
+		Username  string `json:"username"`
 	}
 
 	message struct {
