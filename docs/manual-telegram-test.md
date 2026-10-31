@@ -640,6 +640,54 @@ Expected:
   line `⛔ revoked by you at ...`. `/grants` answers `No standing
   grants.`.
 
+### Check 16: A 1Password store (optional)
+
+This checks the `1password` store against a real account. It needs a
+1Password account, the `op` CLI on your own computer (not on the broker
+host), and a **test vault** with one test item. Use a throwaway vault
+and a throwaway service account with `read_items` only on that vault
+and a short expiry. Never use a real vault. Keep the token in a file with
+mode `0600`, outside of every repository. Never paste it into a chat, an
+issue or a command line.
+
+1. Make the vault, the item (a field `password` with a made-up value, and
+   a field `second` with another one) and the service account. Note the
+   26-character ID of the vault and of the item. Do not write them into
+   the results: the issue is public.
+2. In `$T/broker.toml`, add a store of `type = "1password"` with `vault`
+   and a `token_file` for the file with the token, and a secret
+   `demo-op` for it with `id` = the item ID, `clients = ["test"]` and
+   `ask = "always"`. Start the broker again.
+3. Note the counter: `OP_SERVICE_ACCOUNT_TOKEN="$(cat FILE)" op
+   service-account ratelimit`. Write down the numbers of the line for
+   reads, and of the line for the day.
+4. Terminal 2: `ask demo-op "check 16"`. Tap **Approve once**.
+5. Note the counter again. The difference is the number of requests for
+   one fetch. Do steps 4 and 5 once more with a tap, to see that the
+   number does not change. Write it into the results.
+6. Add `field = "second"` to the secret. Start the broker again, and
+   ask again. Then use `field = "no such field"` and ask again.
+7. Search `$T/broker.log` and `$T/audit.jsonl` for the token and for the
+   made-up values. Use `grep -c` and write only the counts.
+
+Expected:
+
+- Step 4: the message shows `demo-op`. The command prints the length of
+  the made-up value and `exit code: 0`.
+- Step 5: the number of requests for one fetch is written down. It is the
+  same for both fetches.
+- Step 6: `second` gives the length of the other value. A field that does
+  not exist gives exit 77, and the log says that the item has no field
+  with this ID or title.
+- Step 7: `0` for the token and for both values.
+- Optional: stop the network of the broker, or let the service account
+  expire, and ask. The request is denied with the fixed text `1Password
+  refused the request, or could not be reached`, and the log has no text
+  of the SDK.
+
+At the end, delete the service account, the vault and the file with the
+token.
+
 ## Clean up
 
 1. Terminal 1: stop the broker with Ctrl-C, if it still runs.
@@ -689,3 +737,6 @@ raw answer of the Bot API, and the lines of the log with `user_id` or
 | 15 | a use with the token file | no tap; exit 0; silent notice; the token file changed | | |
 | 15 | the old token again | exit 77; alarm with sound; `ended by an alarm` | | |
 | 15 | Revoke on a standing grant | `Revoked.`; button gone; `revoked by you` | | |
+| 16 | a 1Password store (optional) | the command gets the value; the requests for one fetch are written down (before and after `op service-account ratelimit`) | | |
+| 16 | a field that is not there | exit 77; the log says that the item has no such field | | |
+| 16 | the token and the values in the logs | `0` for `broker.log` and `audit.jsonl` | | |

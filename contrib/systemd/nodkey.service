@@ -44,6 +44,7 @@ LoadCredentialEncrypted=telegram-token:/etc/nodkey/credentials/telegram-token.cr
 LoadCredentialEncrypted=bws-token:/etc/nodkey/credentials/bws-token.cred
 LoadCredentialEncrypted=bws-token-backup:/etc/nodkey/credentials/bws-token-backup.cred
 LoadCredentialEncrypted=bw-master-password:/etc/nodkey/credentials/bw-master-password.cred
+LoadCredentialEncrypted=op-token:/etc/nodkey/credentials/op-token.cred
 LoadCredentialEncrypted=ssh-deploy:/etc/nodkey/credentials/ssh-deploy.cred
 
 # /var/lib/nodkey holds the audit log (audit_log = "/var/lib/nodkey/audit.jsonl"),
@@ -130,8 +131,9 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
 SystemCallErrorNumber=EPERM
 # Not set on purpose:
-#   MemoryDenyWriteExecute=yes  bw runs on Node.js, which needs memory that
-#                               is writable and executable.
+#   MemoryDenyWriteExecute=yes  bw runs on Node.js, and the 1Password SDK
+#                               runs its core with wazero. Both need memory
+#                               that is writable and executable.
 #   PrivateUsers=yes            files owned by root, such as the
 #                               credentials and the config, would look
 #                               owned by nobody, and the broker would

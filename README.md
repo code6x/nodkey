@@ -15,7 +15,8 @@ Try it on a test setup first. See the
 
 - A small daemon, the **broker**, runs on a trusted machine. It holds the
   SSH keys and the access to your secret stores (Bitwarden Secrets Manager
-  through `bws`, or the Bitwarden Password Manager through `bw`).
+  through `bws`, the Bitwarden Password Manager through `bw`, or a vault
+  of 1Password).
 - The agent's machine gets only the `nodkey` client. It holds no SSH key
   and no store token. Its own TLS key lets it ask, not approve.
 - When the agent needs a secret, it runs
