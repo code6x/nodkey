@@ -30,9 +30,11 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"os"
@@ -115,6 +117,9 @@ var (
 
 // Options are the optional parts of an Approver.
 type Options struct {
+	// Prefix is plain text that goes before the text of every message
+	// and edit, such as "TRY MODE · " for nodkey try. Default: none.
+	Prefix string
 	// Logger gets refused button presses and problems with Telegram. The
 	// default drops them. No line holds the bot token or message text.
 	Logger *slog.Logger
@@ -239,6 +244,15 @@ func New(cfg config.Telegram, opts Options) (*Approver, error) {
 	return newApprover(cfg, opts, config.ReadPrivateFile, defaultBaseURL)
 }
 
+// NewWithToken is New with the bot token in memory instead of in
+// cfg.TokenFile. nodkey try uses it: the person types the token, and it
+// is never written to a file. The Approver keeps a copy, so the caller
+// may clear token.
+func NewWithToken(cfg config.Telegram, token []byte, opts Options) (*Approver, error) {
+	read := func(string) ([]byte, error) { return bytes.Clone(token), nil }
+	return newApprover(cfg, opts, read, defaultBaseURL)
+}
+
 // newApprover is New with the token reader and the address of the Bot API.
 // Tests use a fake reader and a fake Telegram server.
 func newApprover(cfg config.Telegram, opts Options, read func(string) ([]byte, error), base string) (*Approver, error) {
@@ -284,8 +298,10 @@ func newApprover(cfg config.Telegram, opts Options, read func(string) ([]byte, e
 				slog.String("variable", name), slog.String("path", path))
 		}
 	}
+	api := newClient(token, base)
+	api.prefix = html.EscapeString(opts.Prefix)
 	return &Approver{
-		api:        newClient(token, base),
+		api:        api,
 		userID:     cfg.UserID,
 		noticeChat: cfg.NoticeChatID,
 		log:        logger,
