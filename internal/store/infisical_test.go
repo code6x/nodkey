@@ -473,6 +473,14 @@ func infDenyCases(c canaries) []struct {
 				return true
 			}
 		}, infGitHub, ErrInfTooLarge},
+		{"an encoded answer", func(f *fakeInf) {
+			f.readHook = func(w http.ResponseWriter, _ *http.Request) bool {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Encoding", "br") // Go's transport does not decode it
+				_, _ = fmt.Fprintf(w, `{"secret":{"secretKey":"GITHUB_TOKEN","secretValue":"%s"}}`, c.value)
+				return true
+			}
+		}, infGitHub, ErrInfFailed},
 		{"login answer too large", func(f *fakeInf) {
 			f.loginHook = func(w http.ResponseWriter, _ *http.Request) bool {
 				w.Header().Set("Content-Type", "application/json")
@@ -625,6 +633,23 @@ func TestInfisicalClose(t *testing.T) {
 	}
 	if _, err := e.store.Fetch(t.Context(), infGitHub); !errors.Is(err, ErrClosed) {
 		t.Errorf("Fetch after Close: %v", err)
+	}
+}
+
+// TestInfisicalCloseDuringRead: a read that ends after Close hands out
+// nothing.
+func TestInfisicalCloseDuringRead(t *testing.T) {
+	t.Parallel()
+	c := newCanaries()
+	e := newInfTest(t, c, infCloud, 5*time.Second)
+	e.fake.set(func(f *fakeInf) {
+		f.readHook = func(http.ResponseWriter, *http.Request) bool {
+			e.store.Close()
+			return false
+		}
+	})
+	if _, err := e.store.Fetch(t.Context(), infGitHub); !errors.Is(err, ErrClosed) {
+		t.Fatalf("err = %v, want ErrClosed", err)
 	}
 }
 

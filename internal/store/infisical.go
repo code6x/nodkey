@@ -193,6 +193,13 @@ func (c *infCall) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	if res.Header.Get("Content-Encoding") != "" {
+		// Go's transport decodes gzip, and drops the header. A body that
+		// is still encoded would be decoded by resty after the cap: a
+		// small answer could grow without a limit.
+		_ = res.Body.Close()
+		return nil, ErrInfFailed
+	}
 	if res.ContentLength > maxInfAnswer {
 		_ = res.Body.Close()
 		c.tooLarge.Store(true)
@@ -242,7 +249,8 @@ func (s *infStore) newClient(c *infCall) *resty.Client {
 		// A redirect is the answer: no other server gets the client secret
 		// or the access token.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Timeout:       s.timeout,
+		// No Timeout: RoundTrip replaces the request's context with the
+		// call's, which ends at the time limit (callWithin).
 	}
 	return resty.NewWithClient(hc).
 		SetBaseURL(s.api).
@@ -281,15 +289,18 @@ func (s *infStore) Fetch(ctx context.Context, id string) (Value, error) {
 			return Value{}, err
 		}
 		v, err := s.read(ctx, token, ref)
-		if !errors.Is(err, errInfUnauthorized) || fresh {
-			return v, err
+		if errors.Is(err, errInfUnauthorized) && !fresh {
+			s.dropToken(gen)
+			if token, _, _, err = s.tokenFor(ctx); err != nil {
+				return Value{}, err
+			}
+			v, err = s.read(ctx, token, ref)
 		}
-		s.dropToken(gen)
-		token, _, _, err = s.tokenFor(ctx)
-		if err != nil {
-			return Value{}, err
+		if err == nil && s.isClosed() {
+			v.Clear() // Close came during the read
+			return Value{}, ErrClosed
 		}
-		return s.read(ctx, token, ref)
+		return v, err
 	})
 	if errors.Is(err, errInfUnauthorized) {
 		err = ErrInfDenied
@@ -331,6 +342,13 @@ func (s *infStore) current() (string, uint64, bool, error) {
 		return "", 0, false, nil
 	}
 	return string(s.token.Bytes()), s.tokenGen, true, nil
+}
+
+// isClosed reports whether Close ran.
+func (s *infStore) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 // dropToken drops the access token of login gen, which Infisical refused.
