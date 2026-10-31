@@ -187,7 +187,7 @@ func credFileExists(env BrokerEnv, name, file string) bool {
 func credNames(cfg *config.Broker, credDir string) []string {
 	paths := []string{cfg.TLSKey, cfg.AuditLog, cfg.KnownHostsFile, cfg.ApproverTokenFile()}
 	for _, s := range cfg.Stores {
-		paths = append(paths, s.TokenFile, s.PasswordFile, s.Program)
+		paths = append(paths, s.TokenFile, s.PasswordFile, s.ClientSecretFile, s.Program)
 	}
 	for _, k := range cfg.Keys {
 		paths = append(paths, k.File)
