@@ -184,8 +184,12 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 		sec := rq.s.cfg.Secrets[name]
 		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 		ref := sec.ID
-		if sec.Field != "" {
+		switch {
+		case sec.Field != "":
 			ref += "/" + sec.Field // a 1password store: the item and its field
+		case sec.SecretName != "":
+			// An infisical store: the project, environment, path and name.
+			ref = store.InfisicalRef(sec.Project, sec.Environment, sec.Path, sec.SecretName)
 		}
 		v, err := rq.s.stores[sec.Store].Fetch(fctx, ref)
 		cancel()

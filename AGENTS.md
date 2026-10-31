@@ -107,8 +107,8 @@ that it makes.
   update these guides too.
 - **Dependencies:** the standard library, `golang.org/x/crypto` and
   `github.com/BurntSushi/toml`. Anything else needs a reason in the pull
-  request. The `1password` store also links the official 1Password Go SDK
-  (DESIGN.md section 4).
+  request. The `1password` and `infisical` stores also link the official
+  1Password and Infisical Go SDKs (DESIGN.md section 4).
 - **Git:** one feature branch and one pull request per issue. Pull request
   titles follow [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`). Pull requests are

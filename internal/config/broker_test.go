@@ -519,7 +519,7 @@ func TestLoadBrokerErrors(t *testing.T) {
 		{name: "store type missing", edits: []edit{{"type = \"bws\"\n", ""}},
 			want: "[store.main] type: is missing"},
 		{name: "store type unknown", edits: []edit{{`type = "bws"`, `type = "vault"`}},
-			want: `[store.main] type: must be "bws", "bw" or "1password"`},
+			want: `[store.main] type: must be "bws", "bw", "1password" or "infisical"`},
 		{name: "store program missing", edits: []edit{{"program = \"{{dir}}/bin/bws\"\n", ""}},
 			want: "[store.main] program: is missing"},
 		{name: "store program relative", edits: []edit{{`program = "{{dir}}/bin/bws"`, `program = "bws"`}},

@@ -1,11 +1,13 @@
 // Package store gets secret values from the secret stores: Bitwarden
-// Secrets Manager (bws), the Bitwarden Password Manager (bw) and
-// 1Password with a service account (1password). See
-// DESIGN.md sections 5, 11 and 16, and THREAT-MODEL.md T18 and T29.
+// Secrets Manager (bws), the Bitwarden Password Manager (bw), 1Password
+// with a service account (1password) and Infisical with a machine identity
+// (infisical). See DESIGN.md sections 5, 11 and 16, and THREAT-MODEL.md
+// T18 and T29.
 //
 // nodkey does not link the Bitwarden SDK. A bws or bw store runs the
 // store's own program instead (a 1password store calls the 1Password SDK
-// in the process; see opStore):
+// in the process, see opStore; an infisical store calls Infisical's API,
+// see infStore):
 //
 //   - by the absolute path from the config, without a shell;
 //   - with stdin from /dev/null, in its own process group, and with its
@@ -27,6 +29,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,7 +47,8 @@ type Store interface {
 	Start(ctx context.Context) error
 	// Fetch gets the value of the item with the ID id, the id of a
 	// [secret.*] section. For a 1password store, id is "ITEM_ID/FIELD",
-	// with the field of the section. The caller must Clear the value when
+	// with the field of the section; for an infisical store, it is from
+	// InfisicalRef. The caller must Clear the value when
 	// it is sent.
 	// Any error means deny.
 	Fetch(ctx context.Context, id string) (Value, error)
@@ -95,6 +99,11 @@ type deps struct {
 	timeout time.Duration
 	// opConnect logs in to 1Password: sdkConnect when nil.
 	opConnect opConnect
+	// infTransport sends the requests to Infisical: newInfTransport when
+	// nil.
+	infTransport http.RoundTripper
+	// now is the clock of the infisical store: time.Now when nil.
+	now func() time.Time
 	// waitDelay is how long a run waits for the program's output after
 	// the program ended. A process that the program left behind can hold
 	// the output open; after this time the run fails.
@@ -142,8 +151,11 @@ func newStore(cfg config.Store, dir string, d deps) (Store, error) {
 		return nil, errors.New("store: the name of the store cannot be the name of a directory")
 	}
 	name := cfg.Name
-	if cfg.Type == config.StoreOnePassword {
+	switch cfg.Type {
+	case config.StoreOnePassword:
 		return newOP(cfg, d)
+	case config.StoreInfisical:
+		return newInfisical(cfg, d)
 	}
 	files := []struct{ key, path string }{{"program", cfg.Program}}
 	switch cfg.Type {

@@ -65,9 +65,9 @@ You need:
 - **Telegram on your phone.** This Telegram account approves the
   requests.
 - **A store for the secret values**: Bitwarden Secrets Manager (`bws`),
-  a separate account of the Bitwarden Password Manager (`bw`), or a vault
-  of 1Password (`1password`). If you use nodkey only for SSH logins, you
-  need no store.
+  a separate account of the Bitwarden Password Manager (`bw`), a vault
+  of 1Password (`1password`), or a project of Infisical (`infisical`). If
+  you use nodkey only for SSH logins, you need no store.
 
 The broker host is the root of trust. Root on it, or a copy of its
 memory, gives every key and token (THREAT-MODEL.md section 5, item 5).
@@ -533,7 +533,9 @@ For each value, the broker runs the program of the store: `bws` or `bw`
 ([DESIGN.md section 16](../DESIGN.md#store-programs)). The program gets
 a token or the master password from the broker, so it must be the real
 program, and nobody else may change it. A `1password` store runs no
-program: see [1password](#1password-a-vault-only-for-nodkey).
+program: see [1password](#1password-a-vault-only-for-nodkey). Nor does an
+`infisical` store: see
+[infisical](#infisical-a-project-only-for-nodkey).
 
 ### Where bws and bw come from
 
@@ -763,6 +765,82 @@ broker also sends one alert to your phone for each store in each hour.
 One fetch can cost more than one request. To see how many, run
 `op service-account ratelimit` before and after a fetch
 ([docs/manual-telegram-test.md](manual-telegram-test.md), check 16).
+
+### infisical: a project only for nodkey
+
+The `infisical` store uses the official Infisical SDK inside the broker.
+There is no program to install. The SDK adds about 5 MB to the `nodkey`
+binary (DESIGN.md section 4 has the details). It works with the Infisical
+cloud (US or EU) and with your own server. The broker logs in with a
+machine identity (Universal Auth) and keeps the access token only in
+memory.
+
+**Use a project only for nodkey.** Put into it only the secrets that
+nodkey may hand out. Everyone who can read the project in Infisical's own
+apps reads them with no tap, and everyone who can write to it can change
+what a name holds
+([section 9](#the-infisical-project-and-who-can-read-it)).
+
+In Infisical, on a trusted computer ([section 1](#where-you-do-the-setup)):
+
+1. Make a project for nodkey. Put into it only the secrets that nodkey
+   may hand out.
+2. Make a machine identity with Universal Auth. Give it the built-in
+   **Viewer** role on the project: read-only, and it covers every
+   environment of the project. A custom role for one environment or one
+   path, and trusted IPs, need a paid plan (seen 2026-10-29). nodkey works
+   with both.
+3. Set a short **access token TTL** for the identity.
+4. Make a client secret. Set a **TTL** on it: by default it never ends.
+   Copy it. It is shown only once.
+5. Copy the client ID of the identity, the ID of the project, the slug of
+   the environment, the path of the folder and the name of each secret.
+   The IDs are UUIDs.
+
+On the broker host, make the credential, as for bws:
+
+```sh
+systemd-ask-password -n "Infisical client secret:" |
+  systemd-creds encrypt --with-key="$WITH_KEY" --name=infisical-secret - /etc/nodkey/credentials/infisical-secret.cred
+```
+
+Add
+`LoadCredentialEncrypted=infisical-secret:/etc/nodkey/credentials/infisical-secret.cred`
+to the unit ([section 8](#8-the-systemd-unit)). The config
+([section 7](#7-the-config-file)) is:
+
+```toml
+[store.inf]
+type = "infisical"
+server = "https://app.infisical.com"   # or the EU cloud, or your own server
+client_id = "CLIENT_ID"
+client_secret_file = "${CREDENTIALS_DIRECTORY}/infisical-secret"
+
+[secret.ci-token]
+store = "inf"
+project = "PROJECT_ID"
+environment = "prod"
+path = "/"
+name = "CI_TOKEN"
+```
+
+An `infisical` store has no `program`; that is an error. All four keys of
+the secret are required. `path` has no default, so that a secret of the
+same name in another folder is never picked by mistake. A value that is
+empty, or that has `${` (a reference to another secret), is denied: the
+tap must show every secret that goes out. An answer over 1 MiB is denied.
+
+The broker logs in at start. If the login fails, the broker still starts,
+and the next request tries again. It logs in again when the access token
+ends. The error texts are fixed, and they never show the client secret,
+the access token or the text of the server. If a request is denied, check
+the IDs, the environment, the path, the name, the Viewer role and the TTL
+of the client secret first. When Infisical limits the requests (a 429),
+the broker denies the request, and sends one alert to your phone for each
+store in each hour.
+
+Without trusted IPs, the client secret gets an access token from
+anywhere. So keep it on the broker host only.
 
 ### bw: a separate Bitwarden account
 
@@ -994,6 +1072,12 @@ type = "1password"
 vault = "abcdefghijklmnopqrstuvwxyz" # the ID of the vault, 26 small letters and digits
 token_file = "${CREDENTIALS_DIRECTORY}/op-token"
 
+[store.inf]                          # Infisical: no `program`
+type = "infisical"
+server = "https://app.infisical.com"
+client_id = "00000000-0000-0000-0000-000000000000" # of the machine identity
+client_secret_file = "${CREDENTIALS_DIRECTORY}/infisical-secret"
+
 [secret.github-token]
 store = "main"
 id = "00000000-0000-0000-0000-000000000000"
@@ -1006,6 +1090,15 @@ preapprove = true                   # new in 0.3.0; optional; default false: all
 store = "op"
 id = "abcdefghijklmnopqrstuvwxyz"   # the ID of the item, never its name
 field = "password"                  # optional; a field's ID or title; default "password"
+clients = ["laptop"]
+ask = "always"
+
+[secret.ci-token]
+store = "inf"
+project = "00000000-0000-0000-0000-000000000000" # the ID of the project
+environment = "prod"                # the slug
+path = "/"                          # required; no default
+name = "CI_TOKEN"
 clients = ["laptop"]
 ask = "always"
 
@@ -1072,14 +1165,16 @@ its TLS key. Make that key on the agent machine first
 each message as `machine:`.
 
 **`[store.NAME]`.** `type` is `bws` with a `token_file`, `bw` with a
-`password_file`, or `1password` with a `vault` and a `token_file`.
-`program` is the absolute path of the program; a `1password` store has
-none.
+`password_file`, `1password` with a `vault` and a `token_file`, or
+`infisical` with a `server`, a `client_id` and a `client_secret_file`.
+`program` is the absolute path of the program; a `1password` or
+`infisical` store has none.
 
 **`[secret.NAME]`.** The name is what the client asks for, and what the
 message shows. `store` names a store section, and `id` is the UUID of
 the item in that store (for `1password`, the 26-character ID of the
-item, and `field` may name the field). `clients` lists the clients that
+item, and `field` may name the field; for `infisical`, no `id`, but
+`project`, `environment`, `path` and `name`). `clients` lists the clients that
 may ask for it.
 
 **`[key.NAME]`.** `file` is the credential with the SSH key. `clients`
@@ -1211,8 +1306,9 @@ What the unit leaves out on purpose:
   would look owned by `nobody`, and the broker would refuse them.
 - `PrivateNetwork=`, `IPAddressDeny=` and the like: the broker must
   reach Telegram, and GitHub for the check for a newer release, and
-  `bws` and `bw` must reach Bitwarden, and the 1Password SDK must reach
-  1Password. Do not add them.
+  `bws` and `bw` must reach Bitwarden, the 1Password SDK must reach
+  1Password, and the broker must reach your Infisical server. Do not add
+  them.
 
 After `systemctl daemon-reload`, `systemd-analyze security nodkey` shows
 how much the sandbox limits the broker.
@@ -1295,6 +1391,29 @@ the whole vault until it expires or is revoked.
 - After each change, check who is a member of the vault and which service
   accounts can read it.
 - Turn on two-step login for the accounts that can open the vault.
+
+### The Infisical project and who can read it
+
+Anyone who can read the nodkey project in Infisical's own apps reads its
+secrets with no tap and no entry in the audit log
+([THREAT-MODEL.md T41](../THREAT-MODEL.md#6-threats-and-answers)). Anyone
+who can write to it can change what a name holds. So can everyone who holds
+the client secret of its machine identity: a leaked client secret gets
+access tokens until it ends or is revoked.
+
+- Use a project only for nodkey, with only the secrets that nodkey may
+  hand out. Give it to no more people than needed, and write access to
+  few.
+- Never log in to an account that can open the project on a machine
+  where an agent runs. Do not add your main account to the project if it
+  is logged in there. The admins of the organization may read it too.
+- The machine identity has the Viewer role, a short access token TTL and a
+  TTL on its client secret.
+- The client secret is an encrypted systemd credential on the broker host,
+  never a file on an agent machine.
+- After each change, check who is a member of the project and which
+  machine identities can read it.
+- Turn on two-step login for the accounts that can open the project.
 
 ### Swap and hibernation
 
@@ -1961,8 +2080,9 @@ Install them in the same way as the first time
 checked, owned by root. Then check that the next request for a secret
 works. The login of bw stays in the home directory of the store.
 
-The 1Password SDK is part of the `nodkey` binary, so it changes with
-nodkey ([A new version of nodkey](#a-new-version-of-nodkey)).
+The 1Password SDK and the Infisical SDK are part of the `nodkey` binary,
+so they change with nodkey
+([A new version of nodkey](#a-new-version-of-nodkey)).
 
 ### A new TLS key for the broker
 
@@ -2003,6 +2123,14 @@ credential `op-token` again, restart the broker, check that the next
 request works, and then delete the old service account in 1Password. Put
 the date of the expiry in your calendar: after it, every request for the
 store is denied.
+
+### A new Infisical client secret
+
+Make a new client secret for the machine identity in Infisical, with a
+TTL. Make the credential `infisical-secret` again, restart the broker,
+check that the next request works, and then delete the old client secret
+in Infisical. Put the date of the TTL in your calendar: after it, every
+request for the store is denied.
 
 ### A new bws token or bw master password
 

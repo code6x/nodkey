@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	urlpath "path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -214,6 +215,10 @@ const (
 	// StoreOnePassword is 1Password with a service account, through the
 	// 1Password SDK; uses Store.TokenFile and Store.Vault, and no program.
 	StoreOnePassword StoreType = "1password"
+	// StoreInfisical is Infisical with a machine identity and Universal
+	// Auth, through the Infisical Go SDK; uses Store.Server,
+	// Store.ClientID and Store.ClientSecretFile, and no program.
+	StoreInfisical StoreType = "infisical"
 )
 
 // Store is a [store.NAME] section: where secret values live.
@@ -224,16 +229,30 @@ type Store struct {
 	TokenFile    string // StoreBWS: the machine account token; StoreOnePassword: the service account token
 	PasswordFile string // StoreBW only: the master password
 	Vault        string // StoreOnePassword only: the vault's ID
+	// Server is the Infisical server, an https URL without a "/" at the
+	// end: StoreInfisical only.
+	Server string
+	// ClientID is the client ID of the machine identity, a UUID:
+	// StoreInfisical only.
+	ClientID string
+	// ClientSecretFile holds the client secret of the machine identity:
+	// StoreInfisical only.
+	ClientSecretFile string
 }
 
 // Secret is a [secret.NAME] section.
 type Secret struct {
-	Name    string
-	Store   string   // a name in Broker.Stores
-	ID      string   // the item's ID in the store: a UUID, or for 1password a 1Password ID
-	Field   string   // 1password only: the field's ID or title; "password" when the config has none
-	Clients []string // the names in Broker.Clients that may ask for it
-	Rule    Rule
+	Name  string
+	Store string // a name in Broker.Stores
+	ID    string // the item's ID in the store: a UUID, or for 1password a 1Password ID
+	Field string // 1password only: the field's ID or title; "password" when the config has none
+	// The secret in Infisical: infisical only. ID is empty then.
+	Project     string   // the project's ID
+	Environment string   // the environment's slug, such as "prod"
+	Path        string   // the folder, such as "/" or "/ci"
+	SecretName  string   // the secret's name (its key in Infisical), from the key "name"
+	Clients     []string // the names in Broker.Clients that may ask for it
+	Rule        Rule
 }
 
 // Key is a [key.NAME] section: an SSH key the broker signs with.
@@ -307,12 +326,20 @@ type (
 		TokenFile    *string `toml:"token_file"`
 		PasswordFile *string `toml:"password_file"`
 		Vault        *string `toml:"vault"`
+		Server       *string `toml:"server"`
+		ClientID     *string `toml:"client_id"`
+		ClientSecret *string `toml:"client_secret_file"`
 	}
 	secretSection struct {
-		Store   string   `toml:"store"`
-		ID      string   `toml:"id"`
-		Field   *string  `toml:"field"`
-		Clients []string `toml:"clients"`
+		Store string  `toml:"store"`
+		ID    string  `toml:"id"`
+		Field *string `toml:"field"`
+		// The keys of a secret of an infisical store.
+		Project     *string  `toml:"project"`
+		Environment *string  `toml:"environment"`
+		Path        *string  `toml:"path"`
+		SecretName  *string  `toml:"name"`
+		Clients     []string `toml:"clients"`
 		ruleKeys
 	}
 	keySection struct {
@@ -797,13 +824,32 @@ func (b *Broker) addStores(m map[string]storeSection) error {
 			st.PasswordFile, err = storeFile(sec, st.Type, "password_file", s.PasswordFile, "token_file", s.TokenFile)
 		case StoreOnePassword:
 			st.TokenFile, err = storeFile(sec, st.Type, "token_file", s.TokenFile, "password_file", s.PasswordFile)
+		case StoreInfisical:
+			st.ClientSecretFile, err = storeFile(sec, st.Type, "client_secret_file", s.ClientSecret, "token_file", s.TokenFile)
 		case "":
-			err = fmt.Errorf(`%s: is missing; use "bws", "bw" or "1password"`, place(sec, "type"))
+			err = fmt.Errorf(`%s: is missing; use "bws", "bw", "1password" or "infisical"`, place(sec, "type"))
 		default:
-			err = fmt.Errorf(`%s: must be "bws", "bw" or "1password"`, place(sec, "type"))
+			err = fmt.Errorf(`%s: must be "bws", "bw", "1password" or "infisical"`, place(sec, "type"))
 		}
 		if err != nil {
 			return err
+		}
+		if st.Type != StoreInfisical {
+			for _, k := range []struct {
+				key string
+				v   *string
+			}{{"server", s.Server}, {"client_id", s.ClientID}, {"client_secret_file", s.ClientSecret}} {
+				if k.v != nil {
+					return fmt.Errorf("%s: is not allowed with type = %q", place(sec, k.key), st.Type)
+				}
+			}
+		}
+		if st.Type == StoreInfisical {
+			if err := infisicalStore(sec, s, &st); err != nil {
+				return err
+			}
+			b.Stores[name] = st
+			continue
 		}
 		if st.Type == StoreOnePassword {
 			// The 1Password SDK runs in the broker: there is no program.
@@ -829,6 +875,141 @@ func (b *Broker) addStores(m map[string]storeSection) error {
 		b.Stores[name] = st
 	}
 	return nil
+}
+
+// infisicalStore checks the keys of a [store.*] section of type
+// "infisical", and sets them in st. The Infisical SDK runs in the broker:
+// there is no program.
+func infisicalStore(sec string, s storeSection, st *Store) error {
+	for _, k := range []struct {
+		key string
+		set bool
+	}{{"program", s.Program != ""}, {"password_file", s.PasswordFile != nil}, {"vault", s.Vault != nil}} {
+		if k.set {
+			return fmt.Errorf(`%s: is not allowed with type = "infisical"`, place(sec, k.key))
+		}
+	}
+	if s.Server == nil {
+		return fmt.Errorf(`%s: is missing; type = "infisical" needs it`, place(sec, "server"))
+	}
+	server, ok := InfisicalServer(*s.Server)
+	if !ok {
+		return fmt.Errorf(`%s: must be an https URL such as "https://app.infisical.com", `+
+			`with no user, query or fragment`, place(sec, "server"))
+	}
+	if s.ClientID == nil {
+		return fmt.Errorf(`%s: is missing; type = "infisical" needs it`, place(sec, "client_id"))
+	}
+	if !uuidPattern.MatchString(*s.ClientID) {
+		return fmt.Errorf(`%s: must be the client ID of the machine identity, a UUID`, place(sec, "client_id"))
+	}
+	st.Server, st.ClientID = server, *s.ClientID
+	return nil
+}
+
+// Limits of the keys of an infisical store and its secrets.
+const (
+	maxServerLen         = 256
+	maxInfisicalNameLen  = 256
+	maxInfisicalPathLen  = 256
+	maxInfisicalSlugLen  = 64
+	maxInfisicalSegments = 32
+)
+
+// infisicalProjectPattern is the form of a project ID in Infisical: a
+// UUID, or 24 hex digits for a project made before Infisical used UUIDs.
+// An ID, never a name or a slug, names the project.
+var infisicalProjectPattern = regexp.MustCompile(
+	`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{24})$`)
+
+// InfisicalServer checks the server of an infisical store and returns it
+// without a "/" at the end. It must be an https URL with a host, and no
+// user, query, fragment, or ".." or "." part in its path. The store
+// checks it again.
+func InfisicalServer(s string) (string, bool) {
+	if s == "" || len(s) > maxServerLen || !printableASCII(s) {
+		return "", false
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" {
+		return "", false
+	}
+	p := strings.TrimSuffix(u.Path, "/")
+	if p != "" && (urlpath.Clean(p) != p || !strings.HasPrefix(p, "/")) {
+		return "", false
+	}
+	return u.Scheme + "://" + u.Host + p, true
+}
+
+// ValidInfisicalProject reports whether s is the ID of a project in
+// Infisical.
+func ValidInfisicalProject(s string) bool { return infisicalProjectPattern.MatchString(s) }
+
+// ValidInfisicalEnvironment reports whether s is the slug of an
+// environment: 1 to 64 letters, digits, "-" and "_", first a letter or a
+// digit.
+func ValidInfisicalEnvironment(s string) bool { return infisicalWord(s, maxInfisicalSlugLen, false) }
+
+// ValidInfisicalName reports whether s is the name of a secret: 1 to 256
+// letters, digits, "_", "-" and ".", first a letter, a digit or "_". The
+// name goes into the path of a URL, so it can never hold "/", "?", "%", or
+// be "." or "..".
+func ValidInfisicalName(s string) bool { return infisicalWord(s, maxInfisicalNameLen, true) }
+
+// ValidInfisicalPath reports whether s is the path of a folder: "/", or
+// "/" and folder names separated by "/", with no "/" at the end. A
+// folder name is as a slug, so the path has no "." or ".." part and no
+// "//".
+func ValidInfisicalPath(s string) bool {
+	if s == "/" {
+		return true
+	}
+	if len(s) > maxInfisicalPathLen || !strings.HasPrefix(s, "/") {
+		return false
+	}
+	parts := strings.Split(s[1:], "/")
+	if len(parts) > maxInfisicalSegments {
+		return false
+	}
+	for _, p := range parts {
+		if !infisicalWord(p, maxInfisicalSlugLen, false) {
+			return false
+		}
+	}
+	return true
+}
+
+// infisicalWord reports whether s has 1 to limit ASCII letters, digits,
+// "-" and "_" (and "." when dot is set), and starts with a letter, a
+// digit, or "_" when dot is set.
+func infisicalWord(s string, limit int, dot bool) bool {
+	if s == "" || len(s) > limit {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case c == '_' && (i > 0 || dot):
+		case c == '-' && i > 0:
+		case c == '.' && dot && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// printableASCII reports whether s has only printable ASCII characters,
+// without spaces.
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // storeFile checks the file keys of a store: the type needs the key need
@@ -861,6 +1042,24 @@ func (b *Broker) addSecrets(m map[string]secretSection) error {
 		if _, ok := b.Stores[s.Store]; !ok {
 			return fmt.Errorf("%s: no [store.*] section has this name", place(sec, "store"))
 		}
+		if b.Stores[s.Store].Type == StoreInfisical {
+			inf, err := infisicalSecret(sec, s)
+			if err != nil {
+				return err
+			}
+			if err := b.addSecret(name, sec, s, inf, never, infisicalKey(inf)); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, k := range []struct {
+			key string
+			v   *string
+		}{{"project", s.Project}, {"environment", s.Environment}, {"path", s.Path}, {"name", s.SecretName}} {
+			if k.v != nil {
+				return fmt.Errorf(`%s: is allowed only with a store of type = "infisical"`, place(sec, k.key))
+			}
+		}
 		if s.ID == "" {
 			return fmt.Errorf("%s: is missing", place(sec, "id"))
 		}
@@ -886,28 +1085,88 @@ func (b *Broker) addSecrets(m map[string]secretSection) error {
 					place(sec, "id"))
 			}
 		}
-		clients, err := b.clientList(sec, s.Clients)
-		if err != nil {
+		secret := Secret{ID: s.ID, Field: field}
+		if err := b.addSecret(name, sec, s, secret, never, strings.ToLower(s.ID)); err != nil {
 			return err
 		}
-		rule, err := parseRule(sec, s.ruleKeys)
-		if err != nil {
-			return err
-		}
-		if rule.Ask == AskNever {
-			if len(clients) != 1 {
-				return fmt.Errorf(`%s: ask = "never" needs exactly one client`, place(sec, "clients"))
-			}
-			item := strings.ToLower(s.ID)
-			if other, ok := never[item]; ok {
-				return fmt.Errorf(`%s: %s also has ask = "never" for this item ID; `+
-					`one item may have one "never" rule, for one client`, place(sec, "id"), sectionName("secret", other))
-			}
-			never[item] = name
-		}
-		b.Secrets[name] = Secret{Name: name, Store: s.Store, ID: s.ID, Field: field, Clients: clients, Rule: rule}
 	}
 	return nil
+}
+
+// addSecret checks the clients and the rule of the secret section s, and
+// adds secret to b.Secrets with them. item names the item in the store,
+// for the check of "never" rules.
+func (b *Broker) addSecret(name, sec string, s secretSection, secret Secret, never map[string]string, item string) error {
+	clients, err := b.clientList(sec, s.Clients)
+	if err != nil {
+		return err
+	}
+	rule, err := parseRule(sec, s.ruleKeys)
+	if err != nil {
+		return err
+	}
+	if rule.Ask == AskNever {
+		if len(clients) != 1 {
+			return fmt.Errorf(`%s: ask = "never" needs exactly one client`, place(sec, "clients"))
+		}
+		if other, ok := never[item]; ok {
+			key, what := "id", "item ID"
+			if secret.ID == "" {
+				key, what = "name", "secret in Infisical"
+			}
+			return fmt.Errorf(`%s: %s also has ask = "never" for this %s; `+
+				`one item may have one "never" rule, for one client`, place(sec, key), sectionName("secret", other), what)
+		}
+		never[item] = name
+	}
+	secret.Name, secret.Store, secret.Clients, secret.Rule = name, s.Store, clients, rule
+	b.Secrets[name] = secret
+	return nil
+}
+
+// infisicalSecret checks the keys of a [secret.*] section of an infisical
+// store. Every key is needed, path too: "/" is the usual folder, but a
+// default would let a secret of the same name in another folder be the one
+// that the config means without saying so. The config names the folder;
+// the tap shows only the name of the [secret.*] section.
+func infisicalSecret(sec string, s secretSection) (Secret, error) {
+	if s.ID != "" {
+		return Secret{}, fmt.Errorf(`%s: is not allowed with a store of type = "infisical"; use project, `+
+			`environment, path and name`, place(sec, "id"))
+	}
+	if s.Field != nil {
+		return Secret{}, fmt.Errorf(`%s: is allowed only with a store of type = "1password"`, place(sec, "field"))
+	}
+	keys := []struct {
+		key  string
+		v    *string
+		ok   func(string) bool
+		rule string
+	}{
+		{"project", s.Project, ValidInfisicalProject, "must be the project's ID, a UUID"},
+		{"environment", s.Environment, ValidInfisicalEnvironment,
+			`must be the environment's slug, such as "prod": 1 to 64 letters, digits, "-" and "_"`},
+		{"path", s.Path, ValidInfisicalPath,
+			`must be a folder such as "/" or "/ci": "/" and folder names of letters, digits, "-" and "_", ` +
+				`with no "/" at the end`},
+		{"name", s.SecretName, ValidInfisicalName,
+			`must be the secret's name: 1 to 256 letters, digits, "_", "-" and "."`},
+	}
+	for _, k := range keys {
+		if k.v == nil {
+			return Secret{}, fmt.Errorf(`%s: is missing; a store of type = "infisical" needs it`, place(sec, k.key))
+		}
+		if !k.ok(*k.v) {
+			return Secret{}, fmt.Errorf("%s: %s", place(sec, k.key), k.rule)
+		}
+	}
+	return Secret{Project: *s.Project, Environment: *s.Environment, Path: *s.Path, SecretName: *s.SecretName}, nil
+}
+
+// infisicalKey names a secret in Infisical for the check of "never"
+// rules. The parts cannot hold the separators.
+func infisicalKey(s Secret) string {
+	return "infisical:" + strings.ToLower(s.Project) + ":" + s.Environment + ":" + s.Path + ":" + s.SecretName
 }
 
 func (b *Broker) addKeys(m map[string]keySection) error {
@@ -1054,6 +1313,8 @@ func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
 			private = append(private, file{place(sectionName("store", name), "token_file"), s.TokenFile, false})
 		case StoreBW:
 			private = append(private, file{place(sectionName("store", name), "password_file"), s.PasswordFile, false})
+		case StoreInfisical:
+			private = append(private, file{place(sectionName("store", name), "client_secret_file"), s.ClientSecretFile, false})
 		default:
 			return fmt.Errorf("config %s: %s: unknown store type", b.Path, sectionName("store", name))
 		}
@@ -1086,7 +1347,7 @@ func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
 		checked = append(checked, checkedFile{f.where, fi, f.key})
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
-		if b.Stores[name].Type == StoreOnePassword {
+		if t := b.Stores[name].Type; t == StoreOnePassword || t == StoreInfisical {
 			continue // no program: the SDK is part of nodkey
 		}
 		where := place(sectionName("store", name), "program")

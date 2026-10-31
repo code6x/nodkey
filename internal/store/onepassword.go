@@ -161,17 +161,24 @@ func (s *opStore) Fetch(ctx context.Context, ref string) (Value, error) {
 // when call gives up: a call that hangs holds its place, and calls never
 // pile up.
 func (s *opStore) call(ctx context.Context, f func(context.Context) (Value, error)) (Value, error) {
-	if err := acquire(ctx, s.slots); err != nil {
+	return callWithin(ctx, s.slots, s.timeout, f)
+}
+
+// callWithin is call with the places slots and the time limit timeout. The
+// infisical store uses it too.
+func callWithin(ctx context.Context, slots chan struct{}, timeout time.Duration,
+	f func(context.Context) (Value, error)) (Value, error) {
+	if err := acquire(ctx, slots); err != nil {
 		return Value{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	type answer struct {
 		v   Value
 		err error
 	}
 	done := make(chan answer, 1)
 	go func() {
-		defer func() { <-s.slots }()
+		defer func() { <-slots }()
 		defer cancel()
 		v, err := f(ctx)
 		if err != nil {
