@@ -182,7 +182,11 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 		}
 		sec := rq.s.cfg.Secrets[name]
 		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
-		v, err := rq.s.stores[sec.Store].Fetch(fctx, sec.ID)
+		ref := sec.ID
+		if sec.Field != "" {
+			ref += "/" + sec.Field // a 1password store: the item and its field
+		}
+		v, err := rq.s.stores[sec.Store].Fetch(fctx, ref)
 		cancel()
 		if err != nil {
 			v.Clear()
