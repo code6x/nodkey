@@ -1141,6 +1141,39 @@ bytes, with each byte that is not printable shown as `?`. They are the
 broker's own log lines, which hold no secret. It runs as root, so it
 runs `systemctl` and `journalctl` only from a fixed system `PATH`.
 
+**T38. Try mode becomes a way around the phone.**
+`nodkey try` (DESIGN.md section 15) runs the broker parts on the agent
+machine, and takes the answers in a terminal there. On that machine the
+agent can type, so an answer in this terminal proves nothing about a
+person. So try mode must never reach a real secret, and `nodkey broker`
+must never take answers from a terminal.
+
+- The terminal approver and the test store live only in the code of
+  `nodkey try`. `nodkey broker` has no flag, config key or variable that
+  turns them on. Its only approval core takes the Telegram approver. A
+  test reads the source of the command and fails if any other file uses
+  the parts of `nodkey try`.
+- The trial reads no config file and no credential. Its broker config is
+  made in memory, with one store that has no type, so no `[store.*]`
+  section can name it, and `store.New` cannot make it. It never starts
+  `bws` or `bw`. Its only values are random, made at the start, and start
+  with `TRY-`. It has no SSH key and no bot token.
+- `nodkey try run` reads only the client config of the trial, never
+  `~/.config/nodkey/client.toml`, and it pins the trial's broker key. So
+  it cannot send a request to a real broker by mistake, and a real
+  client cannot reach the trial broker: the trial knows only its own
+  client key.
+- Its files are in one directory, mode 0700, that it removes when it
+  stops. Each message of `nodkey try` says `TRY MODE`, and each line that
+  `nodkey try run` prints starts with `TRY MODE`, so a person does not take
+  the trial for a setup. The trial allows no scheduled and no standing grant.
+
+Risk that remains: the agent on the same machine can answer a request of
+the trial, or read its fake values. That is fine: they open nothing. A
+person who copies the trial's way of working to a real setup loses the
+phone. The last lines of `nodkey try` and the guides say what a real setup
+adds: a separate broker host, a store, Telegram and the rules.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

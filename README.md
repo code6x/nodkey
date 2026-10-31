@@ -31,6 +31,36 @@ Try it on a test setup first. See the
   means no.
 - Every request and decision goes into a hash-chained audit log.
 
+## Try it
+
+See the flow first, on one Linux machine, in a few minutes. `nodkey try`
+needs no root, no second host, no Telegram bot, no store account and no
+config file. It uses three fake secrets, and asks in its own terminal in
+place of your phone.
+
+With `nodkey` installed (step 1 of the quick start), run in one terminal:
+
+```sh
+nodkey try
+```
+
+In a second terminal, run the command that it prints:
+
+```sh
+nodkey try run --secret DEMO_TOKEN=demo-token -- sh -c 'echo "got ${#DEMO_TOKEN} characters"'
+```
+
+The request shows up in the first terminal. Type `1` (Approve once), `2`
+(Approve 5 min) or `3` (Deny), then Enter. Or wait 2 minutes: the
+request expires and is denied. Press Ctrl-C to end the trial; it removes
+its files.
+
+Try mode is not a setup. The agent could type the answer in that
+terminal, so the trial has only fake values (they start with `TRY-`) and
+can never reach a real secret. A real setup adds a separate broker host,
+a secret store, Telegram on your phone and the rules of each secret: see
+below and [docs/setup.md](docs/setup.md).
+
 ## Quick start
 
 This is the short way, for a first test with one secret. The full setup,

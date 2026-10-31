@@ -87,11 +87,18 @@ One static Go binary holds all parts. The subcommand picks the role:
 | `nodkey run` | agent machine | Get secrets, then start one command with them. |
 | `nodkey ssh-agent` | agent machine | Serve an SSH agent socket. Send each signature request to the broker. |
 | `nodkey ssh-grant` | agent machine | Ask once for SSH logins to a list of hosts for N minutes (see [decision 4](#13-decision-4-ssh-approval-scope)). |
+| `nodkey try` | one machine | A trial with fake secrets and approval in its own terminal, for a first look. It is not a setup (section 15). |
 | `nodkey keygen` | both | Make a TLS key pair for the broker or a client. Print its pin. |
 | `nodkey audit verify` | trusted machine | Check the hash chain of an audit log. |
 | `nodkey update` | both, as root | Install a release in place of this binary, with the install script that is built into it (section 18). |
 | `nodkey doctor` | both | Check the setup, read only, and say how to fix what is wrong (section 15). |
 | `nodkey version` | both | Print the version. On a terminal, also say if a newer release is out. |
+
+`nodkey try` runs the real broker parts on `127.0.0.1` of one machine,
+but with its own approver (the terminal) and its own store (three fake
+values). Both live only in the code of `nodkey try`. `nodkey broker`
+cannot use them: no flag, config key or variable turns them on
+(THREAT-MODEL.md, T38).
 
 Inside the broker, the approver and the stores sit behind small Go
 interfaces. Version 1 has one approver (Telegram) and two stores (`bws`,
@@ -2743,6 +2750,8 @@ nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason 
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
 nodkey preapprove --secret NAME... (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM) --until TIME [--from TIME] [--uses N] --grant-token FILE [--reason TEXT]
 nodkey preapprove --cancel ID
+nodkey try
+nodkey try run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
 nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall]
@@ -3021,6 +3030,43 @@ preapprove --cancel ID`. These lines come before the last line, and the
 exit code is the one of the failure (that of the signal, or 69). A cancel of a grant
 that this machine does not have is 77. A job should ask when it is
 planned, not when it runs.
+
+`nodkey try` is a trial on one machine, as a normal user: no root, no
+systemd, no config file and no store account. It makes the directory
+`$XDG_RUNTIME_DIR/nodkey-try` (or `nodkey-try` in the cache directory of
+the user, when `XDG_RUNTIME_DIR` is not set), mode 0700. The parent must
+exist; nodkey try writes nothing outside of this directory. The
+directory holds a lock file, the broker's and the client's TLS keys, the
+client config, the audit log and the broker's log. The broker config is
+made in memory, not read from a file. Then nodkey try runs the real
+parts of the broker: the service, the approval core, the audit log and
+the server with mutual TLS and pins, on `127.0.0.1` with a random port.
+As `nodkey broker`, it turns off core dumps first. It skips only what
+needs root or systemd: its own user, the sandbox and encrypted
+credentials. Its one client is `try-client`.
+Its one store holds three secrets, `demo-token`, `demo-password` and
+`demo-api-key`, with random values that start with `TRY-`, made at the
+start. Their rule is `ask = "window"` with a 5 minute window. It has no
+SSH keys, no Telegram and no check for a newer release.
+
+nodkey try shows each request in its own terminal, with the lines of the
+message and the choices: `1` Approve once, `2` Approve 5 min, `3` Deny.
+With more than one request waiting, the person types the short code
+first, such as `k3f9 1`. A request with no answer expires after 120
+seconds and is denied. Each message that `nodkey try` shows has `TRY MODE`
+on its first line. The trial allows no scheduled and no standing grant. When its input ends,
+no answer can come, so it stops with exit code 1. A second nodkey try
+while one runs exits with 1. A directory of a trial that was killed,
+whose lock no one holds, is removed at the next start. SIGINT, SIGTERM, SIGHUP or
+SIGQUIT stops the trial with exit code 0: it ends the parts in the order of
+`nodkey broker`, removes the directory, and prints what a real setup
+adds, with a pointer to docs/setup.md.
+
+`nodkey try run` is `nodkey run` with the client config of the trial,
+`client.toml` in that directory. It never reads
+`~/.config/nodkey/client.toml`. In `nodkey try run`, each line that nodkey
+prints starts with `TRY MODE `. Without a trial it exits with 69. Its other exit codes are
+those of `nodkey run`.
 
 `nodkey keygen` prints the pin on stdout, and nothing else. It exits with
 0, with 64 on wrong usage (the one line of a usage error above), and with
