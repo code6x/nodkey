@@ -579,7 +579,8 @@ func (s *Service) sendAlert(msg string) {
 }
 
 // rateAlertEvery is the shortest time between two alerts about the rate
-// limit of one store. 1Password counts the reads of a token by the hour.
+// limit of one store. 1Password counts the reads of a token by the hour;
+// Infisical counts by the minute, but one alert an hour is enough.
 const rateAlertEvery = time.Hour
 
 // rateLimited sends one alert when the store reached its rate limit, and
@@ -597,8 +598,12 @@ func (s *Service) rateLimited(name string) {
 	}
 	s.mu.Unlock()
 	if send {
-		s.sendAlert(fmt.Sprintf("The store %q reached the rate limit of 1Password. The broker denies its secrets "+
-			"until 1Password allows more requests. This alert comes at most once an hour.", name))
+		service := "1Password"
+		if s.cfg.Stores[name].Type == config.StoreInfisical {
+			service = "Infisical"
+		}
+		s.sendAlert(fmt.Sprintf("The store %q reached the rate limit of %s. The broker denies its secrets "+
+			"until %s allows more requests. This alert comes at most once an hour.", name, service, service))
 	}
 }
 

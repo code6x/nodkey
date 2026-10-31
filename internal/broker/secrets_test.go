@@ -611,3 +611,39 @@ func TestStoreGetsTheField(t *testing.T) {
 		t.Error("the value of the field was not handed out")
 	}
 }
+
+// TestStoreGetsTheInfisicalRef: for a secret of an infisical store, the
+// store gets the ref of its project, environment, path and name.
+func TestStoreGetsTheInfisicalRef(t *testing.T) {
+	const project = "66666666-7777-8888-9999-000000000000"
+	e := newEnv(t, envOptions{config: func(c *config.Broker) {
+		s := c.Secrets["db-password"]
+		s.ID, s.Project, s.Environment, s.Path, s.SecretName = "", project, "prod", "/ci", "DB_PASSWORD"
+		c.Secrets["db-password"] = s
+		st := c.Stores["vault"]
+		st.Type = config.StoreInfisical
+		c.Stores["vault"] = st
+	}})
+	ref := store.InfisicalRef(project, "prod", "/ci", "DB_PASSWORD")
+	e.vault.set(func(f *fakeStore) {
+		f.items[ref] = f.items[idDB]
+		delete(f.items, idDB)
+	})
+	e.approver.Auto(audit.AnswerApproveOnce)
+	res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("DB_PASSWORD", "db-password"))
+	mustStatus(t, res, http.StatusOK)
+	if got := secretsOf(t, res); got["DB_PASSWORD"] != e.values["db-password"] {
+		t.Error("the value of the Infisical secret was not handed out")
+	}
+
+	// Infisical's rate limit denies, and the alert names Infisical.
+	e.vault.set(func(f *fakeStore) {
+		f.err = fmt.Errorf(`store "vault": infisical secret get: %w`, store.ErrInfRateLimited)
+	})
+	res = e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("DB_PASSWORD", "db-password"))
+	mustStatus(t, res, http.StatusServiceUnavailable)
+	waitLog(t, e.alerts, "rate limit of Infisical")
+	if strings.Contains(e.alerts.String(), "1Password") {
+		t.Errorf("the alert names 1Password:\n%s", e.alerts.String())
+	}
+}
