@@ -171,14 +171,14 @@ func TestTryApproverAnswers(t *testing.T) {
 		}
 		return nil
 	}
-	a.answerLine("1", answer)
-	a.answerLine("cccc 1", answer)
-	a.answerLine("aaaa x", answer)
+	a.answerLine(t.Context(), "1", answer)
+	a.answerLine(t.Context(), "cccc 1", answer)
+	a.answerLine(t.Context(), "aaaa x", answer)
 	if len(got) != 0 {
 		t.Fatalf("answers counted: %v", got)
 	}
-	a.answerLine("bbbb 2", answer)
-	a.answerLine("aaaa 2", answer)
+	a.answerLine(t.Context(), "bbbb 2", answer)
+	a.answerLine(t.Context(), "aaaa 2", answer)
 	if len(got) != 2 || got[1] != (approval.Answer{RequestID: "id-1", Action: audit.AnswerApproveWindow,
 		Message: "try-id-1", UserID: tryUserID}) {
 		t.Fatalf("answers %v", got)
@@ -203,22 +203,40 @@ func TestTryApproverTooEarly(t *testing.T) {
 	if _, err := a.Ask(t.Context(), approval.Prompt{RequestID: "id-1", ShortCode: "aaaa", Once: true}); err != nil {
 		t.Fatal(err)
 	}
-	calls, early := 0, 2
-	answer := func(approval.Answer) error {
+	want := approval.Answer{RequestID: "id-1", Action: audit.AnswerApproveOnce, Message: "try-id-1", UserID: tryUserID}
+	calls, early, after := 0, 2, error(nil)
+	answer := func(an approval.Answer) error {
 		calls++
+		if an != want {
+			t.Errorf("try %d sent %+v, want %+v", calls, an, want)
+		}
 		if calls <= early {
 			return approval.ErrTooEarly
 		}
-		return nil
+		return after
 	}
-	a.answerLine("1", answer)
+	a.answerLine(t.Context(), "1", answer)
 	if calls != 3 || strings.Contains(out.String(), "not ready yet") {
 		t.Fatalf("calls %d, want 3; output:\n%s", calls, out.String())
 	}
-	calls, early = 0, tryEarlyRetries+1
-	a.answerLine("1", answer)
+	// The request ended while it was too early: the tries stop at once.
+	calls, early, after = 0, 1, approval.ErrUnknownRequest
+	a.answerLine(t.Context(), "1", answer)
+	if calls != 2 || !strings.Contains(out.String(), "the request has ended") {
+		t.Fatalf("calls %d, want 2; output:\n%s", calls, out.String())
+	}
+	calls, early, after = 0, tryEarlyRetries+1, nil
+	a.answerLine(t.Context(), "1", answer)
 	if calls != tryEarlyRetries+1 || !strings.Contains(out.String(), "not ready yet") {
 		t.Fatalf("calls %d, want %d; output:\n%s", calls, tryEarlyRetries+1, out.String())
+	}
+	// The broker stops: the tries stop.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	calls = 0
+	a.answerLine(ctx, "1", answer)
+	if calls != 1 {
+		t.Fatalf("calls %d after the stop, want 1", calls)
 	}
 }
 

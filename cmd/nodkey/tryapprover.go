@@ -127,14 +127,14 @@ func (a *tryApprover) Run(ctx context.Context, answer func(approval.Answer) erro
 		case err := <-readDone:
 			return err
 		case line := <-lines:
-			a.answerLine(line, answer)
+			a.answerLine(ctx, line, answer)
 		}
 	}
 }
 
 // answerLine passes the answer that line holds to answer: "1", "2" or "3",
 // with the short code before it when more than one request waits.
-func (a *tryApprover) answerLine(line string, answer func(approval.Answer) error) {
+func (a *tryApprover) answerLine(ctx context.Context, line string, answer func(approval.Answer) error) {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
 		return
@@ -175,7 +175,11 @@ func (a *tryApprover) answerLine(line string, answer func(approval.Answer) error
 	// The terminal shows the message before Ask returns, so an answer can
 	// come before the broker knows the message. Try again for a short time.
 	for i := 0; i < tryEarlyRetries && errors.Is(err, approval.ErrTooEarly); i++ {
-		time.Sleep(tryEarlyWait)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(tryEarlyWait):
+		}
 		err = answer(ans)
 	}
 	switch {
