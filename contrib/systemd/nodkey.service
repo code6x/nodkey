@@ -25,7 +25,7 @@
 Description=nodkey broker: secrets and SSH signatures after an approval on the phone
 Documentation=https://github.com/code6x/nodkey/blob/main/DESIGN.md
 # The broker listens on one address of the private network, and calls
-# Telegram. If that address is not there yet, the start fails, and systemd
+# Telegram or ntfy. If that address is not there yet, the start fails, and systemd
 # tries again (Restart= below).
 Wants=network-online.target
 After=network-online.target
@@ -41,6 +41,7 @@ ExecStart=/usr/local/bin/nodkey broker --config /etc/nodkey/broker.toml
 # One line for each file of the config; remove the lines you do not need.
 LoadCredentialEncrypted=broker-tls-key:/etc/nodkey/credentials/broker-tls-key.cred
 LoadCredentialEncrypted=telegram-token:/etc/nodkey/credentials/telegram-token.cred
+LoadCredentialEncrypted=ntfy-token:/etc/nodkey/credentials/ntfy-token.cred
 LoadCredentialEncrypted=bws-token:/etc/nodkey/credentials/bws-token.cred
 LoadCredentialEncrypted=bws-token-backup:/etc/nodkey/credentials/bws-token-backup.cred
 LoadCredentialEncrypted=bw-master-password:/etc/nodkey/credentials/bw-master-password.cred

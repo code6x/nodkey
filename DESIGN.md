@@ -1305,11 +1305,11 @@ nothing. What differs:
   Telegram code does. The token goes only in the `Authorization` header,
   never in a URL. No error and no log line holds the token, a value, Go's
   error text or the server's text.
-- **Not on ntfy.** The command `/grants`, the warning before a standing
-  grant ends (so no Renew button), the weekly summary and the alarm
-  message of a standing grant (section 8) are Telegram only. With ntfy,
-  the `grant_alarm` entry is still written, but no alarm reaches the
-  phone.
+- **No standing grants on ntfy.** The command `/grants`, the warning
+  before a standing grant ends, the weekly summary and the alarm of a
+  standing grant (section 8) are Telegram only. So a config with
+  `[ntfy]` and `[standing]` does not load: without the alarm, nobody
+  would see a misused grant.
 
 ## 8. Rules and grants
 

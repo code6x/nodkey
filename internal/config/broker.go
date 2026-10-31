@@ -434,6 +434,11 @@ func newBroker(f *brokerFile) (*Broker, error) {
 	if b.Standing, err = parseStanding(f.Standing); err != nil {
 		return nil, err
 	}
+	if b.Standing.Enabled && b.Ntfy != nil {
+		// The ntfy channel cannot send the alarm, the warning or the summary
+		// of a standing grant (DESIGN.md section 8), so it allows none.
+		return nil, errors.New("[standing] and [ntfy]: standing grants need the [telegram] channel; remove [standing]")
+	}
 	if err := b.addClients(f.Client); err != nil {
 		return nil, err
 	}

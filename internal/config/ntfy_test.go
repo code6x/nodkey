@@ -112,6 +112,9 @@ func TestLoadBrokerNtfyErrors(t *testing.T) {
 		{"ssh timeout too long", func() []edit {
 			return []edit{{telegramSectionText, ntfySectionText("ssh_timeout = \"5m\"\n")}}
 		}, "[ntfy] ssh_timeout: must be from"},
+		{"standing grants", func() []edit {
+			return []edit{{telegramSectionText, ntfySectionText("") + "\n[standing]\n"}}
+		}, "[standing] and [ntfy]"},
 		{"unknown key", func() []edit {
 			return []edit{{telegramSectionText, ntfySectionText("user_id = 1\n")}}
 		}, "user_id"},
