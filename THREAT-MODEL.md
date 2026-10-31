@@ -19,7 +19,7 @@ access to another machine and asks a person before each use.
 | asset | where it lives |
 |---|---|
 | SSH private keys | broker memory; encrypted credentials on the broker host's disk |
-| secret-store access (`bws` token, `bw` master password and session key, 1Password service account token) | broker host |
+| secret-store access (`bws` token, `bw` master password and session key, 1Password service account token, Infisical client secret and access token) | broker host |
 | secret values | the store; for a moment the broker; after approval, the one command on the agent machine |
 | the approval decision | Telegram, the broker |
 | the audit log | broker host, and hash copies in the broker's journal |
@@ -41,6 +41,7 @@ access to another machine and asks a person before each use.
 | target SSH hosts | Trusted to be who their host key says. |
 | the secret stores and the `bws` / `bw` programs | Trusted. Install them from the official source and check what you install. |
 | 1Password's servers, and the 1Password SDK with its WebAssembly core | Trusted. The SDK runs inside the broker's process, and 1Password's servers answer it. Both could hand out a wrong value, or keep the token and the vault. Use the official SDK at a version you checked, and a service account that can read one vault only (see T39). |
+| Infisical's servers, and the Infisical SDK | Trusted. The SDK runs inside the broker's process, and Infisical's servers answer it. Both could hand out a wrong value, or keep the client secret. The store uses the SDK for two calls only (log in, read one secret). Use the official SDK at a version you checked, and a machine identity that can read one project only (see T41). |
 | the Bitwarden accounts that can read the secrets of the stores | Trusted. Anyone who can use such an account can read these secrets in Bitwarden's own apps, with no tap. So these accounts must not be logged in on any agent machine (see T32). |
 | GitHub's API (`api.github.com`) | Trusted only to name the newest release. A false answer can only give a wrong notice or hide one; it cannot install anything (see T34). |
 
@@ -100,7 +101,8 @@ Read this part carefully. These are real limits.
    read them**, without nodkey and without a tap. That includes a login
    on the agent machine: the web app in a browser, the browser extension,
    the desktop app or the CLI (see T32). The same holds for everyone who
-   can open the nodkey vault in 1Password's apps (see T39).
+   can open the nodkey vault in 1Password's apps (see T39) and for everyone who can open the nodkey project in Infisical's
+   apps (see T41).
 10. **With ntfy, anyone who can read the request topic can approve.**
    That includes whoever runs the ntfy server, and an ntfy web app or
    desktop client on the agent machine that subscribes to the topic (see
@@ -482,6 +484,12 @@ Risk that remains:
   current log began, and keep the old file.
 
 **T18. The store programs leak a token.**
+(The `infisical` store is like the `1password` store: no program, no
+environment. The client secret is read from its file once, kept in the
+broker's memory, and sent only to the login of Infisical. The access
+token stays in memory only. `Close` clears both, best effort. The SDK's
+error text and the server's error text are never shown or logged. The
+errors are fixed texts, and a canary test checks them.)
 (For the `1password` store, there is no program and no environment. The
 token is read from its file once, kept in the broker's memory, and passed
 only to the SDK. The broker clears it in `Close`, best effort. The
@@ -807,6 +815,14 @@ at a time. Risk that remains: a hung call keeps running in the broker,
 with its memory, until it ends or the broker stops, and every 1password
 store denies until then. A rate limit of 1Password denies the request, and one alert a
 store an hour goes to the phone.
+
+The `infisical` store has no program to kill either. Each call has the
+30 seconds of the stores, and it stops with its context. An answer over
+1 MiB is refused. An empty value, a NUL byte or a `${` in the value is
+refused: a value with `${` refers to another secret, and the tap must
+show every secret that goes out. The store asks Infisical not to expand
+references and not to include imports. A rate limit of Infisical (a 429)
+denies the request, with one alert a store an hour to the phone.
 
 **T30. Another user on the agent machine uses the agent socket.**
 With the socket, a user could ask for signatures in the name of this
@@ -1309,6 +1325,43 @@ Risk that remains: real. Whoever runs the server, or can read the request
 topic, can approve, and the server can change what a waiting message
 shows. nodkey cannot see either. With a self-hosted server and strict
 access rules, this is the owner of the server and the phone.
+
+**T41. Everyone who can read the nodkey project in Infisical reads its
+secrets, with no tap. Anyone who can write to it changes what a name
+holds.**
+nodkey keeps the client secret of the machine identity on the broker host,
+so the agent gets a secret only through the broker. But the members and
+the admins of the Infisical project read its secrets in Infisical's own
+apps. Such a read needs no tap, and nodkey's audit log does not show it.
+This is the same problem as T32 and T39, for Infisical. Also, a name picks
+the secret: a person with write access to the project can change what a
+name holds, and the next tap shows the same name with a new value.
+These can read the project:
+- every member and every admin of the project, and the admins of the
+  organization, as far as its rules let them;
+- every machine identity that you give the project, and everyone who holds
+  its client secret.
+
+What to do:
+- Make a project only for nodkey. Put into it only the secrets that nodkey
+  may hand out.
+- Give it to no more people than needed. Do not add your main account if
+  it is logged in on an agent machine. Give write access to few people.
+- Give the machine identity the built-in Viewer role. It reads the whole
+  project, every environment. A custom role for one environment or one
+  path, and trusted IPs, need a paid plan (seen 2026-10-29).
+- Set a short TTL for the access token and a TTL for the client secret. By
+  default the client secret never ends.
+- Without trusted IPs, the client secret gets an access token from
+  anywhere. So keep it as an encrypted systemd credential on the broker
+  host only. Never put it on an agent machine.
+- After each change, check who is a member of the project and which
+  machine identities can read it.
+- Turn on two-step login for the accounts that can open the project.
+
+Risk that remains: real. nodkey cannot see a read in Infisical's own apps
+or with the client secret, and it cannot check where an account is logged
+in. A leaked client secret gets tokens until it ends or is revoked.
 
 ## 7. Assumptions
 
