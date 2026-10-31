@@ -48,8 +48,15 @@ type opItems interface {
 // its items.
 type opConnect func(ctx context.Context, token string) (opItems, error)
 
-// sdkConnect is the opConnect of the real SDK.
+// sdkMu guards the first load of the SDK's WebAssembly core: the SDK
+// loads it without a lock.
+var sdkMu sync.Mutex
+
+// sdkConnect is the opConnect of the real SDK. The SDK's calls do not
+// stop when ctx ends; Fetch stops waiting for them instead.
 func sdkConnect(ctx context.Context, token string) (opItems, error) {
+	sdkMu.Lock()
+	defer sdkMu.Unlock()
 	c, err := onepassword.NewClient(ctx,
 		onepassword.WithServiceAccountToken(token),
 		onepassword.WithIntegrationInfo(opIntegration, version.Running))

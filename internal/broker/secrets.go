@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -199,6 +200,9 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 			rq.s.log.Warn("broker: a store failed; the request is denied",
 				slog.String("request_id", rq.sub.RequestID), slog.String("store", sec.Store),
 				slog.String("error", errorText(err)))
+			if errors.Is(err, store.ErrRateLimited) {
+				rq.s.rateLimited(sec.Store)
+			}
 			rq.fail(audit.CodeStoreFailed)
 			return nil, false
 		}

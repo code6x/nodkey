@@ -5,15 +5,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
+	"github.com/code6x/nodkey/internal/config"
+	"github.com/code6x/nodkey/internal/store"
 )
 
 // TestSecretsApproveOnce: a request waits for the person, the client gets
@@ -541,4 +545,69 @@ func TestStoreFailure(t *testing.T) {
 		t.Errorf("the log does not say which store failed:\n%s", e.logs.String())
 	}
 	e.main.checkCleared(t) // github-token was fetched first, then cleared
+}
+
+// TestStoreRateLimit: a rate limit of a store denies the request, and
+// sends one alert an hour for that store.
+func TestStoreRateLimit(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	now := noon
+	var mu sync.Mutex
+	e.svc.setNow(func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
+	e.vault.set(func(f *fakeStore) {
+		f.err = fmt.Errorf(`store "vault": 1password item get: %w`, store.ErrRateLimited)
+	})
+	e.approver.Auto(audit.AnswerApproveOnce)
+	ask := func() {
+		t.Helper()
+		res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("DB_PASSWORD", "db-password"))
+		mustStatus(t, res, http.StatusServiceUnavailable)
+	}
+	ask()
+	waitLog(t, e.alerts, "rate limit")
+	ask()
+	time.Sleep(50 * time.Millisecond) // a second alert would come now
+	if n := strings.Count(e.alerts.String(), "rate limit"); n != 1 {
+		t.Fatalf("%d alerts, want 1:\n%s", n, e.alerts.String())
+	}
+	if !strings.Contains(e.logs.String(), store.ErrRateLimited.Error()) {
+		t.Errorf("the log does not say why:\n%s", e.logs.String())
+	}
+	events := e.audit.all()
+	mustEvents(t, requestEvents(events, lastRequestID(t, events)),
+		"request decision:approve_once error:store_failed denied:error")
+	mu.Lock()
+	now = now.Add(rateAlertEvery)
+	mu.Unlock()
+	ask()
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.Count(e.alerts.String(), "rate limit") != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no second alert after an hour:\n%s", e.alerts.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if strings.Contains(e.alerts.String(), "main") {
+		t.Error("an alert names a store without a rate limit")
+	}
+}
+
+// TestStoreGetsTheField: for a secret with a field (a 1password store),
+// the store gets "ITEM_ID/FIELD"; without a field, only the ID.
+func TestStoreGetsTheField(t *testing.T) {
+	e := newEnv(t, envOptions{config: func(c *config.Broker) {
+		s := c.Secrets["db-password"]
+		s.Field = "API key"
+		c.Secrets["db-password"] = s
+	}})
+	e.vault.set(func(f *fakeStore) {
+		f.items[idDB+"/API key"] = f.items[idDB]
+		delete(f.items, idDB)
+	})
+	e.approver.Auto(audit.AnswerApproveOnce)
+	res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("DB_PASSWORD", "db-password"))
+	mustStatus(t, res, http.StatusOK)
+	if !bytes.Contains(res.body, []byte(e.values["db-password"])) {
+		t.Error("the value of the field was not handed out")
+	}
 }

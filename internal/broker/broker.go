@@ -234,6 +234,9 @@ type Service struct {
 	securityNewest version.Release
 	securityAt     time.Time
 	securityNotes  map[string]*securityNote
+	// rateAlerts holds when the broker last sent the alert about the
+	// rate limit of each store (rateLimited).
+	rateAlerts map[string]time.Time
 	// security is the newest security release that the check found, or
 	// nil for none (SetSecurity). The handler reads it without mu.
 	security atomic.Pointer[securityInfo]
@@ -573,6 +576,30 @@ func (s *Service) sendAlert(msg string) {
 			s.log.Error("broker: cannot send an alert message", slog.String("error", errorText(err)))
 		}
 	}()
+}
+
+// rateAlertEvery is the shortest time between two alerts about the rate
+// limit of one store. 1Password counts the reads of a token by the hour.
+const rateAlertEvery = time.Hour
+
+// rateLimited sends one alert when the store reached its rate limit, and
+// no more for that store for rateAlertEvery. The request is denied anyway.
+func (s *Service) rateLimited(name string) {
+	s.mu.Lock()
+	now := s.now()
+	last, seen := s.rateAlerts[name]
+	send := !seen || now.Sub(last) >= rateAlertEvery || now.Before(last)
+	if send {
+		if s.rateAlerts == nil {
+			s.rateAlerts = make(map[string]time.Time)
+		}
+		s.rateAlerts[name] = now
+	}
+	s.mu.Unlock()
+	if send {
+		s.sendAlert(fmt.Sprintf("The store %q reached the rate limit of 1Password. The broker denies its secrets "+
+			"until 1Password allows more requests. This alert comes at most once an hour.", name))
+	}
 }
 
 // recoverGoroutine recovers a panic in a goroutine of the Service, and
