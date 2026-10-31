@@ -795,10 +795,11 @@ the same spirit: the item ID and the vault ID in the answer must be the
 asked ones, an item over 1 MiB is refused, an empty value or one with a
 NUL byte is refused, and a field title that two fields share is denied.
 The SDK's calls do not stop when a context ends. So the broker stops
-waiting after 30 seconds and denies, and a hung call keeps its place
-among at most 4 for the store. Risk that remains: a hung call keeps
-running in the broker, with its memory, until it ends or the broker
-stops. A rate limit of 1Password denies the request, and one alert a
+waiting after 30 seconds and denies, and a hung call keeps its place:
+there is one place for all 1password stores, as the SDK runs one call
+at a time. Risk that remains: a hung call keeps running in the broker,
+with its memory, until it ends or the broker stops, and every 1password
+store denies until then. A rate limit of 1Password denies the request, and one alert a
 store an hour goes to the phone.
 
 **T30. Another user on the agent machine uses the agent socket.**

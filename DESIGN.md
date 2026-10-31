@@ -3604,9 +3604,11 @@ programs still hold in the same words where they make sense:
   programs.
 - **Time limit.** Login and get together have the 30 seconds of the
   stores. The SDK's calls do not stop when a context ends. So `Fetch` stops
-  waiting at the time limit and denies, and the hung call keeps its place
-  among the at most 4 calls of this store. A hung call cannot be followed
-  by an endless row of new ones.
+  waiting at the time limit and denies, and the hung call keeps its place.
+  The SDK runs every call in one core, under one lock, so there is one
+  place for all 1password stores together: a hung call cannot be followed
+  by an endless row of new ones. While it hangs, every 1password store
+  denies at its time limit.
 - **Errors.** An error is a fixed text. The text of the SDK is never
   shown or logged, because it can repeat the request or the token (T19).
   The errors are: `ErrOPFailed` ("1Password refused the request, or could

@@ -668,7 +668,8 @@ issue or a command line.
 6. Add `field = "second"` to the secret. Start the broker again, and
    ask again. Then use `field = "no such field"` and ask again.
 7. Search `$T/broker.log` and `$T/audit.jsonl` for the token and for the
-   made-up values. Use `grep -c` and write only the counts.
+   made-up values. Put the token in a file and use `grep -cF -f FILE`,
+   so the token is never on a command line. Write only the counts.
 
 Expected:
 

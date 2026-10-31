@@ -25,18 +25,25 @@ const (
 
 // fakeOP is a fake 1Password: the items of one service account.
 type fakeOP struct {
-	mu       sync.Mutex
-	token    string // the token that a login needs
-	loginErr error  // the error of every login, when set
-	items    map[string]onepassword.Item
-	getErr   error         // the error of every Get, when set
-	block    bool          // Get waits until its context ends
-	hang     chan struct{} // Get waits for this, and ignores its context
-	logins   int
-	gets     int
+	mu        sync.Mutex
+	token     string // the token that a login needs
+	loginErr  error  // the error of every login, when set
+	items     map[string]onepassword.Item
+	getErr    error         // the error of every Get, when set
+	block     bool          // Get waits until its context ends
+	hang      chan struct{} // Get waits for this, and ignores its context
+	loginHang chan struct{} // a login waits for this, and ignores its context
+	logins    int
+	gets      int
 }
 
 func (f *fakeOP) connect(_ context.Context, token string) (opItems, error) {
+	f.mu.Lock()
+	hang := f.loginHang
+	f.mu.Unlock()
+	if hang != nil {
+		<-hang
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logins++
@@ -98,6 +105,7 @@ func newOPTest(t *testing.T, f *fakeOP, timeout time.Duration) Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.(*opStore).slots = make(chan struct{}, opParallel) // parallel tests do not share the places
 	t.Cleanup(s.Close)
 	return s
 }
@@ -338,5 +346,26 @@ func TestOPTokenFile(t *testing.T) {
 	bad.Vault = "nodkey"
 	if _, err := newStore(bad, dir, d); err == nil {
 		t.Error("a vault name was taken")
+	}
+}
+
+// TestOPLoginHangs: a login that hangs is stopped at the time limit too,
+// and Close does not wait for it.
+func TestOPLoginHangs(t *testing.T) {
+	t.Parallel()
+	c := newCanaries()
+	f := opFake(c.token, opTestItem(c.value, "", ""))
+	f.loginHang = make(chan struct{})
+	defer close(f.loginHang)
+	s := newOPTest(t, f, 100*time.Millisecond)
+	if err := s.Start(t.Context()); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("Start: %v, want ErrTimeout", err)
+	}
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waits for a hung login")
 	}
 }

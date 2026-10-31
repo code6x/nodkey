@@ -27,9 +27,11 @@ var (
 )
 
 const (
-	// opParallel is the most calls to 1Password at the same time for one
-	// store.
-	opParallel = 4
+	// opParallel is the most calls to 1Password at the same time, for all
+	// 1password stores together. The SDK runs every call in one core,
+	// under one lock; more places would only make calls wait there,
+	// beyond the time limit.
+	opParallel = 1
 	// maxOPItem is the largest item, in bytes of its fields and notes:
 	// 1 MiB, as the output of a store program.
 	maxOPItem = maxStdout
@@ -47,6 +49,10 @@ type opItems interface {
 // opConnect logs in to 1Password with a service account token and returns
 // its items.
 type opConnect func(ctx context.Context, token string) (opItems, error)
+
+// opSlots are the places for calls to the SDK, shared by every 1password
+// store.
+var opSlots = make(chan struct{}, opParallel)
 
 // sdkMu guards the first load of the SDK's WebAssembly core: the SDK
 // loads it without a lock.
@@ -73,7 +79,7 @@ type opStore struct {
 	vault   string
 	connect opConnect
 	timeout time.Duration
-	slots   chan struct{} // one place for each call to 1Password
+	slots   chan struct{} // opSlots; tests give each store its own
 
 	mu     sync.Mutex
 	token  Value   // the service account token
@@ -104,17 +110,17 @@ func newOP(cfg config.Store, d deps) (*opStore, error) {
 		connect = sdkConnect
 	}
 	return &opStore{name: cfg.Name, vault: cfg.Vault, connect: connect, timeout: d.timeout,
-		slots: make(chan struct{}, opParallel), token: token}, nil
+		slots: opSlots, token: token}, nil
 }
 
 // Start logs in to 1Password. If it fails, Fetch tries again.
 func (s *opStore) Start(ctx context.Context) error {
 	const step = "1password login"
-	if err := acquire(ctx, s.slots); err != nil {
-		return stepError(s.name, step, err)
-	}
-	defer func() { <-s.slots }()
-	if _, err := s.login(ctx); err != nil {
+	_, err := s.call(ctx, func(ctx context.Context) (Value, error) {
+		_, err := s.login(ctx)
+		return Value{}, err
+	})
+	if err != nil {
 		return stepError(s.name, step, err)
 	}
 	return nil
@@ -129,64 +135,98 @@ func (s *opStore) Fetch(ctx context.Context, ref string) (Value, error) {
 	if !ok || !opID(id) || field == "" {
 		return Value{}, stepError(s.name, step, ErrBadID)
 	}
-	if err := acquire(ctx, s.slots); err != nil {
-		return Value{}, stepError(s.name, step, err)
-	}
-	// The slot is freed when the call ends, not when Fetch gives up: so a
-	// call that hangs holds its place, and calls never pile up.
-	release := func() { <-s.slots }
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	items, err := s.login(ctx)
+	v, err := s.call(ctx, func(ctx context.Context) (Value, error) {
+		items, err := s.login(ctx)
+		if err != nil {
+			return Value{}, err
+		}
+		item, err := items.Get(ctx, s.vault, id)
+		if err != nil {
+			return Value{}, sdkError(err)
+		}
+		v, err := pickField(&item, s.vault, id, field)
+		item = onepassword.Item{} // drops the other fields; Go cannot clear a string
+		return v, err
+	})
 	if err != nil {
-		release()
 		return Value{}, stepError(s.name, step, err)
 	}
+	return v, nil
+}
+
+// call runs f in its own goroutine, with a place in s.slots and the time
+// limit of the store. The SDK's calls do not stop when their context ends,
+// so call stops waiting instead: it returns at the time limit, and a value
+// that f returns later is cleared. The place is freed when f ends, not
+// when call gives up: a call that hangs holds its place, and calls never
+// pile up.
+func (s *opStore) call(ctx context.Context, f func(context.Context) (Value, error)) (Value, error) {
+	if err := acquire(ctx, s.slots); err != nil {
+		return Value{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	type answer struct {
 		v   Value
 		err error
 	}
 	done := make(chan answer, 1)
 	go func() {
-		defer release()
-		item, err := items.Get(ctx, s.vault, id)
+		defer func() { <-s.slots }()
+		defer cancel()
+		v, err := f(ctx)
 		if err != nil {
-			done <- answer{err: sdkError(err)}
-			return
+			err = ctxError(ctx, err) // before cancel ends ctx
 		}
-		v, err := pickField(&item, s.vault, id, field)
-		item = onepassword.Item{} // drops the other fields; Go cannot clear a string
 		done <- answer{v, err}
 	}()
+	var a answer
 	select {
-	case a := <-done:
-		if a.err != nil {
-			return Value{}, stepError(s.name, step, ctxError(ctx, a.err))
-		}
-		return a.v, nil
+	case a = <-done:
 	case <-ctx.Done():
-		go func() { a := <-done; a.v.Clear() }()
-		return Value{}, stepError(s.name, step, ctxError(ctx, ctx.Err()))
+		// f sends its answer before it cancels ctx: when f ended, the
+		// answer is here.
+		select {
+		case a = <-done:
+		default:
+			go func() { a := <-done; a.v.Clear() }()
+			return Value{}, ctxError(ctx, ctx.Err())
+		}
 	}
+	if a.err != nil {
+		a.v.Clear()
+		return Value{}, a.err
+	}
+	return a.v, nil
 }
 
 // login returns the items of the logged-in client, and logs in first if
-// no login worked yet.
+// no login worked yet. It runs only in call, which holds the place: so
+// two logins of one store never run at the same time. It does not hold
+// s.mu while it waits for 1Password, so Close never waits for it.
 func (s *opStore) login(ctx context.Context) (opItems, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrClosed
+	}
+	if s.items != nil {
+		items := s.items
+		s.mu.Unlock()
+		return items, nil
+	}
+	token := string(s.token.Bytes())
+	s.mu.Unlock()
+	items, err := s.connect(ctx, token)
+	if err != nil {
+		return nil, sdkError(err)
+	}
+	if items == nil {
+		return nil, ErrOPFailed
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, ErrClosed
-	}
-	if s.items != nil {
-		return s.items, nil
-	}
-	items, err := s.connect(ctx, string(s.token.Bytes()))
-	if err != nil {
-		return nil, ctxError(ctx, sdkError(err))
-	}
-	if items == nil {
-		return nil, ErrOPFailed
 	}
 	s.items = items
 	return items, nil
