@@ -324,20 +324,20 @@ func resultLine(p approval.Prompt, e approval.Ending) string {
 	case audit.AnswerApproveOnce:
 		switch p.Kind {
 		case audit.KindStanding:
-			return "👍 approved by you at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) in each window until " +
+			return "👍 approved at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) in each window until " +
 				p.Until.Format(dateTimeFormat)
 		case audit.KindPreapprove:
-			return "👍 approved by you at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) until " +
+			return "👍 approved at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) until " +
 				p.Until.Format(dateTimeFormat)
 		}
-		return "👍 approved once by you at " + at
+		return "👍 approved once at " + at
 	case audit.AnswerApproveWindow:
 		if p.Kind == audit.KindSSHGrant {
-			return "👍 approved by you at " + at + ", until " + p.GrantEnds.Format(clockFormat)
+			return "👍 approved at " + at + ", until " + p.GrantEnds.Format(clockFormat)
 		}
-		return "👍 approved for " + strconv.Itoa(e.WindowMinutes) + " min by you at " + at
+		return "👍 approved for " + strconv.Itoa(e.WindowMinutes) + " min at " + at
 	case audit.AnswerDeny:
-		return "⛔ denied by you at " + at
+		return "⛔ denied at " + at
 	}
 	switch e.Cause {
 	case audit.CauseExpired:
@@ -367,7 +367,7 @@ func grantEndLine(p approval.Prompt, e approval.Ending) string {
 	case audit.EndDenied:
 		return "⛔ ended by a later Deny at " + at + left
 	case audit.EndRevoked:
-		return "⛔ revoked by you at " + at + left
+		return "⛔ revoked at " + at + left
 	case audit.EndAlarm:
 		return "🚨 ended by an alarm at " + at
 	case audit.EndRenewed:

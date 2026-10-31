@@ -345,7 +345,7 @@ func TestRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last := h.f.last(); len(last.Actions) != 0 || !strings.Contains(last.Message, "revoked by you") {
+	if last := h.f.last(); len(last.Actions) != 0 || !strings.Contains(last.Message, "revoked at ") {
 		t.Errorf("the end of the grant: %+v", last)
 	}
 	h.f.press(rm, "Revoke")

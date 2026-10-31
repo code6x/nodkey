@@ -193,7 +193,7 @@ Expected:
 - Terminal 2 prints `the command got 15 characters` and `exit code: 0`.
 - The notification goes away (the button has `clear: true`).
 - The message in the app keeps its text, the expiry line becomes
-  `👍 approved once by you at HH:MM:SS`, and the buttons are gone. It is
+  `👍 approved once at HH:MM:SS`, and the buttons are gone. It is
   the same message, not a second one. The update makes no sound.
 
 ### Check 3: Approve N min
@@ -209,7 +209,7 @@ Expected:
 Expected:
 
 - Step 2: the command runs, and the message shows
-  `👍 approved for 2 min by you at HH:MM:SS`, without buttons.
+  `👍 approved for 2 min at HH:MM:SS`, without buttons.
 - Step 3: no message. The command runs at once.
 - Step 4: a new message with the three buttons.
 
@@ -221,7 +221,7 @@ Expected:
 Expected:
 
 - Step 1: terminal 2 prints `nodkey: denied (exit 77)`. The message
-  shows `⛔ denied by you at HH:MM:SS`, without buttons.
+  shows `⛔ denied at HH:MM:SS`, without buttons.
 - Step 2: no message. Terminal 2 prints
   `nodkey: denied by a limit of the broker (exit 77)` at once.
 
@@ -246,7 +246,7 @@ Expected:
 - The command runs once.
 - If a second tap was possible: the log of the broker (terminal 1) has
   `ntfy: refused an answer`, and the message still shows
-  `👍 approved once by you at HH:MM:SS`.
+  `👍 approved once at HH:MM:SS`.
 
 ### Check 7: Late tap after a restart
 
@@ -311,10 +311,10 @@ HOME="$T/home" "$T/nodkey" preapprove --secret demo-always \
 
 Expected:
 
-- Step 1: the message has the line `👍 approved by you at ...` and one
+- Step 1: the message has the line `👍 approved at ...` and one
   **Revoke** button.
 - Step 2: the message has no button, and a line
-  `⛔ revoked by you at ..., with 2 use(s) left`.
+  `⛔ revoked at ..., with 2 use(s) left`.
 
 ### Check 10: Priorities
 
@@ -417,13 +417,13 @@ answer of the server.
 | 3 | Approve 2 min | the command runs; `approved for 2 min`; no buttons | | | |
 | 3 | inside the grant | no message; the command runs | | | |
 | 3 | after the grant | a new message | | | |
-| 4 | Deny | exit 77; `denied by you`; no buttons | | | |
+| 4 | Deny | exit 77; `denied`; no buttons | | | |
 | 4 | inside the pause | `denied by a limit of the broker`, exit 77 at once | | | |
 | 5 | expiry | exit 77 after 60 s; `expired — denied`; no buttons | | | |
 | 6 | second tap | the command runs once; `refused an answer`, or "not possible" | | | |
 | 7 | late tap after a restart | nothing runs; `refused an answer`; what the phone shows | | | |
 | 8 | forged answer | curl `200`; refused; the request still waits | | | |
-| 9 | Revoke on a scheduled grant | button gone; `revoked by you` | | | |
+| 9 | Revoke on a scheduled grant | button gone; `revoked` | | | |
 | 10 | request priority | 4: sound, pop-up | | | |
 | 10 | notice and ended message priority | 2: no sound | | | |
 | 10 | alert priority | 5: sound | | | |
