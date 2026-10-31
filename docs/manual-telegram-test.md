@@ -689,6 +689,54 @@ Expected:
 At the end, delete the service account, the vault and the file with the
 token.
 
+### Check 17: An Infisical store (optional)
+
+This checks the `infisical` store against a real Infisical project. It
+needs an Infisical account (cloud or your own server), and a **test
+project** with two test secrets. Use a throwaway project and a throwaway
+machine identity with Universal Auth, the Viewer role, a short access
+token TTL (60 seconds) and a client secret with a short TTL. Never use a
+real project. Keep the client secret in a file with mode `0600`, outside
+of every repository. Never paste it into a chat, an issue or a command
+line.
+
+1. Make the project, a secret `DEMO_TOKEN` with a made-up value, a second
+   secret `OTHER` in the same environment with another value, and the
+   machine identity. Note the client ID and the ID of the project. Do not
+   write them into the results: the issue is public.
+2. In `$T/broker.toml`, add a store of `type = "infisical"` with `server`,
+   `client_id` and a `client_secret_file` for the file with the client
+   secret, and a secret `demo-inf` for it with `project`, `environment`,
+   `path = "/"`, `name = "DEMO_TOKEN"`, `clients = ["test"]` and
+   `ask = "always"`. Start the broker again.
+3. Terminal 2: `ask demo-inf "check 17"`. Tap **Approve once**.
+4. Wait more than 60 seconds, so the access token ends. Ask again and tap.
+5. Change `name` to `OTHER`, and ask again. Then use `name = "NO_SUCH"`
+   and ask again.
+6. In Infisical, put `${DEMO_TOKEN}` into the value of `OTHER`. Ask for
+   `OTHER` again.
+7. Search `$T/broker.log` and `$T/audit.jsonl` for the client secret and
+   for the made-up values. Put them in a file and use `grep -cF -f FILE`,
+   so they are never on a command line. Write only the counts.
+
+Expected:
+
+- Step 3: the message shows `demo-inf`. The command prints the length of
+  the made-up value and `exit code: 0`.
+- Step 4: the same, with no error. The broker logged in again.
+- Step 5: `OTHER` gives the length of the other value. A name that does
+  not exist gives exit 77, and the log says that the server has no such
+  secret.
+- Step 6: exit 77, and the log says that the value refers to another
+  secret.
+- Step 7: `0` for the client secret and for the values.
+- Optional: let the client secret end, and ask. The request is denied
+  with the fixed text `the Infisical server refused the login of the
+  machine identity`, and the log has no text of the server.
+
+At the end, delete the machine identity, the project and the file with
+the client secret.
+
 ## Clean up
 
 1. Terminal 1: stop the broker with Ctrl-C, if it still runs.
@@ -741,3 +789,6 @@ raw answer of the Bot API, and the lines of the log with `user_id` or
 | 16 | a 1Password store (optional) | the command gets the value; the requests for one fetch are written down (before and after `op service-account ratelimit`) | | |
 | 16 | a field that is not there | exit 77; the log says that the item has no such field | | |
 | 16 | the token and the values in the logs | `0` for `broker.log` and `audit.jsonl` | | |
+| 17 | an Infisical store (optional) | the command gets the value; after the access token ended, the next fetch works | | |
+| 17 | a missing name; a value with `${` | exit 77 for both; the log says why | | |
+| 17 | the client secret and the values in the logs | `0` for `broker.log` and `audit.jsonl` | | |
