@@ -30,6 +30,8 @@ Try it on a test setup first. See the
   **Approve N min**. It shows which machine asks, for which secret or key,
   and for SSH the real target host, checked by the broker. No answer
   means no.
+  In place of Telegram, the broker can use an ntfy server that you run
+  yourself ([docs/setup.md](docs/setup.md#ntfy-in-place-of-the-telegram-bot)).
 - Every request and decision goes into a hash-chained audit log.
 
 ## Try it

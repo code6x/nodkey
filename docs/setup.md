@@ -1,8 +1,8 @@
 # Set up nodkey
 
 This guide sets up nodkey from the start: the broker on a trusted
-machine, a Telegram bot for the approvals, the secret stores, and the
-client on the machine where the AI agent works.
+machine, a Telegram bot (or an ntfy server) for the approvals, the
+secret stores, and the client on the machine where the AI agent works.
 
 [DESIGN.md](../DESIGN.md) says how nodkey works, and
 [THREAT-MODEL.md](../THREAT-MODEL.md) says what it protects against.
@@ -422,6 +422,110 @@ of your own. Only your taps count.
 6. **Keep the bot out of other groups (optional).** If the bot is in no
    group, send `/setjoingroups` to BotFather and choose **Disable**.
    Then nobody can add the bot to a group.
+
+### ntfy in place of the Telegram bot
+
+The broker can send its requests through an [ntfy](https://ntfy.sh)
+server instead of Telegram. A broker has one channel: `[telegram]` or
+`[ntfy]`, never both. Skip the steps above if you use ntfy.
+
+ntfy is weaker than Telegram: it does not say who pressed a button, and
+the server can change a message without the broker seeing it. Read
+[THREAT-MODEL.md T40](../THREAT-MODEL.md#6-threats-and-answers) first.
+Two limits follow from it:
+
+- **Run the ntfy server yourself.** This guide does not use the public
+  server ntfy.sh: whoever runs the server can approve.
+- **No standing grants.** A config with `[ntfy]` and `[standing]` does
+  not load. Scheduled grants (`nodkey preapprove`) work.
+
+The examples use the server `https://ntfy.example.com`, the request
+topic `nodkey-requests` and the answer topic `nodkey-answers`. The broker
+sends each request to the request topic, and your phone reads it there.
+A button on the phone sends its answer to the answer topic, which only
+the broker reads.
+
+1. **The server.** Set up ntfy on a machine that you trust
+   ([install](https://docs.ntfy.sh/install/)), with `https`. In its
+   `server.yml`:
+
+   ```yaml
+   base-url: "https://ntfy.example.com"
+   auth-file: "/var/lib/ntfy/user.db"
+   auth-default-access: "deny-all"
+   upstream-base-url: "https://ntfy.sh"
+   ```
+
+   `deny-all` means that nobody may read or write a topic without an
+   access rule. `upstream-base-url` is for iOS: without it, a message can
+   take hours to reach an iPhone. Only the message ID and a hash of the
+   topic address go to ntfy.sh; the phone then fetches the message from
+   your server. Leave the line out if you use only Android.
+2. **The users and the access rules.** On the ntfy server
+   ([access control](https://docs.ntfy.sh/config/#access-control)):
+
+   ```sh
+   ntfy user add nodkey-broker     # asks for a password
+   ntfy user add phone
+   ntfy access nodkey-broker nodkey-requests write-only
+   ntfy access nodkey-broker nodkey-answers read-only
+   ntfy access phone nodkey-requests read-only
+   ntfy access everyone nodkey-answers write-only
+   ```
+
+   The buttons send no token, so anyone may write to the answer topic.
+   An answer counts only with the random value of its button, and only
+   the broker can read the answers. Give no other user access to these
+   two topics.
+3. **The token of the broker.** On the ntfy server:
+
+   ```sh
+   ntfy token add --label="nodkey broker" nodkey-broker
+   ```
+
+   On the broker host, save the token as a credential:
+
+   ```sh
+   systemd-ask-password -n "ntfy token:" |
+     systemd-creds encrypt --with-key="$WITH_KEY" --name=ntfy-token - /etc/nodkey/credentials/ntfy-token.cred
+   ```
+
+   Never paste the token into a chat, an issue, a file in a repository,
+   or a command line. The example unit already has the line
+   `LoadCredentialEncrypted=ntfy-token:`; remove the line of
+   `telegram-token` ([section 8](#8-the-systemd-unit)).
+4. **The config.** In place of `[telegram]`
+   ([section 7](#7-the-config-file)):
+
+   ```toml
+   [ntfy]
+   server = "https://ntfy.example.com"
+   request_topic = "nodkey-requests"   # the phone subscribes here
+   answer_topic = "nodkey-answers"     # the buttons answer here; only the broker reads it
+   token_file = "${CREDENTIALS_DIRECTORY}/ntfy-token"
+   timeout = "120s"
+   ssh_timeout = "90s"
+   ```
+
+   `timeout` and `ssh_timeout` are as in `[telegram]`. There is no
+   `notice_chat_id`: notices go to the request topic too, with a low
+   priority.
+5. **The phone.** Install the ntfy app (Android or iOS). In its
+   settings, add the user `phone` with its password for
+   `https://ntfy.example.com`. Then subscribe to `nodkey-requests` on
+   that server. On Android, turn on instant delivery for the
+   subscription. Never subscribe to `nodkey-answers`.
+6. **Keep the request topic off agent machines.** Anyone who can read
+   the request topic can approve. **Never subscribe to it on a machine
+   where an agent runs**: not in the ntfy web app, not in a desktop
+   client, not with `curl`. Never log in as `phone` or
+   `nodkey-broker` there.
+
+**A new token.** Make a new one with `ntfy token add`, make the
+credential again as in step 3, and restart the broker. Then remove the
+old one with `ntfy token remove nodkey-broker <old token>`. When the
+server refuses the token, the broker stops with exit code 77, and
+systemd does not start it again until you do.
 
 ## 5. Stores
 
@@ -922,7 +1026,9 @@ from [section 3](#the-tls-key-of-the-broker). The home directories of
 the stores are in `stores`, next to `audit_log`.
 
 **`[telegram]`.** `token_file` and `user_id` come from
-[section 4](#4-the-telegram-bot). `notice_chat_id` is optional.
+[section 4](#4-the-telegram-bot). `notice_chat_id` is optional. For
+ntfy, use `[ntfy]` in its place
+([section 4](#ntfy-in-place-of-the-telegram-bot)).
 `timeout` is how long a request for secrets waits for your tap: 15
 seconds to 10 minutes, 120 seconds by default. `ssh_timeout` is the same
 for an SSH login: 15 to 110 seconds, 90 seconds by default. sshd drops a
@@ -1128,6 +1234,15 @@ Anyone who can use your Telegram account can approve
   phone.
 - Turn on two-step verification (**Settings → Privacy and Security**),
   and a passcode for the app.
+
+### The ntfy request topic
+
+With ntfy, anyone who can read the request topic can approve
+([THREAT-MODEL.md T40](../THREAT-MODEL.md#6-threats-and-answers)). Run
+the server yourself, with `auth-default-access: deny-all`. Never
+subscribe to the request topic on a machine where an agent runs, and
+never keep an ntfy login there
+([section 4](#ntfy-in-place-of-the-telegram-bot)).
 
 ### The Bitwarden accounts that can read the secrets
 
