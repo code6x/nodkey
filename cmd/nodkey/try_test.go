@@ -32,7 +32,7 @@ var tryOnly = map[string]bool{
 // nodkey broker has no way to turn on the approval in the terminal, or
 // the test store: no file outside of nodkey try uses their names, main.go
 // reaches nodkey try only by its command, and the one approval core of
-// nodkey broker takes the Telegram approver.
+// nodkey broker takes the approver of the config's channel (Telegram or ntfy).
 func TestBrokerHasNoTerminalApproval(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -60,8 +60,8 @@ func TestBrokerHasNoTerminalApproval(t *testing.T) {
 				}
 				if pkg, isIdent := sel.X.(*ast.Ident); isIdent && pkg.Name == "approval" && sel.Sel.Name == "New" {
 					cores++
-					if arg, ok := n.Args[1].(*ast.Ident); path != "broker.go" || !ok || arg.Name != "tg" {
-						t.Errorf("%s makes an approval core with another approver than Telegram", path)
+					if arg, ok := n.Args[1].(*ast.Ident); path != "broker.go" || !ok || arg.Name != "approver" {
+						t.Errorf("%s makes an approval core with another approver than the one of the broker's channel", path)
 					}
 				}
 			}

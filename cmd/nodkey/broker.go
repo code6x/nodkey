@@ -25,6 +25,7 @@ import (
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/broker"
 	"github.com/code6x/nodkey/internal/config"
+	"github.com/code6x/nodkey/internal/ntfy"
 	"github.com/code6x/nodkey/internal/release"
 	"github.com/code6x/nodkey/internal/store"
 	"github.com/code6x/nodkey/internal/telegram"
@@ -188,7 +189,7 @@ func serveBroker(ctx context.Context, path string, stderr io.Writer, log *slog.L
 		log.Error("nodkey broker: stopped after a polling conflict; the bot token may be stolen, so systemd "+
 			"does not start the broker again", slog.Int("exit_code", code))
 	case exitTokenRefused:
-		log.Error("nodkey broker: stopped, because Telegram does not accept the bot token; put a new token "+
+		log.Error("nodkey broker: stopped, because the approval channel does not accept the token; put a new token "+
 			"into the token file, then start the broker", slog.Int("exit_code", code))
 	default:
 		log.Error("nodkey broker: stopped", slog.Int("exit_code", code))
@@ -205,7 +206,7 @@ func brokerExitCode(bySignal bool, runErr error, clean bool) int {
 	switch {
 	case errors.Is(runErr, telegram.ErrPollConflict):
 		return exitPollConflict
-	case errors.Is(runErr, telegram.ErrTokenRefused):
+	case errors.Is(runErr, telegram.ErrTokenRefused), errors.Is(runErr, ntfy.ErrTokenRefused):
 		return exitTokenRefused
 	case bySignal && clean:
 		return exitOK
@@ -226,7 +227,7 @@ type brokerParts struct {
 	audit  *audit.Logger
 	stores map[string]store.Store
 	svc    *broker.Service
-	tg     *telegram.Approver
+	ch     *channel
 
 	// alerts are the alert messages that wait until the approver can send
 	// them: a torn line in the audit log, and stores that did not start.
@@ -328,13 +329,15 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 		return err
 	}
 	b.svc = svc
-	// The approval core takes the approver, so Telegram comes first.
-	tg, err := telegram.New(cfg.Telegram, telegram.Options{Logger: b.log, ForeignTap: svc.ForeignTap})
+	// The approval core takes the approver, so the channel (Telegram or
+	// ntfy) comes first.
+	ch, err := newChannel(cfg, b.log, svc.ForeignTap)
 	if err != nil {
 		return err
 	}
-	b.tg = tg
-	core, err := approval.New(cfg, tg, approval.Options{Logger: b.log})
+	b.ch = ch
+	approver := ch.approver
+	core, err := approval.New(cfg, approver, approval.Options{Logger: b.log})
 	if err != nil {
 		return err
 	}
@@ -369,8 +372,8 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 	}
 	b.started = true
 	b.startRun(core)
-	b.sendAlerts(tg.Alert)
-	b.startCheck(tg.Inform, tg.InformLoud)
+	b.sendAlerts(ch.alert)
+	b.startCheck(ch.inform, ch.loud)
 	b.serve(srv, ln)
 	b.log.Info("nodkey broker: listening; the broker is ready", slog.String("address", ln.Addr().String()))
 	return nil
@@ -462,9 +465,9 @@ func (b *brokerParts) startRun(core *approval.Core) {
 					"every request is denied, and the broker stops")
 			}
 		}()
-		b.runErr = b.svc.Run(ctx, core, b.tg.Alert, b.tg.Inform)
+		b.runErr = b.svc.Run(ctx, core, b.ch.alert, b.ch.inform)
 	}()
-	b.log.Info("nodkey broker: the approver runs: it polls Telegram for the answers")
+	b.log.Info("nodkey broker: the approver runs: it waits for the answers")
 }
 
 // startCheck starts the check for a newer release (DESIGN.md section 15):

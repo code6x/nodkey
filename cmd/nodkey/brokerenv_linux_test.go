@@ -336,6 +336,9 @@ type brokerOptions struct {
 	updatesOff bool
 	// standing adds [standing] and standing = true for github-token.
 	standing bool
+	// ntfy, if set, gives the broker [ntfy] with this fake server instead
+	// of [telegram].
+	ntfy *fakeNtfy
 }
 
 // brokerEnv is nodkey broker in a child process, with its files and the
@@ -360,6 +363,9 @@ type brokerEnv struct {
 	// proxyUser is the user name in HTTPS_PROXY of the last start: a new
 	// one for each start (see fakeTelegram.proxiedBy).
 	proxyUser string
+	// caFile, if set, is the file of CA certificates the child trusts
+	// instead of those of the fake Telegram.
+	caFile string
 }
 
 // newBrokerEnv makes the files of a broker in a new private directory,
@@ -504,6 +510,9 @@ hosts = ["db-1"]
 	}
 	if opts.updatesOff {
 		cfg += "\n[updates]\ncheck = false\n"
+	}
+	if opts.ntfy != nil {
+		cfg = opts.ntfy.useIn(e, cfg)
 	}
 	writeTestFile(t, e.cfgPath, []byte(cfg), 0o600)
 	return e
@@ -668,13 +677,17 @@ func (e *brokerEnv) start(seams ...string) {
 	// Upper-case letters and digits: nothing to escape in the URL.
 	e.proxyUser = rand.Text()
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestBrokerChild$") //nolint:gosec // G204: the test runs its own binary again.
+	caFile := e.tg.caFile
+	if e.caFile != "" {
+		caFile = e.caFile
+	}
 	cmd.Env = []string{
 		brokerChildConfig + "=" + e.cfgPath,
 		brokerChildSeams + "=" + strings.Join(seams, ","),
 		brokerChildProxy + "=" + e.tg.proxyAddr,
 		"CREDENTIALS_DIRECTORY=" + filepath.Join(e.dir, "creds"),
 		"HTTPS_PROXY=http://" + e.proxyUser + "@" + e.tg.proxyAddr,
-		"SSL_CERT_FILE=" + e.tg.caFile,
+		"SSL_CERT_FILE=" + caFile,
 		"SSL_CERT_DIR=" + e.tg.caDir,
 	}
 	for _, name := range []string{"GORACE", "GOCOVERDIR", "TMPDIR"} {
