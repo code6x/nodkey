@@ -640,6 +640,41 @@ Expected:
   line `⛔ revoked by you at ...`. `/grants` answers `No standing
   grants.`.
 
+### Check 16: nodkey try --telegram (optional)
+
+New in 0.3.0: skip it with nodkey 0.2.0.
+
+This checks the trial with Telegram (issue #125). It needs no broker
+files: stop the broker of terminal 1 first. Make a second new bot in
+BotFather for it, not the test bot of the other checks.
+
+1. Terminal 1: `HOME="$T/home" "$T/nodkey" try --telegram`. Paste the
+   token of the second bot. Check that the token is not shown while you
+   paste it.
+2. Open the link that it prints on the phone, and tap **Start**.
+   Terminal 1 shows your first name and user ID. Type `yes`.
+3. Terminal 2: run the `nodkey try run` command that terminal 1 prints,
+   with `"$T/nodkey"` in place of `nodkey` and `HOME="$T/home"` before
+   it. Tap **Approve once**. Then run it again and tap **Deny**.
+4. Start the broker of terminal 1 again, in a third terminal, with the
+   bot of the trial: put the second bot's token in the token file
+   for a moment. Within a minute, one of the two stops. Then put the
+   token of the test bot back.
+5. Press Ctrl-C in terminal 1.
+
+Expected:
+
+- Step 2: the name is yours, and nothing starts before `yes`.
+- Step 3: each message starts with `TRY MODE · `. Approve once: the
+  command prints its line, and exit code 0. Deny: exit code 77. Each line
+  of `nodkey try run` starts with `TRY MODE`.
+- Step 4: nodkey try stops with `Telegram says another program polls
+  this bot` and exit code 1, or the broker stops with exit code 76.
+- Step 5: the trial ends, and `ls "$XDG_RUNTIME_DIR/nodkey-try"` says
+  there is no such file.
+
+Delete the second bot in BotFather after the test.
+
 ## Clean up
 
 1. Terminal 1: stop the broker with Ctrl-C, if it still runs.
@@ -689,3 +724,7 @@ raw answer of the Bot API, and the lines of the log with `user_id` or
 | 15 | a use with the token file | no tap; exit 0; silent notice; the token file changed | | |
 | 15 | the old token again | exit 77; alarm with sound; `ended by an alarm` | | |
 | 15 | Revoke on a standing grant | `Revoked.`; button gone; `revoked by you` | | |
+| 16 | `try --telegram`: hidden token, link, name | the token is not shown; your name and ID; starts only after `yes` | | |
+| 16 | `try --telegram`: Approve once, Deny | `TRY MODE · ` on each message; exit 0, then 77 | | |
+| 16 | `try --telegram`: the bot of a broker | nodkey try stops and says to use a new bot, or the broker stops with 76 | | |
+| 16 | `try --telegram`: Ctrl-C | the directory of the trial is gone | | |

@@ -55,6 +55,11 @@ The request shows up in the first terminal. Type `1` (Approve once), `2`
 request expires and is denied. Press Ctrl-C to end the trial; it removes
 its files.
 
+To answer on your phone instead, run `nodkey try --telegram`. It asks you
+to make a new bot with @BotFather (never the bot of a real broker), to
+paste its token, and to open a link on your phone. Then each request
+comes to Telegram, with `TRY MODE` on each message.
+
 Try mode is not a setup. The agent could type the answer in that
 terminal, so the trial has only fake values (they start with `TRY-`) and
 can never reach a real secret. A real setup adds a separate broker host,

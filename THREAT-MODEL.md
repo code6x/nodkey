@@ -1157,7 +1157,8 @@ must never take answers from a terminal.
   made in memory, with one store that has no type, so no `[store.*]`
   section can name it, and `store.New` cannot make it. It never starts
   `bws` or `bw`. Its only values are random, made at the start, and start
-  with `TRY-`. It has no SSH key and no bot token.
+  with `TRY-`. It has no SSH key. Only with `--telegram` does it have a
+  bot token, which the person types and which stays in memory.
 - `nodkey try run` reads only the client config of the trial, never
   `~/.config/nodkey/client.toml`, and it pins the trial's broker key. So
   it cannot send a request to a real broker by mistake, and a real
@@ -1168,8 +1169,19 @@ must never take answers from a terminal.
   `nodkey try run` prints starts with `TRY MODE`, so a person does not take
   the trial for a setup. The trial allows no scheduled and no standing grant.
 
+- With `--telegram`, the token is typed on this machine, which may be an
+  agent machine (docs/setup.md, "Where you do the setup"). The guide and
+  the prompt say: make a new bot for the trial, never use the broker's
+  bot. If the broker's bot is used anyway, both poll, Telegram answers
+  one of them with a conflict, and the real broker stops with exit code
+  76 (T6); nodkey try stops too and says to use a new bot. The approver's
+  user ID comes only from the `/start CODE` message with a random code,
+  and the person must confirm the name.
+
 Risk that remains: the agent on the same machine can answer a request of
-the trial, or read its fake values. That is fine: they open nothing. A
+the trial, or read its fake values. With `--telegram`, it can also read
+the token of the trial's bot from the terminal or the memory of the
+process; that bot opens nothing, and the person can delete it. That is fine: they open nothing. A
 person who copies the trial's way of working to a real setup loses the
 phone. The last lines of `nodkey try` and the guides say what a real setup
 adds: a separate broker host, a store, Telegram and the rules.

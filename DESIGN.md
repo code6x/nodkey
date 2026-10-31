@@ -87,7 +87,7 @@ One static Go binary holds all parts. The subcommand picks the role:
 | `nodkey run` | agent machine | Get secrets, then start one command with them. |
 | `nodkey ssh-agent` | agent machine | Serve an SSH agent socket. Send each signature request to the broker. |
 | `nodkey ssh-grant` | agent machine | Ask once for SSH logins to a list of hosts for N minutes (see [decision 4](#13-decision-4-ssh-approval-scope)). |
-| `nodkey try` | one machine | A trial with fake secrets and approval in its own terminal, for a first look. It is not a setup (section 15). |
+| `nodkey try` | one machine | A trial with fake secrets and approval in its own terminal, or with `--telegram` on the phone, for a first look. It is not a setup (section 15). |
 | `nodkey keygen` | both | Make a TLS key pair for the broker or a client. Print its pin. |
 | `nodkey audit verify` | trusted machine | Check the hash chain of an audit log. |
 | `nodkey update` | both, as root | Install a release in place of this binary, with the install script that is built into it (section 18). |
@@ -96,7 +96,9 @@ One static Go binary holds all parts. The subcommand picks the role:
 
 `nodkey try` runs the real broker parts on `127.0.0.1` of one machine,
 but with its own approver (the terminal) and its own store (three fake
-values). Both live only in the code of `nodkey try`. `nodkey broker`
+values). Both live only in the code of `nodkey try`. With `--telegram`
+it uses the Telegram approver instead, with a new bot that the person
+makes for the trial. `nodkey broker`
 cannot use them: no flag, config key or variable turns them on
 (THREAT-MODEL.md, T38).
 
@@ -2750,7 +2752,7 @@ nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason 
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
 nodkey preapprove --secret NAME... (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM) --until TIME [--from TIME] [--uses N] --grant-token FILE [--reason TEXT]
 nodkey preapprove --cancel ID
-nodkey try
+nodkey try [--telegram]
 nodkey try run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
 nodkey keygen --out FILE
 nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
@@ -3047,7 +3049,8 @@ credentials. Its one client is `try-client`.
 Its one store holds three secrets, `demo-token`, `demo-password` and
 `demo-api-key`, with random values that start with `TRY-`, made at the
 start. Their rule is `ask = "window"` with a 5 minute window. It has no
-SSH keys, no Telegram and no check for a newer release.
+SSH keys and no check for a newer release. Without `--telegram` it has
+no Telegram.
 
 nodkey try shows each request in its own terminal, with the lines of the
 message and the choices: `1` Approve once, `2` Approve 5 min, `3` Deny.
@@ -3061,6 +3064,30 @@ whose lock no one holds, is removed at the next start. SIGINT, SIGTERM, SIGHUP o
 SIGQUIT stops the trial with exit code 0: it ends the parts in the order of
 `nodkey broker`, removes the directory, and prints what a real setup
 adds, with a pointer to docs/setup.md.
+
+With `--telegram`, the requests go to Telegram instead of the terminal,
+before the directory is made:
+
+1. nodkey try asks the person to make a new bot with @BotFather, never
+   the bot of a real broker, and to paste its token. When stdin is a
+   terminal, its echo is off while the token is typed. The token is kept
+   only in memory, never in a file or a log.
+2. It calls `getMe` for the bot's user name, makes a random code (16
+   bytes, base64url), and prints the link `https://t.me/BOT?start=CODE`.
+3. It polls the bot until the message `/start CODE` comes in a private
+   chat with its sender. Every other message is skipped. The sender's
+   user ID becomes the one approver and the notice chat. No one has to
+   look up the ID with `getUpdates`.
+4. It shows the sender's name and ID, and starts only when the person
+   types `yes`.
+
+Then the trial runs as above, but with the Telegram approver of
+`nodkey broker`: the same messages and buttons, with `TRY MODE · ` before
+the text of every message and every edit. The terminal shows only the
+intro and the notices. When Telegram answers a poll with a conflict
+(another program polls the bot, such as a real broker), nodkey try stops
+with exit code 1 and says to use a new bot. A token that Telegram does
+not accept stops it with 1 too.
 
 `nodkey try run` is `nodkey run` with the client config of the trial,
 `client.toml` in that directory. It never reads
