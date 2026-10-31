@@ -203,21 +203,27 @@ func (a *Approver) Ask(ctx context.Context, p approval.Prompt) (approval.Shown, 
 	if p.Kind.IsPreapprove() {
 		limit -= lastLineRoom // the line of the approval and the line of the end
 	}
-	b, err := fitBody(p, false, limit)
+	labels, actions := buttonLabels(p)
+	e := newPending("", actions)
+	t := title(p, false)
+	pm := publishMessage{
+		Topic: a.requestTopic, Title: t, Priority: priorityAsk,
+		Actions: a.buttons(p.RequestID, e, labels, actions),
+	}
+	// The text, and the whole publish body with the buttons, must fit.
+	b, err := fitBodyWith(p, false, limit, func(b string) bool {
+		pm.Message = b + "\n" + expiryLine(p)
+		return fitsPublish(pm)
+	})
 	if err != nil {
 		return approval.Shown{}, err
 	}
 	msg := b + "\n" + expiryLine(p)
-	labels, actions := buttonLabels(p)
-	e := newPending("", actions)
+	pm.Message = msg
 	if err := a.add(p.RequestID, e); err != nil {
 		return approval.Shown{}, err
 	}
-	t := title(p, false)
-	id, err := a.api.publish(ctx, publishMessage{
-		Topic: a.requestTopic, Title: t, Message: msg, Priority: priorityAsk,
-		Actions: a.buttons(p.RequestID, e, labels, actions),
-	}, true)
+	id, err := a.api.publish(ctx, pm, true)
 	if err != nil {
 		a.forget(p.RequestID, e)
 		return approval.Shown{}, err
@@ -238,8 +244,7 @@ func (a *Approver) End(ctx context.Context, m approval.MessageID, p approval.Pro
 		return errors.New("ntfy: End: the message ID is not one that Ask returned")
 	}
 	pm := publishMessage{
-		Topic: a.requestTopic, Title: title(p, false), Message: endingBody(p, e),
-		Priority: priorityLow, SequenceID: string(m),
+		Topic: a.requestTopic, Title: title(p, false), Priority: priorityLow, SequenceID: string(m),
 	}
 	if e.Revoke && validRequestID(p.RequestID) {
 		entry := newPending(m, []audit.Answer{audit.AnswerRevoke})
@@ -248,6 +253,10 @@ func (a *Approver) End(ctx context.Context, m approval.MessageID, p approval.Pro
 	} else {
 		a.forget(p.RequestID, nil)
 	}
+	pm.Message = endingBody(p, e, func(s string) bool {
+		pm.Message = s
+		return fitsPublish(pm)
+	})
 	_, err := a.api.publish(ctx, pm, true)
 	return err
 }
@@ -263,7 +272,11 @@ func (a *Approver) Notify(ctx context.Context, p approval.Prompt) error {
 	if err := checkPrompt(p, true); err != nil {
 		return err
 	}
-	b, err := fitBody(p, true, maxMessageBytes)
+	pm := publishMessage{Topic: a.requestTopic, Title: title(p, true), Priority: priorityLow}
+	b, err := fitBodyWith(p, true, maxMessageBytes, func(b string) bool {
+		pm.Message = b
+		return fitsPublish(pm)
+	})
 	if err != nil {
 		return err
 	}
@@ -272,9 +285,8 @@ func (a *Approver) Notify(ctx context.Context, p approval.Prompt) error {
 			slog.String("request_id", p.RequestID), slog.Int("limit", NoticesPerMinute))
 		return ErrNoticeLimit
 	}
-	_, err = a.api.publish(ctx, publishMessage{
-		Topic: a.requestTopic, Title: title(p, true), Message: b, Priority: priorityLow,
-	}, false)
+	pm.Message = b
+	_, err = a.api.publish(ctx, pm, false)
 	return err
 }
 
@@ -286,9 +298,11 @@ func (a *Approver) Alert(ctx context.Context, msg string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, alertTimeout)
 	defer cancel()
-	_, err := a.api.publish(ctx, publishMessage{
-		Topic: a.requestTopic, Title: "⚠️ nodkey", Message: cutBytes(msg, 3000), Priority: priorityHigh,
-	}, true)
+	pm := publishMessage{Topic: a.requestTopic, Title: "⚠️ nodkey", Message: cutBytes(msg, 3000), Priority: priorityHigh}
+	for n := 3000; !fitsPublish(pm) && n > 100; n /= 2 {
+		pm.Message = cutBytes(msg, n)
+	}
+	_, err := a.api.publish(ctx, pm, true)
 	return err
 }
 

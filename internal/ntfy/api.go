@@ -209,6 +209,30 @@ type published struct {
 	Topic string `json:"topic"`
 }
 
+// maxPublishBody is the most bytes that the approver sends as one publish
+// body. ntfy refuses a JSON publish body over 8,192 bytes by default; the
+// rest is a margin.
+const maxPublishBody = 8192 - 1024
+
+// encodeMessage returns the JSON body of the publish of m. It does not
+// escape <, > and &: json.Marshal makes each of them 6 bytes, and the
+// body would not fit.
+func encodeMessage(m publishMessage) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// fitsPublish reports whether the publish of m is within maxPublishBody.
+func fitsPublish(m publishMessage) bool {
+	b, err := encodeMessage(m)
+	return err == nil && len(b) <= maxPublishBody
+}
+
 // publish sends m, and returns the ID of the new message. It tries again
 // after a server error, code 429 or a network error, at most maxTries
 // times, and only while ctx leaves time for the wait; tries > 1 only when
@@ -217,7 +241,7 @@ type published struct {
 // counts only with the value of its request, and the core takes it only
 // on the message that Ask returned.
 func (c *client) publish(ctx context.Context, m publishMessage, retry bool) (string, error) {
-	body, err := json.Marshal(m)
+	body, err := encodeMessage(m)
 	if err != nil {
 		return "", &callError{call: "publish", reason: "cannot encode the message"}
 	}

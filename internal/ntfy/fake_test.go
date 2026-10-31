@@ -45,6 +45,8 @@ type fakeServer struct {
 	failPublish int
 	// closeAtOnce makes a stream end right after its open event.
 	closeAtOnce bool
+	// srvBody is the size of the last publish body.
+	srvBody int
 	// connected gets a value when a stream opens.
 	connected chan struct{}
 	// since holds the since parameter of each stream.
@@ -109,7 +111,15 @@ func (f *fakeServer) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var m publishMessage
-	dec := json.NewDecoder(r.Body)
+	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	f.mu.Lock()
+	f.srvBody = len(raw)
+	f.mu.Unlock()
+	if len(raw) > 8192 {
+		http.Error(w, `{"code":40001,"error":"too large"}`, http.StatusBadRequest)
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&m); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)

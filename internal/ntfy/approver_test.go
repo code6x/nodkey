@@ -629,3 +629,47 @@ func TestServerThatClosesAtOnce(t *testing.T) {
 		t.Errorf("%d connections in a second: the wait did not grow", n)
 	}
 }
+
+// TestPublishBodySize: the claims are full of characters that JSON
+// escapes; the whole publish body, with the buttons, stays within the
+// limit of ntfy, and the text within 4,096 bytes.
+func TestPublishBodySize(t *testing.T) {
+	for _, ch := range []string{"&", "<", ">", `"`, `\`, "&<>\"\\"} {
+		t.Run(ch, func(t *testing.T) {
+			f := newFakeServer(t)
+			a := newApproverFor(t, f, &logBuffer{})
+			p := secretsPrompt(t)
+			p.Claim.Command = strings.Repeat(ch, 5000)
+			p.Claim.Reason = strings.Repeat(ch, 5000)
+			p.Claim.Dir = strings.Repeat(ch, 5000)
+			p.Claim.Vars = strings.Repeat(ch, 5000)
+			s, err := a.Ask(context.Background(), p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(what string, m publishMessage) {
+				t.Helper()
+				b, err := encodeMessage(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(b) > 8192-512 || len(m.Message) > maxMessageBytes {
+					t.Errorf("%s: publish body of %d bytes, message of %d bytes", what, len(b), len(m.Message))
+				}
+				if f.srvBody > 8192-512 {
+					t.Errorf("%s: the server got %d bytes", what, f.srvBody)
+				}
+			}
+			check("Ask", f.last())
+			if err := a.End(context.Background(), s.ID, p, approval.Ending{Answer: audit.AnswerApproveOnce, At: time.Now(), Revoke: true}); err != nil {
+				t.Fatal(err)
+			}
+			check("End", f.last())
+			p.Once, p.WindowMinutes = false, 0
+			if err := a.Notify(context.Background(), p); err != nil && !errors.Is(err, errTooLong) {
+				t.Fatal(err)
+			}
+			check("Notify", f.last())
+		})
+	}
+}

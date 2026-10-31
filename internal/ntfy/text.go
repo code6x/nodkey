@@ -251,8 +251,15 @@ func body(p approval.Prompt, notice bool, c caps) string {
 // claimed fields shorter as needed, never the verified ones: the person
 // must see every name they approve.
 func fitBody(p approval.Prompt, notice bool, limit int) (string, error) {
+	return fitBodyWith(p, notice, limit, nil)
+}
+
+// fitBodyWith is fitBody, and it cuts until fits (if not nil) also says
+// yes to the body. fits checks the whole publish body, which holds more
+// than the text.
+func fitBodyWith(p approval.Prompt, notice bool, limit int, fits func(string) bool) (string, error) {
 	for c := fullCaps; c.command >= minCommandCap; c = c.half() {
-		if s := body(p, notice, c); len(s) <= limit {
+		if s := body(p, notice, c); len(s) <= limit && (fits == nil || fits(s)) {
 			return s, nil
 		}
 	}
@@ -298,15 +305,18 @@ func buttonsLine(labels []string) string {
 
 // endingBody returns the message of p after its request ended: the same
 // lines, with the result instead of the expiry.
-func endingBody(p approval.Prompt, e approval.Ending) string {
+//
+// fits says whether a whole message text may be published; see fitBodyWith.
+func endingBody(p approval.Prompt, e approval.Ending, fits func(string) bool) string {
+	last := "\n" + resultLine(p, e)
 	var s string
 	if checkPrompt(p, false) == nil {
-		s, _ = fitBody(p, false, maxMessageBytes-lastLineRoom)
+		s, _ = fitBodyWith(p, false, maxMessageBytes-lastLineRoom, func(b string) bool { return fits(b + last) })
 	}
 	if s == "" {
 		s = "This request has ended."
 	}
-	return s + "\n" + resultLine(p, e)
+	return s + last
 }
 
 // resultLine says how the request of p ended (DESIGN.md section 7).
