@@ -22,6 +22,13 @@ const tryUserID = 1
 // maxTryLine caps a line that the person types.
 const maxTryLine = 256
 
+// An answer that comes before the broker knows the message is tried again
+// up to tryEarlyRetries times, tryEarlyWait apart.
+const (
+	tryEarlyRetries = 50
+	tryEarlyWait    = 20 * time.Millisecond
+)
+
 // errTryInputClosed is the error of tryApprover.Run when its input ends:
 // no answer can come any more.
 var errTryInputClosed = errors.New("the input of the terminal ended, so no answer can come")
@@ -163,7 +170,14 @@ func (a *tryApprover) answerLine(line string, answer func(approval.Answer) error
 		a.say("nodkey try: TRY MODE: type 1 (Approve once), 2 (Approve N min) or 3 (Deny)\n")
 		return
 	}
-	err := answer(approval.Answer{RequestID: p.RequestID, Action: action, Message: tryMessageID(p), UserID: tryUserID})
+	ans := approval.Answer{RequestID: p.RequestID, Action: action, Message: tryMessageID(p), UserID: tryUserID}
+	err := answer(ans)
+	// The terminal shows the message before Ask returns, so an answer can
+	// come before the broker knows the message. Try again for a short time.
+	for i := 0; i < tryEarlyRetries && errors.Is(err, approval.ErrTooEarly); i++ {
+		time.Sleep(tryEarlyWait)
+		err = answer(ans)
+	}
 	switch {
 	case err == nil:
 	case errors.Is(err, approval.ErrTooEarly):

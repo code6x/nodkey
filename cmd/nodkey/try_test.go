@@ -195,6 +195,33 @@ func TestTryApproverAnswers(t *testing.T) {
 	}
 }
 
+// An answer that comes before the broker knows the message is tried
+// again; when it stays too early, the terminal says to type it again.
+func TestTryApproverTooEarly(t *testing.T) {
+	var out bytes.Buffer
+	a := newTryApprover(strings.NewReader(""), &out)
+	if _, err := a.Ask(t.Context(), approval.Prompt{RequestID: "id-1", ShortCode: "aaaa", Once: true}); err != nil {
+		t.Fatal(err)
+	}
+	calls, early := 0, 2
+	answer := func(approval.Answer) error {
+		calls++
+		if calls <= early {
+			return approval.ErrTooEarly
+		}
+		return nil
+	}
+	a.answerLine("1", answer)
+	if calls != 3 || strings.Contains(out.String(), "not ready yet") {
+		t.Fatalf("calls %d, want 3; output:\n%s", calls, out.String())
+	}
+	calls, early = 0, tryEarlyRetries+1
+	a.answerLine("1", answer)
+	if calls != tryEarlyRetries+1 || !strings.Contains(out.String(), "not ready yet") {
+		t.Fatalf("calls %d, want %d; output:\n%s", calls, tryEarlyRetries+1, out.String())
+	}
+}
+
 // The trial allows no scheduled and no standing grant.
 func TestTryConfigAllowsNoScheduledOrStandingGrants(t *testing.T) {
 	cfg := tryConfig("/nonexistent", config.Pin{})
