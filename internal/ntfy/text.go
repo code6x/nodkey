@@ -247,16 +247,10 @@ func body(p approval.Prompt, notice bool, c caps) string {
 	return b.String()
 }
 
-// fitBody returns the body of p in at most limit bytes. It cuts the
+// fitBodyWith returns the body of p in at most limit bytes, and, if fits is
+// not nil, so that fits says yes (it checks the whole publish body). It cuts the
 // claimed fields shorter as needed, never the verified ones: the person
 // must see every name they approve.
-func fitBody(p approval.Prompt, notice bool, limit int) (string, error) {
-	return fitBodyWith(p, notice, limit, nil)
-}
-
-// fitBodyWith is fitBody, and it cuts until fits (if not nil) also says
-// yes to the body. fits checks the whole publish body, which holds more
-// than the text.
 func fitBodyWith(p approval.Prompt, notice bool, limit int, fits func(string) bool) (string, error) {
 	for c := fullCaps; c.command >= minCommandCap; c = c.half() {
 		if s := body(p, notice, c); len(s) <= limit && (fits == nil || fits(s)) {
