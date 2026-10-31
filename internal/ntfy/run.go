@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"time"
 
@@ -227,19 +226,20 @@ func (a *Approver) handle(ctx context.Context, ev event, answer func(approval.An
 		a.refuse(ctx, ev.ID, "the answer does not have the form of a button", "")
 		return
 	}
-	e, msg, actions := a.lookup(id)
+	e, msg := a.lookup(id)
 	if e == nil {
 		a.refuse(ctx, ev.ID, "no request with this ID waits for an answer here", id)
 		return
 	}
 	// The value first, so the answer says nothing about the request
-	// without it.
-	if subtle.ConstantTimeCompare(value[:], e.value[:]) != 1 {
-		a.refuse(ctx, ev.ID, "the value is not the value of the request", id)
-		return
+	// without it. It must be the value of the button of its own action.
+	want, has := e.values[action]
+	if !has {
+		// A zero value cannot match: compare anyway, to take the same time.
+		want = [16]byte{}
 	}
-	if !slices.Contains(actions, action) {
-		a.refuse(ctx, ev.ID, "the message of the request has no such button", id)
+	if subtle.ConstantTimeCompare(value[:], want[:]) != 1 || !has {
+		a.refuse(ctx, ev.ID, "the value is not the value of this button of the request", id)
 		return
 	}
 	if msg == "" {

@@ -93,9 +93,20 @@ type Approver struct {
 
 // pending is what the approver keeps for one request.
 type pending struct {
-	value   [16]byte
-	msg     approval.MessageID // "" until Ask has the ID of the message
-	actions []audit.Answer     // the buttons of the message
+	// values holds the value of each button, by its action. The values
+	// differ, so the value of a Deny button never counts as an approval.
+	values map[audit.Answer][16]byte
+	msg    approval.MessageID // "" until Ask has the ID of the message
+}
+
+// newPending returns the state of a message with one button for each of
+// actions, each with a value of its own.
+func newPending(msg approval.MessageID, actions []audit.Answer) *pending {
+	e := &pending{values: make(map[audit.Answer][16]byte, len(actions)), msg: msg}
+	for _, act := range actions {
+		e.values[act] = newValue()
+	}
+	return e
 }
 
 var _ approval.Approver = (*Approver)(nil)
@@ -163,12 +174,14 @@ func newValue() [16]byte {
 	return v
 }
 
-// buttons returns the ntfy actions for the request id with value v.
-func (a *Approver) buttons(id string, v [16]byte, labels []string, actions []audit.Answer) []action {
+// buttons returns the ntfy actions for the request id, each with the value
+// that e holds for its action.
+func (a *Approver) buttons(id string, e *pending, labels []string, actions []audit.Answer) []action {
 	url := a.api.base + "/" + a.answerTopic
-	value := base64.RawURLEncoding.EncodeToString(v[:])
 	out := make([]action, len(labels))
 	for i := range labels {
+		v := e.values[actions[i]]
+		value := base64.RawURLEncoding.EncodeToString(v[:])
 		body, _ := json.Marshal(answerBody{Request: id, Action: actionNames[actions[i]], Value: value})
 		out[i] = action{Action: "http", Label: labels[i], URL: url, Method: http.MethodPost, Body: string(body), Clear: true}
 	}
@@ -196,14 +209,14 @@ func (a *Approver) Ask(ctx context.Context, p approval.Prompt) (approval.Shown, 
 	}
 	msg := b + "\n" + expiryLine(p)
 	labels, actions := buttonLabels(p)
-	e := &pending{value: newValue(), actions: actions}
+	e := newPending("", actions)
 	if err := a.add(p.RequestID, e); err != nil {
 		return approval.Shown{}, err
 	}
 	t := title(p, false)
 	id, err := a.api.publish(ctx, publishMessage{
 		Topic: a.requestTopic, Title: t, Message: msg, Priority: priorityAsk,
-		Actions: a.buttons(p.RequestID, e.value, labels, actions),
+		Actions: a.buttons(p.RequestID, e, labels, actions),
 	}, true)
 	if err != nil {
 		a.forget(p.RequestID, e)
@@ -229,9 +242,9 @@ func (a *Approver) End(ctx context.Context, m approval.MessageID, p approval.Pro
 		Priority: priorityLow, SequenceID: string(m),
 	}
 	if e.Revoke && validRequestID(p.RequestID) {
-		entry := &pending{value: newValue(), msg: m, actions: []audit.Answer{audit.AnswerRevoke}}
+		entry := newPending(m, []audit.Answer{audit.AnswerRevoke})
 		a.replace(p.RequestID, entry)
-		pm.Actions = a.buttons(p.RequestID, entry.value, []string{"Revoke"}, entry.actions)
+		pm.Actions = a.buttons(p.RequestID, entry, []string{"Revoke"}, []audit.Answer{audit.AnswerRevoke})
 	} else {
 		a.forget(p.RequestID, nil)
 	}
@@ -311,15 +324,16 @@ func (a *Approver) forget(id string, e *pending) {
 	}
 }
 
-// lookup returns the value of the request id and a copy of its state.
-func (a *Approver) lookup(id string) (e *pending, msg approval.MessageID, actions []audit.Answer) {
+// lookup returns the state of the request id, and the message it waits on.
+// The values of e never change after e is made.
+func (a *Approver) lookup(id string) (e *pending, msg approval.MessageID) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	e = a.pending[id]
 	if e == nil {
-		return nil, "", nil
+		return nil, ""
 	}
-	return e, e.msg, slices.Clone(e.actions)
+	return e, e.msg
 }
 
 // takeNotice reports whether a notice may go out now, and counts it.

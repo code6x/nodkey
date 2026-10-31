@@ -535,3 +535,60 @@ func TestConfig(t *testing.T) {
 		t.Error("a token with space is taken")
 	}
 }
+
+// valueOfButton returns the value in the button with the label.
+func valueOfButton(t *testing.T, m publishMessage, label string) string {
+	t.Helper()
+	for _, a := range m.Actions {
+		if a.Label == label {
+			var b answerBody
+			if err := json.Unmarshal([]byte(a.Body), &b); err != nil {
+				t.Fatal(err)
+			}
+			return b.Value
+		}
+	}
+	t.Fatalf("no button %q", label)
+	return ""
+}
+
+func TestValueOfAnotherButton(t *testing.T) {
+	h := newHarness(t)
+	p := secretsPrompt(t)
+	_, m := h.ask(p)
+	deny := valueOfButton(t, m, "Deny")
+	once := valueOfButton(t, m, "Approve once")
+	window := valueOfButton(t, m, "Approve 15 min")
+	if deny == once || deny == window || once == window {
+		t.Fatal("two buttons carry the same value")
+	}
+	// A reader of the answer topic sees the Deny and turns it into an Approve.
+	h.postAnswer(p.RequestID, "once", deny)
+	h.postAnswer(p.RequestID, "window", deny)
+	h.postAnswer(p.RequestID, "deny", once)
+	h.postAnswer(p.RequestID, "once", window)
+	h.core.none(t)
+	if h.core.callCount() != 0 {
+		t.Error("the value of another button reached the core")
+	}
+	// The refused answers did not use up the request: its own buttons count.
+	h.f.press(m, "Approve once")
+	if got := h.core.expect(t); got.Action != audit.AnswerApproveOnce {
+		t.Errorf("answer %+v", got)
+	}
+}
+
+func TestRevokeValueIsNotTheValueOfEnd(t *testing.T) {
+	h := newHarness(t)
+	p := secretsPrompt(t)
+	s, m := h.ask(p)
+	deny := valueOfButton(t, m, "Deny")
+	if err := h.a.End(context.Background(), s.ID, p, approval.Ending{Answer: audit.AnswerApproveOnce, At: time.Now(), Revoke: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.postAnswer(p.RequestID, "revoke", deny)
+	h.core.none(t)
+	if h.core.callCount() != 0 {
+		t.Error("the value of the old Deny revoked the grant")
+	}
+}
