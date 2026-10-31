@@ -26,8 +26,9 @@ const (
 	// of the server is at most a few kilobytes. A longer line is skipped.
 	maxLine = 16 << 10
 	// refusedPerMinute is the most refused answers that Run logs in one
-	// minute. It counts the others, and logs how many it dropped once the
-	// minute ended. So a flood of bad answers cannot fill the journal.
+	// minute. It counts the others, and logs how many it dropped with the
+	// first refused answer after that minute. So a flood of bad answers
+	// cannot fill the journal.
 	refusedPerMinute = 20
 )
 
@@ -136,8 +137,12 @@ func (a *Approver) Run(ctx context.Context, answer func(approval.Answer) error) 
 		if read {
 			backoff = a.firstBackoff
 		}
-		a.log.LogAttrs(ctx, slog.LevelWarn, "ntfy: the subscription was lost; connecting again",
-			slog.String("error", e.Error()), slog.Duration("wait", backoff))
+		// A server that sends one event and closes again resets the wait
+		// each time, so this warning has a budget too.
+		if ok, _ := a.lost.take(a.now()); ok {
+			a.log.LogAttrs(ctx, slog.LevelWarn, "ntfy: the subscription was lost; connecting again",
+				slog.String("error", e.Error()), slog.Duration("wait", backoff))
+		}
 		if err := sleep(ctx, backoff); err != nil {
 			return fmt.Errorf("ntfy: the subscription stopped: %w", err)
 		}

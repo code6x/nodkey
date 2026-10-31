@@ -517,6 +517,8 @@ func TestConfig(t *testing.T) {
 		"http":         func(c *Config) { c.Server = "http://ntfy.example.com" },
 		"user":         func(c *Config) { c.Server = "https://u:p@ntfy.example.com" },
 		"query":        func(c *Config) { c.Server = "https://ntfy.example.com/?a=1" },
+		"empty query":  func(c *Config) { c.Server = "https://ntfy.example.com/?" },
+		"empty frag":   func(c *Config) { c.Server = "https://ntfy.example.com/#" },
 		"same topics":  func(c *Config) { c.AnswerTopic = c.RequestTopic },
 		"bad topic":    func(c *Config) { c.RequestTopic = "a/b" },
 		"no token":     func(c *Config) { c.ReadToken = Token{} },
@@ -698,5 +700,19 @@ func TestInformAndAlert(t *testing.T) {
 	n := f.count()
 	if err := a.Inform(ctx, "x"); err == nil || f.count() != n {
 		t.Errorf("a cancelled notice: err %v, sent %v", err, f.count() != n)
+	}
+}
+
+// TestLostWarningsHaveABudget: a server that closes the stream again and
+// again cannot fill the journal with warnings.
+func TestLostWarningsHaveABudget(t *testing.T) {
+	h := newHarness(t)
+	for range refusedPerMinute + 10 {
+		h.postAnswer(newRequestID(t), "deny", newRequestID(t))
+		h.f.drop()
+		h.f.waitConnected()
+	}
+	if n := strings.Count(h.logs.String(), "subscription was lost"); n == 0 || n > refusedPerMinute {
+		t.Errorf("%d warnings about a lost subscription, want 1 to %d", n, refusedPerMinute)
 	}
 }

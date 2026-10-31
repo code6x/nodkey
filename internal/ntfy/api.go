@@ -102,7 +102,8 @@ func (cfg Config) check() (string, error) {
 		return "", errors.New("ntfy: the server URL is not valid")
 	case u.Scheme != "https":
 		return "", errors.New("ntfy: the server URL must start with https://")
-	case u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "":
+	case u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery ||
+		u.Fragment != "" || strings.Contains(cfg.Server, "#") || u.Opaque != "":
 		return "", errors.New("ntfy: the server URL must be only https://, a host, and an optional path")
 	case !topicPattern.MatchString(cfg.RequestTopic) || !topicPattern.MatchString(cfg.AnswerTopic):
 		return "", errors.New("ntfy: a topic name must be 1 to 64 letters, digits, \"_\" or \"-\"")

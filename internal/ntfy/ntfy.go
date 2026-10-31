@@ -89,6 +89,7 @@ type Approver struct {
 	pending map[string]*pending
 	notices []time.Time
 	refused reportWindow
+	lost    reportWindow // the warnings about a lost subscription; only Run uses it
 }
 
 // pending is what the approver keeps for one request.
