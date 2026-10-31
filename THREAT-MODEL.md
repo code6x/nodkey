@@ -487,7 +487,9 @@ Risk that remains:
 (The `infisical` store is like the `1password` store: no program, no
 environment. The client secret is read from its file once, kept in the
 broker's memory, and sent only to the login of Infisical. The access
-token stays in memory only. `Close` clears both, best effort. The SDK's
+token stays in memory only. `Close` clears both, best effort. The SDK
+needs the client secret, the token and the value as Go strings; those
+copies stay in memory until the garbage collector frees them. The SDK's
 error text and the server's error text are never shown or logged. The
 errors are fixed texts, and a canary test checks them.)
 (For the `1password` store, there is no program and no environment. The

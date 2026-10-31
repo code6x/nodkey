@@ -1127,8 +1127,8 @@ func (b *Broker) addSecret(name, sec string, s secretSection, secret Secret, nev
 // infisicalSecret checks the keys of a [secret.*] section of an infisical
 // store. Every key is needed, path too: "/" is the usual folder, but a
 // default would let a secret of the same name in another folder be the one
-// that the config means without saying so. The config names the folder,
-// and the tap shows it.
+// that the config means without saying so. The config names the folder;
+// the tap shows only the name of the [secret.*] section.
 func infisicalSecret(sec string, s secretSection) (Secret, error) {
 	if s.ID != "" {
 		return Secret{}, fmt.Errorf(`%s: is not allowed with a store of type = "infisical"; use project, `+
