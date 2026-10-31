@@ -25,7 +25,7 @@ type tryTelegram struct {
 }
 
 // Format hides the token.
-func (*tryTelegram) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, "tryTelegram") }
+func (tryTelegram) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, "tryTelegram") }
 
 // tryConflictText says what to do when Telegram reports that another
 // program polls the bot.

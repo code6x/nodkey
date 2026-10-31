@@ -119,4 +119,4 @@ func cleanName(s string) string {
 }
 
 // Format hides the Pairing, so that no fmt verb prints the token.
-func (*Pairing) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte("telegram.Pairing")) }
+func (Pairing) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte("telegram.Pairing")) }
