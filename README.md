@@ -230,6 +230,8 @@ check of the audit log
   stores, the Telegram bot and the clients.
 - [docs/manual-telegram-test.md](docs/manual-telegram-test.md): the
   manual test with a real Telegram bot.
+- [docs/manual-ntfy-test.md](docs/manual-ntfy-test.md): the manual
+  test with a real ntfy server.
 - [DESIGN.md](DESIGN.md): how version 1 works.
 - [THREAT-MODEL.md](THREAT-MODEL.md): what nodkey protects against, and
   what it does not. Please read section 5 before you use nodkey.
