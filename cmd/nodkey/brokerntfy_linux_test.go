@@ -27,7 +27,7 @@ import (
 type fakeNtfy struct {
 	t     *testing.T
 	srv   *httptest.Server
-	token string // the token that publish and read accept
+	token string // the token that publish and read accept; guarded by mu
 
 	mu        sync.Mutex
 	published []ntfyMessage
@@ -80,7 +80,10 @@ func (f *fakeNtfy) useIn(e *brokerEnv, cfg string) string {
 }
 
 func (f *fakeNtfy) serve(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "Bearer "+f.token {
+	f.mu.Lock()
+	token := f.token
+	f.mu.Unlock()
+	if r.Header.Get("Authorization") != "Bearer "+token {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
