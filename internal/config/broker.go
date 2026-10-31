@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,14 +50,18 @@ type Broker struct {
 	AuditLog       string
 	KnownHostsFile string
 	KnownHosts     *KnownHosts
-	Telegram       Telegram
-	Updates        Updates
-	Preapprove     PreapproveLimits
-	Standing       StandingLimits
-	Clients        map[string]Client // by name
-	Stores         map[string]Store  // by name
-	Secrets        map[string]Secret // by name
-	Keys           map[string]Key    // by name
+	// Telegram is the [telegram] section. It is the zero value when the
+	// config has [ntfy] instead: exactly one of them is set (see Ntfy).
+	Telegram Telegram
+	// Ntfy is the [ntfy] section, or nil when the channel is Telegram.
+	Ntfy       *Ntfy
+	Updates    Updates
+	Preapprove PreapproveLimits
+	Standing   StandingLimits
+	Clients    map[string]Client // by name
+	Stores     map[string]Store  // by name
+	Secrets    map[string]Secret // by name
+	Keys       map[string]Key    // by name
 }
 
 // Telegram is the [telegram] section.
@@ -66,6 +71,35 @@ type Telegram struct {
 	NoticeChatID int64         // where notices about "never" uses go; the default is UserID
 	Timeout      time.Duration // how long a request for secrets waits; default 120s
 	SSHTimeout   time.Duration // how long an SSH request waits; default 90s
+}
+
+// Ntfy is the [ntfy] section: the approval channel through an ntfy server
+// (DESIGN.md section 7). A broker has one channel, [telegram] or [ntfy].
+type Ntfy struct {
+	Server       string        // the base URL: https, no user info, no query or fragment
+	RequestTopic string        // the broker publishes requests and notices here
+	AnswerTopic  string        // the buttons answer here; only the broker reads it
+	TokenFile    string        // the file that holds the access token
+	Timeout      time.Duration // how long a request for secrets waits; default 120s
+	SSHTimeout   time.Duration // how long an SSH request waits; default 90s
+}
+
+// Timeouts returns how long a request for secrets waits and how long an
+// SSH request waits, from the channel that the config has.
+func (b *Broker) Timeouts() (timeout, sshTimeout time.Duration) {
+	if b.Ntfy != nil {
+		return b.Ntfy.Timeout, b.Ntfy.SSHTimeout
+	}
+	return b.Telegram.Timeout, b.Telegram.SSHTimeout
+}
+
+// ApproverTokenFile returns the token file of the channel that the config
+// has.
+func (b *Broker) ApproverTokenFile() string {
+	if b.Ntfy != nil {
+		return b.Ntfy.TokenFile
+	}
+	return b.Telegram.TokenFile
 }
 
 // Updates is the [updates] section. Without it, each key has its
@@ -222,7 +256,8 @@ type (
 		TLSKey     string                   `toml:"tls_key"`
 		AuditLog   string                   `toml:"audit_log"`
 		KnownHosts string                   `toml:"known_hosts"`
-		Telegram   telegramSection          `toml:"telegram"`
+		Telegram   *telegramSection         `toml:"telegram"`
+		Ntfy       *ntfySection             `toml:"ntfy"`
 		Updates    updatesSection           `toml:"updates"`
 		Preapprove preapproveSection        `toml:"preapprove"`
 		Standing   *standingSection         `toml:"standing"`
@@ -235,6 +270,14 @@ type (
 		TokenFile    string  `toml:"token_file"`
 		UserID       *int64  `toml:"user_id"`
 		NoticeChatID *int64  `toml:"notice_chat_id"`
+		Timeout      *string `toml:"timeout"`
+		SSHTimeout   *string `toml:"ssh_timeout"`
+	}
+	ntfySection struct {
+		Server       string  `toml:"server"`
+		RequestTopic string  `toml:"request_topic"`
+		AnswerTopic  string  `toml:"answer_topic"`
+		TokenFile    string  `toml:"token_file"`
 		Timeout      *string `toml:"timeout"`
 		SSHTimeout   *string `toml:"ssh_timeout"`
 	}
@@ -365,8 +408,24 @@ func newBroker(f *brokerFile) (*Broker, error) {
 	if b.KnownHostsFile, err = parsePath("", "known_hosts", f.KnownHosts); err != nil {
 		return nil, err
 	}
-	if b.Telegram, err = parseTelegram(&f.Telegram); err != nil {
-		return nil, err
+	switch {
+	case f.Telegram != nil && f.Ntfy != nil:
+		return nil, errors.New("[telegram] and [ntfy]: a broker has one approval channel; remove one of them")
+	case f.Ntfy != nil:
+		n, err := parseNtfy(f.Ntfy)
+		if err != nil {
+			return nil, err
+		}
+		b.Ntfy = &n
+	default:
+		// Without any section, the error is the one of a missing [telegram] key.
+		ts := f.Telegram
+		if ts == nil {
+			ts = &telegramSection{}
+		}
+		if b.Telegram, err = parseTelegram(ts); err != nil {
+			return nil, err
+		}
 	}
 	b.Updates.Check = f.Updates.Check == nil || *f.Updates.Check
 	if b.Preapprove, err = parsePreapprove(&f.Preapprove); err != nil {
@@ -478,13 +537,65 @@ func parseTelegram(s *telegramSection) (Telegram, error) {
 		}
 		t.NoticeChatID = *s.NoticeChatID
 	}
-	if t.Timeout, err = parseTimeout(sec, "timeout", s.Timeout, defaultTimeout, MaxTimeout); err != nil {
-		return Telegram{}, err
-	}
-	if t.SSHTimeout, err = parseTimeout(sec, "ssh_timeout", s.SSHTimeout, defaultSSHTimeout, MaxSSHTimeout); err != nil {
+	if t.Timeout, t.SSHTimeout, err = parseTimeouts(sec, s.Timeout, s.SSHTimeout); err != nil {
 		return Telegram{}, err
 	}
 	return t, nil
+}
+
+// parseTimeouts parses the timeout and ssh_timeout keys that [telegram]
+// and [ntfy] share, with their defaults and limits.
+func parseTimeouts(sec string, timeout, ssh *string) (time.Duration, time.Duration, error) {
+	t, err := parseTimeout(sec, "timeout", timeout, defaultTimeout, MaxTimeout)
+	if err != nil {
+		return 0, 0, err
+	}
+	st, err := parseTimeout(sec, "ssh_timeout", ssh, defaultSSHTimeout, MaxSSHTimeout)
+	if err != nil {
+		return 0, 0, err
+	}
+	return t, st, nil
+}
+
+// topicPattern is the rule for the names of ntfy topics.
+var topicPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func parseNtfy(s *ntfySection) (Ntfy, error) {
+	const sec = "[ntfy]"
+	var n Ntfy
+	var err error
+	if s.Server == "" {
+		return Ntfy{}, fmt.Errorf("%s: is missing", place(sec, "server"))
+	}
+	u, err := url.Parse(s.Server)
+	switch {
+	case err != nil:
+		return Ntfy{}, fmt.Errorf("%s: must be a URL such as \"https://ntfy.example.com\"", place(sec, "server"))
+	case u.Scheme != "https":
+		return Ntfy{}, fmt.Errorf("%s: must start with https://", place(sec, "server"))
+	case u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.ForceQuery || strings.Contains(s.Server, "#"):
+		return Ntfy{}, fmt.Errorf("%s: must be only https://, a host, and an optional path: no user name, query or fragment", place(sec, "server"))
+	}
+	n.Server = s.Server
+	for _, t := range []struct{ key, v string }{{"request_topic", s.RequestTopic}, {"answer_topic", s.AnswerTopic}} {
+		if t.v == "" {
+			return Ntfy{}, fmt.Errorf("%s: is missing", place(sec, t.key))
+		}
+		if !topicPattern.MatchString(t.v) {
+			return Ntfy{}, fmt.Errorf("%s: must be 1 to 64 letters, digits, \"_\" or \"-\"", place(sec, t.key))
+		}
+	}
+	if s.RequestTopic == s.AnswerTopic {
+		return Ntfy{}, fmt.Errorf("%s: must not be the same as request_topic", place(sec, "answer_topic"))
+	}
+	n.RequestTopic, n.AnswerTopic = s.RequestTopic, s.AnswerTopic
+	if n.TokenFile, err = parsePath(sec, "token_file", s.TokenFile); err != nil {
+		return Ntfy{}, err
+	}
+	if n.Timeout, n.SSHTimeout, err = parseTimeouts(sec, s.Timeout, s.SSHTimeout); err != nil {
+		return Ntfy{}, err
+	}
+	return n, nil
 }
 
 // parsePreapprove checks the [preapprove] section and fills in the
@@ -907,6 +1018,13 @@ func (b *Broker) CheckFiles() error {
 	return b.CheckFilesAs(self, nil)
 }
 
+func (b *Broker) approverTokenPlace() string {
+	if b.Ntfy != nil {
+		return place("[ntfy]", "token_file")
+	}
+	return place("[telegram]", "token_file")
+}
+
 // CheckFilesAs is CheckFiles for the user ID self, the user that runs the
 // broker, such as when root runs nodkey doctor broker. It skips each file
 // that holds a key, a token or a password, and the config file and
@@ -922,7 +1040,7 @@ func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
 	}
 	private := []file{
 		{"tls_key", b.TLSKey, false},
-		{place("[telegram]", "token_file"), b.Telegram.TokenFile, false},
+		{b.approverTokenPlace(), b.ApproverTokenFile(), false},
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
 		s := b.Stores[name]
