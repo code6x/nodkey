@@ -51,6 +51,7 @@ func newChannel(cfg *config.Broker, log *slog.Logger, foreignTap func(audit.Fore
 	if err != nil {
 		return nil, err
 	}
-	// ntfy has no silent notice: the broker's own notices go out as alerts.
-	return &channel{approver: ap, alert: ap.Alert, inform: ap.Alert, loud: ap.Alert}, nil
+	// Notices go out with a low priority; alerts and the notice about a
+	// security release with a high one, as on Telegram.
+	return &channel{approver: ap, alert: ap.Alert, inform: ap.Inform, loud: ap.Alert}, nil
 }

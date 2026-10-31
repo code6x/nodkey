@@ -673,3 +673,30 @@ func TestPublishBodySize(t *testing.T) {
 		})
 	}
 }
+
+// TestInformAndAlert: a notice goes out with a low priority, an alert with
+// a high one, and neither has buttons.
+func TestInformAndAlert(t *testing.T) {
+	f := newFakeServer(t)
+	a := newApproverFor(t, f, &logBuffer{})
+	if err := a.Inform(context.Background(), "a newer release is out"); err != nil {
+		t.Fatal(err)
+	}
+	m := f.last()
+	if m.Priority != priorityLow || len(m.Actions) != 0 || !strings.HasPrefix(m.Title, "ℹ️") || m.Message != "a newer release is out" {
+		t.Errorf("notice: %+v", m)
+	}
+	if err := a.Alert(context.Background(), "the audit log failed"); err != nil {
+		t.Fatal(err)
+	}
+	m = f.last()
+	if m.Priority != priorityHigh || len(m.Actions) != 0 || !strings.HasPrefix(m.Title, "⚠️") {
+		t.Errorf("alert: %+v", m)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	n := f.count()
+	if err := a.Inform(ctx, "x"); err == nil || f.count() != n {
+		t.Errorf("a cancelled notice: err %v, sent %v", err, f.count() != n)
+	}
+}

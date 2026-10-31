@@ -293,12 +293,24 @@ func (a *Approver) Notify(ctx context.Context, p approval.Prompt) error {
 // Alert publishes msg with a high priority, for a problem the person must
 // see. msg is the broker's own text. It takes at most alertTimeout.
 func (a *Approver) Alert(ctx context.Context, msg string) error {
+	return a.text(ctx, "⚠️ nodkey", msg, priorityHigh)
+}
+
+// Inform publishes msg with a low priority, for a notice that needs no
+// action now, such as a newer release (DESIGN.md section 15). msg is the
+// broker's own text. It takes at most alertTimeout.
+func (a *Approver) Inform(ctx context.Context, msg string) error {
+	return a.text(ctx, "ℹ️ nodkey", msg, priorityLow)
+}
+
+// text publishes the broker's own msg, for Alert and Inform.
+func (a *Approver) text(ctx context.Context, title, msg string, priority int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, alertTimeout)
 	defer cancel()
-	pm := publishMessage{Topic: a.requestTopic, Title: "⚠️ nodkey", Message: cutBytes(msg, 3000), Priority: priorityHigh}
+	pm := publishMessage{Topic: a.requestTopic, Title: title, Message: cutBytes(msg, 3000), Priority: priority}
 	for n := 3000; !fitsPublish(pm) && n > 100; n /= 2 {
 		pm.Message = cutBytes(msg, n)
 	}
