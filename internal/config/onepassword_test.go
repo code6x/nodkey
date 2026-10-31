@@ -114,7 +114,7 @@ func TestLoadBrokerOnePasswordErrors(t *testing.T) {
 func TestCheckFilesOnePassword(t *testing.T) {
 	e := newOPEnv(t)
 	path := e.write(t, opEdits()...)
-	if err := os.Chmod(e.creds+"/op-token", 0o644); err != nil {
+	if err := os.Chmod(e.creds+"/op-token", 0o644); err != nil { //nolint:gosec // G302: the test makes the file readable by others on purpose.
 		t.Fatal(err)
 	}
 	b, err := LoadBroker(path)

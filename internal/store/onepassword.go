@@ -200,8 +200,9 @@ func (s *opStore) call(ctx context.Context, f func(context.Context) (Value, erro
 }
 
 // login returns the items of the logged-in client, and logs in first if
-// no login worked yet. It runs only in call, which holds the place: so
-// two logins of one store never run at the same time. It does not hold
+// no login worked yet. It runs only in call, which holds the place: with
+// opParallel = 1, two logins of one store never run at the same time.
+// With more places, a second login would only replace the client. It does not hold
 // s.mu while it waits for 1Password, so Close never waits for it.
 func (s *opStore) login(ctx context.Context) (opItems, error) {
 	s.mu.Lock()
@@ -304,7 +305,7 @@ func opID(id string) bool {
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
-		if !('a' <= c && c <= 'z' || '0' <= c && c <= '9') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
 			return false
 		}
 	}
