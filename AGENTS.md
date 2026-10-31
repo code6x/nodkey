@@ -58,6 +58,9 @@ Planned. Each v1 issue adds its part.
     points to it.
   - `docs/manual-telegram-test.md` - the manual test with a real
     Telegram bot (issue #17), with a table for the results.
+  - `docs/manual-ntfy-test.md` - the manual test with a real ntfy
+    server, on Android and on an iPhone (issue #24), with a table for
+    the results.
   - `docs/releasing.md` - how releases are made and checked.
 - `test/e2e/` - the end-to-end test with `sshd` in a container (DESIGN.md
   section 17). Build tag `e2e`. The image of the container is
@@ -100,7 +103,7 @@ that it makes.
 - **If a change alters** what a message shows, what the broker checks, or
   where a value goes, update DESIGN.md and THREAT-MODEL.md in the same pull
   request. If it changes the config, the example unit, a command, or a
-  line that `docs/setup.md` or `docs/manual-telegram-test.md` shows,
+  line that `docs/setup.md` or a `docs/manual-*-test.md` guide shows,
   update these guides too.
 - **Dependencies:** the standard library, `golang.org/x/crypto` and
   `github.com/BurntSushi/toml`. Anything else needs a reason in the pull

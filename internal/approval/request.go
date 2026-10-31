@@ -87,6 +87,8 @@ type Result struct {
 	Answer audit.Answer
 	// UserID is the Telegram user ID that answered.
 	UserID int64
+	// Channel is "ntfy:TOPIC" for an answer through ntfy, else empty.
+	Channel string
 	// WindowMinutes is the length of the grants of an approve_window
 	// answer.
 	WindowMinutes int
@@ -167,7 +169,7 @@ func (r *Result) mainEvents() []audit.Event {
 	switch {
 	case r.Answer != "":
 		events = append(events, audit.Decision{
-			Subject: r.Subject, UserID: r.UserID, Answer: r.Answer, WindowMinutes: r.WindowMinutes,
+			Subject: r.Subject, UserID: r.UserID, Channel: r.Channel, Answer: r.Answer, WindowMinutes: r.WindowMinutes,
 		})
 		if !r.Allowed {
 			events = append(events, audit.Denied{Subject: r.Subject, Cause: r.Cause})

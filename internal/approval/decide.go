@@ -512,7 +512,7 @@ func (c *Core) waitLook(ctx context.Context, p *pending) *Result {
 // for each button press. The answer counts only if all of these are true
 // (DESIGN.md section 7):
 //
-//   - it is from the approver: a.UserID is cfg.Telegram.UserID;
+//   - it is from the approver: a.UserID is cfg.Telegram.UserID (with [ntfy]: 0);
 //   - the request a.RequestID waits for an answer;
 //   - it is on the request's own message;
 //   - the request has not expired, on either clock;
@@ -539,7 +539,7 @@ func (c *Core) Answer(a Answer) error {
 	if c.stopped {
 		return ErrStopped
 	}
-	if a.UserID <= 0 || a.UserID != c.cfg.Telegram.UserID {
+	if !c.fromApprover(a) {
 		return ErrNotApprover
 	}
 	if a.Action == audit.AnswerRevoke {
@@ -562,6 +562,7 @@ func (c *Core) Answer(a Answer) error {
 	res := c.newResult(p)
 	res.Answer = a.Action
 	res.UserID = a.UserID
+	res.Channel = c.channel()
 	switch a.Action {
 	case audit.AnswerApproveOnce:
 		if !p.once {

@@ -102,6 +102,9 @@ func TestEncodeEventRefusesBadFields(t *testing.T) {
 		{"version that is not a version", BrokerStarted{Version: "1.0 " + canary}},
 		{"no version", BrokerStarted{}},
 		{"decision without a user", Decision{Subject: loginSubject(), Answer: AnswerApproveOnce}},
+		{"channel with a user", Decision{Subject: loginSubject(), UserID: 1, Channel: "ntfy:ans", Answer: AnswerApproveOnce}},
+		{"bad channel", Decision{Subject: loginSubject(), Channel: "ntfy:a/b", Answer: AnswerApproveOnce}},
+		{"channel of another kind", Decision{Subject: loginSubject(), Channel: "sms:ans", Answer: AnswerApproveOnce}},
 		{"unknown answer", Decision{Subject: loginSubject(), UserID: 1, Answer: canary}},
 		{"window without minutes", Decision{Subject: loginSubject(), UserID: 1, Answer: AnswerApproveWindow}},
 		{"window too long", Decision{Subject: loginSubject(), UserID: 1, Answer: AnswerApproveWindow, WindowMinutes: 481}},
@@ -207,6 +210,7 @@ func TestStandingEvents(t *testing.T) {
 	ok.Kind = KindStanding
 	ok.Windows = []string{"daily 03:00-05:00", "mon,thu 10:30-11:00"}
 	good("a standing request", Request{Subject: ok})
+	good("a decision through ntfy", Decision{Subject: ok, Channel: "ntfy:ans-1", Answer: AnswerApproveOnce})
 	good("a standing decision", Decision{Subject: ok, UserID: 1, Answer: AnswerApproveOnce})
 	h := strings.Repeat("ab", 32)
 	good("a standing use", GrantUsed{Subject: ok, Via: ViaStanding, NewTokenHash: h})

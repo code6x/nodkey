@@ -25,7 +25,7 @@
 Description=nodkey broker: secrets and SSH signatures after an approval on the phone
 Documentation=https://github.com/code6x/nodkey/blob/main/DESIGN.md
 # The broker listens on one address of the private network, and calls
-# Telegram. If that address is not there yet, the start fails, and systemd
+# Telegram or ntfy. If that address is not there yet, the start fails, and systemd
 # tries again (Restart= below).
 Wants=network-online.target
 After=network-online.target
@@ -41,6 +41,7 @@ ExecStart=/usr/local/bin/nodkey broker --config /etc/nodkey/broker.toml
 # One line for each file of the config; remove the lines you do not need.
 LoadCredentialEncrypted=broker-tls-key:/etc/nodkey/credentials/broker-tls-key.cred
 LoadCredentialEncrypted=telegram-token:/etc/nodkey/credentials/telegram-token.cred
+LoadCredentialEncrypted=ntfy-token:/etc/nodkey/credentials/ntfy-token.cred
 LoadCredentialEncrypted=bws-token:/etc/nodkey/credentials/bws-token.cred
 LoadCredentialEncrypted=bws-token-backup:/etc/nodkey/credentials/bws-token-backup.cred
 LoadCredentialEncrypted=bw-master-password:/etc/nodkey/credentials/bw-master-password.cred
@@ -58,12 +59,13 @@ UMask=0077
 # A crash or an error starts the broker again, after 5 seconds. Not after
 # these exit codes, which only a person can fix (DESIGN.md section 15):
 #   64  wrong usage: check ExecStart=.
-#   76  a polling conflict at Telegram: another program polls with the bot
+#   76  (Telegram only) a polling conflict at Telegram: another program polls with the bot
 #       token, so the token may be stolen. Make a new token first; starting
 #       again would only send the same alert again.
-#   77  Telegram does not accept the bot token, such as a revoked token.
+#   77  Telegram does not accept the bot token, or the ntfy server refuses
+#       the access token (401 or 403), such as a revoked token.
 #       Put a new token into its credential first; starting again would only
-#       call Telegram with the old token every 5 seconds.
+#       call the server with the old token every 5 seconds.
 Restart=on-failure
 RestartSec=5s
 RestartPreventExitStatus=64 76 77

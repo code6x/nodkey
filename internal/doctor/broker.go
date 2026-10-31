@@ -185,7 +185,7 @@ func credFileExists(env BrokerEnv, name, file string) bool {
 // credNames returns the names of the credentials that the config uses:
 // the first part of each path in credDir, sorted, each once.
 func credNames(cfg *config.Broker, credDir string) []string {
-	paths := []string{cfg.TLSKey, cfg.AuditLog, cfg.KnownHostsFile, cfg.Telegram.TokenFile}
+	paths := []string{cfg.TLSKey, cfg.AuditLog, cfg.KnownHostsFile, cfg.ApproverTokenFile()}
 	for _, s := range cfg.Stores {
 		paths = append(paths, s.TokenFile, s.PasswordFile, s.Program)
 	}

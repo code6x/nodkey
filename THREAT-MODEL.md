@@ -32,6 +32,8 @@ access to another machine and asks a person before each use.
 | the approver (the person) | Trusted. Their judgment is the security check. |
 | the approver's phone and Telegram account | Trusted. Anyone who can use this account can approve. So the account must not be logged in on any agent machine (see T7). |
 | Telegram's servers | Trusted to deliver messages and to say truthfully who pressed a button. They see the message text, never a secret value that nodkey fetched. |
+| the ntfy server and its operator (only with `[ntfy]`) | Trusted to deliver messages and answers, and not to change them. Whoever runs the server can forge an answer, as Telegram could, and sees the message text, never a secret value that nodkey fetched. Use a server that you run yourself (see T40). |
+| everyone who can read the ntfy request topic (only with `[ntfy]`) | Trusted as the approver. ntfy does not say who pressed a button, so anyone who can read the request topic can approve. So it must be read only on the approver's phone, never on an agent machine (see T40). |
 | the broker host | Fully trusted. Root on the broker host can read and change everything. |
 | the agent machine | **Not trusted.** The agent may be root there. |
 | the agent | **Not trusted.** It may make mistakes, lie, or follow injected instructions. |
@@ -99,6 +101,10 @@ Read this part carefully. These are real limits.
    on the agent machine: the web app in a browser, the browser extension,
    the desktop app or the CLI (see T32). The same holds for everyone who
    can open the nodkey vault in 1Password's apps (see T39).
+10. **With ntfy, anyone who can read the request topic can approve.**
+   That includes whoever runs the ntfy server, and an ntfy web app or
+   desktop client on the agent machine that subscribes to the topic (see
+   T40).
 
 ## 6. Threats and answers
 
@@ -1233,6 +1239,77 @@ Risk that remains: real. nodkey cannot see a read in 1Password's own apps
 or with the token, and it cannot check where an account is logged in. A
 leaked token reads the whole vault until it expires or is revoked.
 
+**T40. The ntfy server, or someone who can read the request topic,
+answers a request.**
+With `[ntfy]` in its config, the broker sends its messages through an
+ntfy server, in place of Telegram (DESIGN.md section 7, "ntfy details").
+This channel is weaker than Telegram in four ways:
+- **ntfy does not say who pressed a button.** Each button holds its own
+  random value, and the value is the only proof. So anyone who can read
+  the request topic can approve: whoever runs the server, and everyone
+  that the server lets read the topic. An ntfy web app or desktop client
+  on the agent machine that subscribes to the topic lets the agent
+  approve itself. This is T7, for ntfy.
+- **The server can change a message, and the broker cannot see it.**
+  Telegram shows an edit, so the broker refuses an Approve on an edited
+  message (T6). ntfy shows nothing of the kind. A server that its
+  attacker controls can show other names on a waiting message, or swap
+  the labels of its buttons.
+- **The server sees the text:** machine names, host names, secret names,
+  the claimed command and reason. This is T23, for the ntfy server. It
+  never sees a secret value that nodkey fetched.
+- **A topic with no access rules is open to anyone who knows its name.**
+  On such a server, anyone who guesses the request topic can read the
+  messages and approve.
+
+What nodkey does:
+- Each button of each request has its own value: 16 random bytes from
+  `crypto/rand`. It is only in the message and in the broker's memory,
+  never in the audit log or the journal, and it is not the request ID. An
+  answer counts only with the value of that very button of its own
+  request, compared in constant time. The value of the Deny button never
+  approves.
+- The rules of the core stay (T4): the first valid answer wins, only
+  while the request waits and before it expires. After an answer that
+  counted, or that came too late, the broker forgets the values of that
+  request, so a second or replayed answer changes nothing. A restart
+  forgets all values.
+- Anyone may write to the answer topic, so refused answers have a
+  budget: at most 20 log lines in a minute. They are never written to
+  the audit log, so a flood cannot fill the disk or the journal.
+- The `decision` entry has `user_id` 0 and the `channel`: `ntfy:` and
+  the answer topic (DESIGN.md section 9). It does not claim a person.
+- A config with `[ntfy]` and `[standing]` does not load (DESIGN.md
+  section 7). The alarm of a standing grant (T36) is Telegram only.
+- The token goes only in the `Authorization` header, never in a URL or
+  a log line. The server must use `https`.
+
+What to do:
+- Run the ntfy server yourself, with `auth-default-access: deny-all` and
+  access tokens. Then no third party can read the topic or forge an
+  answer. Give the broker's user only write access to the request topic
+  and read access to the answer topic, and the phone's user only read
+  access to the request topic. The buttons send no token, so anyone
+  (`everyone`) may only write to the answer topic. Give nobody else read
+  access to either topic: only the broker reads the answer topic.
+- Never subscribe to the request topic on an agent machine: not in the
+  ntfy web app, not in a desktop client, not with `curl`. Never keep the
+  phone's ntfy login on an agent machine.
+- For quick delivery on iOS, the server needs `upstream-base-url`. Then
+  the upstream server gets only the message ID and a hash of the topic
+  URL, never the text.
+- Use topic names that are hard to guess, in case an access rule is
+  wrong.
+
+A stronger later step is the passkey page (issue #25). Then ntfy is only
+the alert: a button opens the page, and a passkey on the phone signs the
+request. Nobody in the middle can forge that.
+
+Risk that remains: real. Whoever runs the server, or can read the request
+topic, can approve, and the server can change what a waiting message
+shows. nodkey cannot see either. With a self-hosted server and strict
+access rules, this is the owner of the server and the phone.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has
@@ -1254,6 +1331,9 @@ leaked token reads the whole vault until it expires or is revoked.
   `/usr/local/bin`. `nodkey update` runs, as root, the script that is
   built into that binary.
 - The approver's Telegram account is not logged in on any agent machine.
+- With ntfy: the ntfy server is run by the owner, with
+  `auth-default-access: deny-all`, and nothing on an agent machine can
+  read the request topic.
 - No Bitwarden account that can read the secrets of the stores is logged
   in on any agent machine, and no agent machine can read its master
   password.
