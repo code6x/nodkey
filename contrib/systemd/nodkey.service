@@ -46,6 +46,7 @@ LoadCredentialEncrypted=bws-token:/etc/nodkey/credentials/bws-token.cred
 LoadCredentialEncrypted=bws-token-backup:/etc/nodkey/credentials/bws-token-backup.cred
 LoadCredentialEncrypted=bw-master-password:/etc/nodkey/credentials/bw-master-password.cred
 LoadCredentialEncrypted=op-token:/etc/nodkey/credentials/op-token.cred
+LoadCredentialEncrypted=infisical-secret:/etc/nodkey/credentials/infisical-secret.cred
 LoadCredentialEncrypted=ssh-deploy:/etc/nodkey/credentials/ssh-deploy.cred
 
 # /var/lib/nodkey holds the audit log (audit_log = "/var/lib/nodkey/audit.jsonl"),
