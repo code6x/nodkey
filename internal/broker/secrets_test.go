@@ -607,7 +607,7 @@ func TestStoreGetsTheField(t *testing.T) {
 	e.approver.Auto(audit.AnswerApproveOnce)
 	res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("DB_PASSWORD", "db-password"))
 	mustStatus(t, res, http.StatusOK)
-	if !bytes.Contains(res.body, []byte(e.values["db-password"])) {
+	if got := secretsOf(t, res); got["DB_PASSWORD"] != e.values["db-password"] {
 		t.Error("the value of the field was not handed out")
 	}
 }
