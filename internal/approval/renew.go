@@ -136,7 +136,7 @@ func (c *Core) renew(a Answer) error {
 	if c.stopped {
 		return ErrStopped
 	}
-	if a.UserID <= 0 || a.UserID != c.cfg.Telegram.UserID {
+	if !c.fromApprover(a) {
 		return ErrNotApprover
 	}
 	now := c.now()
@@ -198,7 +198,7 @@ func (c *Core) renew(a Answer) error {
 	n.prompt = Prompt{RequestID: reqID, ShortCode: g.code, Kind: audit.KindStanding, Client: g.client,
 		Secrets: slices.Clone(n.origin.Secrets), Uses: g.perWindow, From: now.wall.In(loc), Until: end.In(loc),
 		Windows: slices.Clone(g.origin.Windows)}
-	ev := audit.Decision{Subject: n.origin, UserID: a.UserID, Answer: audit.AnswerRenew, RenewOf: g.id}
+	ev := audit.Decision{Subject: n.origin, UserID: a.UserID, Channel: c.channel(), Answer: audit.AnswerRenew, RenewOf: g.id}
 	ev.Secrets = slices.Clone(n.origin.Secrets)
 	ev.Windows = slices.Clone(n.origin.Windows)
 	f := c.onRenewed

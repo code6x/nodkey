@@ -219,7 +219,11 @@ type Request struct {
 type Decision struct {
 	Subject
 	// UserID is the Telegram user ID that answered.
+	// With ntfy it is 0, and Channel says where the answer came from.
 	UserID int64 `json:"user_id"`
+	// Channel is "ntfy:" and the answer topic, for an answer through ntfy.
+	// It is empty for Telegram.
+	Channel string `json:"channel,omitempty"`
 	// Answer is the button that was pressed.
 	Answer Answer `json:"answer"`
 	// WindowMinutes is the length of the grant, for AnswerApproveWindow
@@ -488,11 +492,22 @@ func (e Request) validate() error    { return e.Subject.validate(true) }
 func (e SecretSent) validate() error { return e.Subject.validate(true) }
 func (e Signed) validate() error     { return e.Subject.validate(true) }
 
+// ChannelNtfyPrefix starts the Channel of a Decision that came through
+// ntfy.
+const ChannelNtfyPrefix = "ntfy:"
+
+var channelPattern = regexp.MustCompile(`^ntfy:[A-Za-z0-9_-]{1,64}$`)
+
 func (e Decision) validate() error {
 	if err := e.Subject.validate(true); err != nil {
 		return err
 	}
-	if e.UserID <= 0 {
+	switch {
+	case e.Channel != "":
+		if e.UserID != 0 || !channelPattern.MatchString(e.Channel) {
+			return errors.New("channel is \"ntfy:\" and a topic name, and then user_id is 0")
+		}
+	case e.UserID <= 0:
 		return errors.New("user_id must be a Telegram user ID")
 	}
 	if (e.Answer == AnswerRenew) != (e.RenewOf != "") {

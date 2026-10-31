@@ -250,9 +250,8 @@ func (a *Approver) handle(ctx context.Context, ev event, answer func(approval.An
 		return
 	}
 	// UserID is 0: ntfy does not say who pressed the button. The value is
-	// the proof. The core's check of the approver (renew.go and
-	// decide.go, cfg.Telegram.UserID) is changed in a later step of
-	// issue #24.
+	// the proof. With [ntfy], the core takes an answer with user ID 0 and
+	// records the channel and the answer topic (Core.fromApprover).
 	err := answer(approval.Answer{RequestID: id, Action: action, Message: msg, UserID: 0})
 	switch {
 	case err == nil, errors.Is(err, approval.ErrUnknownRequest), errors.Is(err, approval.ErrExpired):

@@ -136,17 +136,20 @@ type Core struct {
 
 // New returns a core that decides requests by the rules of cfg and asks
 // the person through a. cfg must come from config.LoadBroker, and nothing
-// may change it later. The approver's user ID, cfg.Telegram.UserID, is the
-// only one whose answers count.
+// may change it later. With [telegram], the approver's user ID,
+// cfg.Telegram.UserID, is the only one whose answers count. With [ntfy],
+// nobody's identity is known: the ntfy approver checks the random value of
+// the request, and the core takes its answers with user ID 0.
 func New(cfg *config.Broker, a Approver, opts Options) (*Core, error) {
 	switch {
 	case cfg == nil:
 		return nil, errors.New("approval: the broker config is missing")
 	case a == nil:
 		return nil, errors.New("approval: the approver is missing")
-	case cfg.Telegram.UserID <= 0:
+	case cfg.Ntfy == nil && cfg.Telegram.UserID <= 0:
 		return nil, errors.New("approval: the broker config has no approver user ID")
-	case cfg.Telegram.Timeout <= 0 || cfg.Telegram.SSHTimeout <= 0:
+	}
+	if t, ssh := cfg.Timeouts(); t <= 0 || ssh <= 0 {
 		return nil, errors.New("approval: the broker config has no request timeouts")
 	}
 	stopCtx, stopRuns := context.WithCancel(context.Background())
@@ -255,7 +258,28 @@ func (c *Core) callContext(ctx context.Context, d time.Duration) (context.Contex
 // of secrets.
 func (c *Core) timeout(k audit.Kind) time.Duration {
 	if k == audit.KindSSHLogin {
-		return c.cfg.Telegram.SSHTimeout
+		_, ssh := c.cfg.Timeouts()
+		return ssh
 	}
-	return c.cfg.Telegram.Timeout
+	t, _ := c.cfg.Timeouts()
+	return t
+}
+
+// fromApprover reports whether a comes from the approver. With [telegram],
+// that is the configured user ID. With [ntfy], the ntfy approver has
+// checked the value of the request already, and a has no user ID.
+func (c *Core) fromApprover(a Answer) bool {
+	if c.cfg.Ntfy != nil {
+		return a.UserID == 0
+	}
+	return a.UserID > 0 && a.UserID == c.cfg.Telegram.UserID
+}
+
+// channel returns the entry text that says which channel an answer came
+// by, or "" for Telegram, where the user ID says it.
+func (c *Core) channel() string {
+	if c.cfg.Ntfy != nil {
+		return audit.ChannelNtfyPrefix + c.cfg.Ntfy.AnswerTopic
+	}
+	return ""
 }
