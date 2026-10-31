@@ -147,7 +147,7 @@ func (a *Approver) Run(ctx context.Context, answer func(approval.Answer) error) 
 
 // subscribe makes one connection to the answer topic, and passes each
 // message event to fn, until the connection ends. It returns why, and
-// whether any line came. since is "" for only new messages.
+// whether a message or a keepalive came. since is "" for only new messages.
 func (a *Approver) subscribe(ctx context.Context, since string, fn func(event)) (read bool, err error) {
 	const call = "subscribe"
 	cctx, cancel := context.WithCancel(ctx)
@@ -192,10 +192,9 @@ func (a *Approver) subscribe(ctx context.Context, since string, fn func(event)) 
 			return read, &callError{call: call, reason: "the subscription failed"}
 		}
 		idle.Reset(a.idleTimeout)
-		read = true
 		if skip {
 			skip = false
-			a.log.LogAttrs(ctx, slog.LevelWarn, "ntfy: skipped a line of the subscription that is too long")
+			a.limited(ctx, "ntfy: skipped a line of the subscription that is too long")
 			continue
 		}
 		line = bytes.TrimSpace(line)
@@ -204,14 +203,19 @@ func (a *Approver) subscribe(ctx context.Context, since string, fn func(event)) 
 		}
 		var ev event
 		if json.Unmarshal(line, &ev) != nil {
-			a.log.LogAttrs(ctx, slog.LevelWarn, "ntfy: skipped a line of the subscription that is not valid")
+			a.limited(ctx, "ntfy: skipped a line of the subscription that is not valid")
 			continue
+		}
+		if ev.Event == "message" || ev.Event == "keepalive" {
+			// Only these show a server that works. ntfy sends an open
+			// event on every connection, also one that it closes at once.
+			read = true
 		}
 		if ev.Event != "message" {
 			continue // open, keepalive, and others
 		}
 		if !idPattern.MatchString(ev.ID) || ev.Topic != a.answerTopic {
-			a.log.LogAttrs(ctx, slog.LevelWarn, "ntfy: skipped a message of the subscription that is not valid")
+			a.limited(ctx, "ntfy: skipped a message of the subscription that is not valid")
 			continue
 		}
 		fn(ev)
@@ -296,6 +300,15 @@ func parseAnswer(ev event) (id string, action audit.Answer, value [16]byte, ok b
 // minute. msgID is the ntfy ID of the answer; id is its request ID, or ""
 // when it has none. Neither is a secret; the value is never logged.
 func (a *Approver) refuse(ctx context.Context, msgID, why, id string) {
+	a.limited(ctx, "ntfy: refused an answer",
+		slog.String("why", why), slog.String("ntfy_id", msgID), slog.String("request_id", id))
+}
+
+// limited logs a warning about something that the answer topic sent, in
+// the budget of refusedPerMinute lines in a minute for all such warnings.
+// Anyone who can write to the topic can make them, so none may go round
+// the budget.
+func (a *Approver) limited(ctx context.Context, msg string, attrs ...slog.Attr) {
 	a.mu.Lock()
 	ok, dropped := a.refused.take(a.now())
 	a.mu.Unlock()
@@ -306,6 +319,5 @@ func (a *Approver) refuse(ctx context.Context, msgID, why, id string) {
 	if !ok {
 		return
 	}
-	a.log.LogAttrs(ctx, slog.LevelWarn, "ntfy: refused an answer",
-		slog.String("why", why), slog.String("ntfy_id", msgID), slog.String("request_id", id))
+	a.log.LogAttrs(ctx, slog.LevelWarn, msg, attrs...)
 }

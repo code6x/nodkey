@@ -43,6 +43,8 @@ type fakeServer struct {
 	replayAll bool
 	// failPublish, if not 0, is the status of every publish.
 	failPublish int
+	// closeAtOnce makes a stream end right after its open event.
+	closeAtOnce bool
 	// connected gets a value when a stream opens.
 	connected chan struct{}
 	// since holds the since parameter of each stream.
@@ -218,7 +220,16 @@ func (f *fakeServer) stream(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(l)
 	}
 	fl.Flush()
-	f.connected <- struct{}{}
+	select {
+	case f.connected <- struct{}{}:
+	default:
+	}
+	f.mu.Lock()
+	closeNow := f.closeAtOnce
+	f.mu.Unlock()
+	if closeNow {
+		return
+	}
 	for {
 		select {
 		case <-r.Context().Done():

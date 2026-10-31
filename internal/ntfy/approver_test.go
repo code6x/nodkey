@@ -592,3 +592,40 @@ func TestRevokeValueIsNotTheValueOfEnd(t *testing.T) {
 		t.Error("the value of the old Deny revoked the grant")
 	}
 }
+
+func TestFloodOfLongLines(t *testing.T) {
+	h := newHarness(t)
+	long := strings.Repeat("x", maxLine+100)
+	for range 300 {
+		h.f.addLine([]byte(long))
+		h.f.addLine([]byte("not json"))
+	}
+	p := secretsPrompt(t)
+	_, m := h.ask(p)
+	h.f.press(m, "Deny") // the stream is in order: the flood came before
+	h.core.expect(t)
+	n := strings.Count(h.logs.String(), "skipped a line")
+	if n == 0 || n > refusedPerMinute {
+		t.Errorf("logged %d skipped lines, want 1 to %d", n, refusedPerMinute)
+	}
+}
+
+func TestServerThatClosesAtOnce(t *testing.T) {
+	f := newFakeServer(t)
+	f.closeAtOnce = true
+	a := newApproverFor(t, f, &logBuffer{})
+	a.firstBackoff, a.maxBackoff = 20*time.Millisecond, 200*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx, newFakeCore().answer) }()
+	time.Sleep(time.Second)
+	cancel()
+	<-done
+	f.mu.Lock()
+	n := len(f.since)
+	f.mu.Unlock()
+	// The waits grow 20, 40, 80, 160 ms, then 200 ms: about 8 tries.
+	if n > 12 {
+		t.Errorf("%d connections in a second: the wait did not grow", n)
+	}
+}
