@@ -110,6 +110,12 @@ func runTry(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	defer stop()
 	var tg *tryTelegram
 	if *useTelegram {
+		// Before the token is read: no core dumps, and other processes
+		// of the user cannot read its memory.
+		if err := hardenProcess(); err != nil {
+			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: cannot turn off core dumps: %s (exit 1)\n", err)
+			return exitFailure
+		}
 		tg, err = setupTryTelegram(ctx, bufio.NewReaderSize(stdin, maxTryLine), stdin, stdout)
 		if err != nil {
 			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: %s (exit 1)\n", err)

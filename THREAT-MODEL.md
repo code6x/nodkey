@@ -1172,9 +1172,11 @@ must never take answers from a terminal.
 - With `--telegram`, the token is typed on this machine, which may be an
   agent machine (docs/setup.md, "Where you do the setup"). The guide and
   the prompt say: make a new bot for the trial, never use the broker's
-  bot. If the broker's bot is used anyway, both poll, Telegram answers
-  one of them with a conflict, and the real broker stops with exit code
-  76 (T6); nodkey try stops too and says to use a new bot. The approver's
+  bot. If the broker's bot is used anyway, both poll, and Telegram
+  answers one of them with a conflict: either the real broker stops with
+  exit code 76 (T6), or nodkey try stops and says to use a new bot. While
+  both poll, the trial can take button presses meant for the broker;
+  those requests get no answer and are denied. The approver's
   user ID comes only from the `/start CODE` message with a random code,
   and the person must confirm the name.
 
