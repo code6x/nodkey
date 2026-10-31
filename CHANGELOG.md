@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0](https://github.com/code6x/nodkey/compare/v0.3.0...v0.4.0) (2026-10-31)
+
+
+### Features
+
+* --from is optional for a scheduled grant (default: now) ([#140](https://github.com/code6x/nodkey/issues/140)) ([1c6291e](https://github.com/code6x/nodkey/commit/1c6291e15e0f2fd46d6ce0dd564a466a09bed6ba))
+* 1Password as a store (a read-only service account) ([#145](https://github.com/code6x/nodkey/issues/145)) ([ec4b728](https://github.com/code6x/nodkey/commit/ec4b728dc4c97a54ba0b9d71d2b32790cb1b20ac))
+* approval through ntfy ([#147](https://github.com/code6x/nodkey/issues/147)) ([de53e2d](https://github.com/code6x/nodkey/commit/de53e2df995d86f219e30054407c3c83d36cde86))
+* every error says what is wrong, where, and how to fix it ([#133](https://github.com/code6x/nodkey/issues/133)) ([22e083c](https://github.com/code6x/nodkey/commit/22e083cb8a55114c66e94f00566b88f160050463))
+* Infisical as a store (a read-only machine identity) ([#148](https://github.com/code6x/nodkey/issues/148)) ([5c230fd](https://github.com/code6x/nodkey/commit/5c230fd9f4747876b220a4c5768018285badec97))
+* nodkey doctor, a read-only check of the setup ([#136](https://github.com/code6x/nodkey/issues/136)) ([d256524](https://github.com/code6x/nodkey/commit/d256524a1b7cfc7739f2c9cbef535f6bdd375e03))
+* nodkey try, a trial on one machine (stage 1 of [#125](https://github.com/code6x/nodkey/issues/125)) ([#143](https://github.com/code6x/nodkey/issues/143)) ([371cd6d](https://github.com/code6x/nodkey/commit/371cd6d6b66e67a93e63924583826ebd86e4ebf0))
+
+
+### Bug Fixes
+
+* after a standing grant, nodkey preapprove names the window and the uses in each window ([#141](https://github.com/code6x/nodkey/issues/141)) ([9b79688](https://github.com/code6x/nodkey/commit/9b796883f4ab3ee723a8b770f84e83a02c57e5d4))
+* nodkey changes says when there is no security fix ([#142](https://github.com/code6x/nodkey/issues/142)) ([d25e11c](https://github.com/code6x/nodkey/commit/d25e11c6d62d613f8b3f001d83d2e00cc4ac9555))
+
 ## [0.3.0](https://github.com/code6x/nodkey/compare/v0.2.0...v0.3.0) (2026-10-30)
 
 
