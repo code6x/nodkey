@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -23,6 +24,7 @@ import (
 	"github.com/code6x/nodkey/internal/client"
 	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/store"
+	"github.com/code6x/nodkey/internal/telegram"
 	"github.com/code6x/nodkey/internal/transport"
 )
 
@@ -55,7 +57,7 @@ var (
 	tryWindow  = 5 * time.Minute
 )
 
-const tryUsage = `Usage: nodkey try
+const tryUsage = `Usage: nodkey try [--telegram]
        nodkey try run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
 
 Try nodkey on this machine, with fake secrets, in a few minutes. It needs
@@ -72,6 +74,11 @@ nodkey try run is nodkey run with the client config of the trial. Run it
 in a second terminal while nodkey try runs. It never reads
 ~/.config/nodkey/client.toml.
 
+With --telegram, the requests show up in Telegram on your phone instead.
+Make a new bot with @BotFather for this, never the bot of a real broker.
+nodkey try asks for its token (hidden, kept only in memory), prints a link
+that you open on the phone, and takes your user ID from that message.
+
 Try mode is not a setup: it shows the flow, never a real secret. See
 docs/setup.md for a real one.
 `
@@ -84,6 +91,7 @@ func runTry(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet("nodkey try", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	useTelegram := fs.Bool("telegram", false, "")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			_, _ = io.WriteString(stderr, tryUsage)
@@ -100,7 +108,21 @@ func runTry(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 	defer stop()
-	return serveTry(ctx, dir, stdin, stdout)
+	var tg *tryTelegram
+	if *useTelegram {
+		// Before the token is read: no core dumps, and other processes
+		// of the user cannot read its memory.
+		if err := hardenProcess(); err != nil {
+			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: cannot turn off core dumps: %s (exit 1)\n", err)
+			return exitFailure
+		}
+		tg, err = setupTryTelegram(ctx, bufio.NewReaderSize(stdin, maxTryLine), stdin, stdout)
+		if err != nil {
+			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: %s (exit 1)\n", err)
+			return exitFailure
+		}
+	}
+	return serveTry(ctx, dir, stdin, stdout, tg)
 }
 
 // runTryRun runs nodkey try run: nodkey run with the client config of the
@@ -178,25 +200,31 @@ type trial struct {
 
 	stopRun   context.CancelFunc
 	runDone   chan struct{}
+	runErr    error // the error of the approver's Run; read after runDone
 	serveDone chan struct{}
 }
 
 // serveTry runs the trial in dir until ctx ends or a part stops, then
 // stops it and removes dir.
-func serveTry(ctx context.Context, dir string, stdin io.Reader, stdout io.Writer) int {
+// With tg, the approver is the Telegram bot of tg, and ap only prints.
+func serveTry(ctx context.Context, dir string, stdin io.Reader, stdout io.Writer, tg *tryTelegram) int {
 	tr := &trial{dir: dir}
 	ap := newTryApprover(stdin, stdout)
-	addr, err := tr.start(ap)
+	addr, err := tr.start(ap, tg)
 	code := exitOK
 	if err != nil {
 		ap.say(fmt.Sprintf("nodkey try: TRY MODE: cannot start: %s\n", err))
 		code = exitFailure
 	} else {
-		ap.say(tryIntro(addr))
+		ap.say(tryIntro(addr, tg != nil))
 		select {
 		case <-ctx.Done():
 		case <-tr.runDone:
-			ap.say("nodkey try: TRY MODE: the terminal approver stopped: no answer can come any more\n")
+			if tg != nil {
+				ap.say("nodkey try: TRY MODE: Telegram stopped: " + tryTelegramErr(tr.runErr) + "\n")
+			} else {
+				ap.say("nodkey try: TRY MODE: the terminal approver stopped: no answer can come any more\n")
+			}
 			code = exitFailure
 		case <-tr.serveDone:
 			ap.say("nodkey try: TRY MODE: the trial broker stopped\n")
@@ -214,7 +242,7 @@ func serveTry(ctx context.Context, dir string, stdin io.Reader, stdout io.Writer
 // start makes the directory and the parts of the trial: the keys, the
 // config, the audit log, the store, the service, the approval core with
 // the terminal approver, and the server on 127.0.0.1 with a random port.
-func (tr *trial) start(ap *tryApprover) (string, error) {
+func (tr *trial) start(ap *tryApprover, tg *tryTelegram) (string, error) {
 	// As nodkey broker: no core dumps, and other processes of the user
 	// cannot read its memory. It needs no root.
 	if err := hardenProcess(); err != nil {
@@ -243,7 +271,11 @@ func (tr *trial) start(ap *tryApprover) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cfg := tryConfig(tr.dir, clientPin)
+	userID := int64(tryUserID)
+	if tg != nil {
+		userID = tg.userID
+	}
+	cfg := tryConfig(tr.dir, clientPin, userID)
 	tr.audit, err = audit.Open(cfg.AuditLog, audit.Options{Journal: logF, Alert: func(audit.Recovery) {}})
 	if err != nil {
 		return "", err
@@ -254,7 +286,17 @@ func (tr *trial) start(ap *tryApprover) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	core, err := approval.New(cfg, ap, approval.Options{Logger: tr.log})
+	var approver approval.Approver = ap
+	if tg != nil {
+		tga, err := telegram.NewWithToken(cfg.Telegram, tg.token,
+			telegram.Options{Logger: tr.log, ForeignTap: tr.svc.ForeignTap, Prefix: tryPrefix})
+		clear(tg.token)
+		if err != nil {
+			return "", err
+		}
+		approver = tga
+	}
+	core, err := approval.New(cfg, approver, approval.Options{Logger: tr.log})
 	if err != nil {
 		return "", err
 	}
@@ -284,7 +326,7 @@ func (tr *trial) start(ap *tryApprover) (string, error) {
 	}
 	go func() {
 		defer close(tr.runDone)
-		_ = tr.svc.Run(runCtx, core, say, say)
+		tr.runErr = tr.svc.Run(runCtx, core, say, say)
 	}()
 	tr.serveDone = make(chan struct{})
 	go func() {
@@ -401,14 +443,14 @@ func (tr *trial) stop() bool {
 // tryConfig is the broker config of the trial. It is made here, not read
 // from a file: the trial reads no config file. Its one store is the trial
 // store, a name that no config file can give a store type to.
-func tryConfig(dir string, clientPin config.Pin) *config.Broker {
+func tryConfig(dir string, clientPin config.Pin, userID int64) *config.Broker {
 	// The rule is one that LoadBroker would make from ask = "window".
 	rule := config.Rule{Ask: config.AskWindow, Window: tryWindow}
 	cfg := &config.Broker{
 		Listen:   netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0),
 		TLSKey:   filepath.Join(dir, tryBrokerKey),
 		AuditLog: filepath.Join(dir, tryAuditLog),
-		Telegram: config.Telegram{UserID: tryUserID, NoticeChatID: tryUserID, Timeout: tryTimeout, SSHTimeout: tryTimeout},
+		Telegram: config.Telegram{UserID: userID, NoticeChatID: userID, Timeout: tryTimeout, SSHTimeout: tryTimeout},
 		// Preapprove and Standing stay zero: the trial allows no scheduled
 		// and no standing grant.
 		Clients: map[string]config.Client{tryClientName: {Name: tryClientName, Pin: clientPin}},
@@ -437,7 +479,11 @@ func writeTryClientConfig(path, addr string, brokerPin config.Pin, key string) e
 }
 
 // tryIntro is what nodkey try prints when the trial is ready.
-func tryIntro(addr string) string {
+func tryIntro(addr string, inTelegram bool) string {
+	answer := "The request shows up here. Type 1, 2 or 3 and Enter to answer it, or\nwait"
+	if inTelegram {
+		answer = "The request shows up in Telegram. Tap a button to answer it, or\nwait"
+	}
 	return fmt.Sprintf(`nodkey try: TRY MODE: a trial broker listens on %s, with fake secrets only:
   demo-token, demo-password and demo-api-key. Their values start with TRY-.
 
@@ -445,10 +491,9 @@ In a second terminal, run:
 
   nodkey try run --secret DEMO_TOKEN=demo-token -- sh -c 'echo "got ${#DEMO_TOKEN} characters"'
 
-The request shows up here. Type 1, 2 or 3 and Enter to answer it, or
-wait %s: then it expires and is denied. Press Ctrl-C to end the trial.
+%s %s: then it expires and is denied. Press Ctrl-C to end the trial.
 
-`, addr, tryTimeout)
+`, addr, answer, tryTimeout)
 }
 
 // tryOutro is what nodkey try prints when the trial ends.

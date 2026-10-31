@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -27,6 +29,10 @@ const (
 func TestTryChild(t *testing.T) {
 	switch os.Getenv(tryChildMode) {
 	case "try":
+		args := []string{"try"}
+		if a := os.Getenv(tryChildArgs); a != "" {
+			args = append(args, strings.Split(a, tryArgSep)...)
+		}
 		if s := os.Getenv(tryChildTimeout); s != "" {
 			d, err := time.ParseDuration(s)
 			if err != nil {
@@ -34,7 +40,7 @@ func TestTryChild(t *testing.T) {
 			}
 			tryTimeout = d
 		}
-		os.Exit(run([]string{"try"}, os.Stdin, os.Stdout, os.Stderr))
+		os.Exit(run(args, os.Stdin, os.Stdout, os.Stderr))
 	case "run":
 		args := strings.Split(os.Getenv(tryChildArgs), tryArgSep)
 		os.Exit(run(append([]string{"try", "run"}, args...), os.Stdin, os.Stdout, os.Stderr))
@@ -58,6 +64,7 @@ type tryEnv struct {
 	log                      *lineLog
 	exited                   chan struct{}
 	waitErr                  error
+	extra                    []string // more environment of nodkey try, such as the fake Telegram's proxy
 }
 
 // newTryEnv makes the directories of a trial, without starting it.
@@ -101,7 +108,7 @@ func (e *tryEnv) startNoWait(timeout time.Duration) {
 	t := e.t
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestTryChild$") //nolint:gosec // G204: the test runs its own binary again.
-	cmd.Env = e.env("try", tryChildTimeout+"="+timeout.String())
+	cmd.Env = e.env("try", append([]string{tryChildTimeout + "=" + timeout.String()}, e.extra...)...)
 	cmd.Dir = e.work
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -441,5 +448,90 @@ func TestTryRunWithoutATrial(t *testing.T) {
 		t.Fatalf("exit code %d, want 69 and \"no trial runs\"; stderr:\n%s", code, stderr)
 	}
 	checkClientLines(t, stderr)
+	e.checkClean()
+}
+
+// newTryTelegramEnv is a trial with --telegram, and the fake Telegram.
+func newTryTelegramEnv(t *testing.T, opts brokerOptions) (*tryEnv, *fakeTelegram) {
+	t.Helper()
+	f := newFakeTelegram(t, opts)
+	e := newTryEnv(t)
+	e.extra = []string{tryChildArgs + "=--telegram", "HTTPS_PROXY=http://" + f.proxyAddr,
+		"SSL_CERT_FILE=" + f.caFile, "SSL_CERT_DIR=" + f.caDir}
+	return e, f
+}
+
+// pairTry types the token, sends /start with the code of the link, and
+// answers the question of the name with confirm.
+func (e *tryEnv) pairTry(f *fakeTelegram, confirm string) {
+	t := e.t
+	t.Helper()
+	e.answer(f.token)
+	e.log.wait(t, "https://t.me/try_test_bot?start=")
+	m := regexp.MustCompile(`start=([A-Za-z0-9_-]{16,64})$`).FindStringSubmatch(strings.TrimSpace(e.log.text()))
+	if m == nil {
+		t.Fatalf("no code in the link:\n%s", e.log.text())
+	}
+	f.sendStart(m[1])
+	e.log.wait(t, "sent the code.")
+	if !e.log.has("Test (@test_user) (ID 7000001)") {
+		t.Fatalf("the name is not shown:\n%s", e.log.text())
+	}
+	e.answer(confirm)
+}
+
+func TestTryTelegram(t *testing.T) {
+	e, f := newTryTelegramEnv(t, brokerOptions{})
+	e.startNoWait(time.Minute)
+	e.pairTry(f, "yes")
+	e.log.wait(t, "The request shows up in Telegram")
+	if strings.Contains(e.log.text(), f.token) {
+		t.Fatal("nodkey try printed the bot token")
+	}
+	r := e.run(e.demoArgs()...)
+	msgID, requestID := f.waitAsk(1)
+	if body := f.bodies(); !strings.Contains(body, "TRY MODE · ") {
+		t.Fatalf("the message does not say TRY MODE:\n%s", body)
+	}
+	f.waitTapAnswer(f.tap(msgID, "o:"+requestID))
+	code, stderr := r.wait(t)
+	if code != 0 {
+		t.Fatalf("nodkey try run: exit code %d, want 0; stderr:\n%s", code, stderr)
+	}
+	checkClientLines(t, stderr)
+	e.checkValue(stderr)
+	e.stopAndCheck(syscall.SIGTERM)
+}
+
+// Without "yes", the trial does not start.
+func TestTryTelegramNotConfirmed(t *testing.T) {
+	e, f := newTryTelegramEnv(t, brokerOptions{})
+	e.startNoWait(time.Minute)
+	e.pairTry(f, "no")
+	if code := e.exitCode(); code != exitFailure || !e.log.has("not confirmed") {
+		t.Fatalf("exit code %d, want 1; output:\n%s", code, e.log.text())
+	}
+	e.checkClean()
+}
+
+// A conflict from Telegram stops the trial and says to use a new bot.
+func TestTryTelegramConflict(t *testing.T) {
+	e, f := newTryTelegramEnv(t, brokerOptions{refusePolls: http.StatusConflict})
+	e.startNoWait(time.Minute)
+	e.answer(f.token)
+	if code := e.exitCode(); code != exitFailure || !e.log.has("never the broker's bot") {
+		t.Fatalf("exit code %d, want 1; output:\n%s", code, e.log.text())
+	}
+	e.checkClean()
+}
+
+// A token that Telegram does not accept stops the trial.
+func TestTryTelegramBadToken(t *testing.T) {
+	e, _ := newTryTelegramEnv(t, brokerOptions{})
+	e.startNoWait(time.Minute)
+	e.answer(newBotToken())
+	if code := e.exitCode(); code != exitFailure || !e.log.has("does not accept the bot token") {
+		t.Fatalf("exit code %d, want 1; output:\n%s", code, e.log.text())
+	}
 	e.checkClean()
 }

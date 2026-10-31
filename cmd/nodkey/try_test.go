@@ -20,13 +20,16 @@ import (
 )
 
 // tryFiles are the files of nodkey try. Only they may use its parts.
-var tryFiles = map[string]bool{"try.go": true, "tryapprover.go": true, "trystore.go": true}
+var tryFiles = map[string]bool{"try.go": true, "tryapprover.go": true, "trystore.go": true, "trytelegram.go": true}
 
 // tryOnly are the names of the parts of nodkey try: the terminal
 // approver, the test store, the config without a file, and the trial.
 var tryOnly = map[string]bool{
 	"tryApprover": true, "newTryApprover": true, "tryStore": true, "newTryStore": true, "tryConfig": true,
 	"trial": true, "serveTry": true, "runTryRun": true, "tryUserID": true,
+	"tryTelegram": true, "setupTryTelegram": true, "tryPrefix": true,
+	// The parts of package telegram that only nodkey try uses.
+	"NewWithToken": true, "NewPairing": true, "Prefix": true,
 }
 
 // nodkey broker has no way to turn on the approval in the terminal, or
@@ -80,7 +83,7 @@ func TestBrokerHasNoTerminalApproval(t *testing.T) {
 // The trial's config has only the trial store, with no type, so no real
 // store can serve it, and nodkey broker cannot make it from a file.
 func TestTryConfigHasOnlyTheTrialStore(t *testing.T) {
-	cfg := tryConfig("/nonexistent", config.Pin{})
+	cfg := tryConfig("/nonexistent", config.Pin{}, tryUserID)
 	if len(cfg.Stores) != 1 || cfg.Stores[tryStoreName].Type != "" {
 		t.Fatalf("stores %v, want only %q with no type", cfg.Stores, tryStoreName)
 	}
@@ -242,7 +245,7 @@ func TestTryApproverTooEarly(t *testing.T) {
 
 // The trial allows no scheduled and no standing grant.
 func TestTryConfigAllowsNoScheduledOrStandingGrants(t *testing.T) {
-	cfg := tryConfig("/nonexistent", config.Pin{})
+	cfg := tryConfig("/nonexistent", config.Pin{}, tryUserID)
 	if cfg.Preapprove != (config.PreapproveLimits{}) {
 		t.Errorf("preapprove limits %+v, want none", cfg.Preapprove)
 	}
