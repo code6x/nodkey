@@ -37,7 +37,7 @@ func TestAskPayload(t *testing.T) {
 		if err := json.Unmarshal([]byte(a.Body), &b); err != nil {
 			t.Fatal(err)
 		}
-		if b.Request != p.RequestID || b.Action != wantActions[i] || b.Value != value {
+		if b.Request != p.RequestID || b.Action != wantActions[i] || len(b.Value) != 22 || (i > 0) == (b.Value == value) {
 			t.Errorf("button %d body: %+v", i, b)
 		}
 	}
