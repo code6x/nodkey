@@ -5,7 +5,7 @@ go 1.26.10
 require (
 	github.com/1password/onepassword-sdk-go v0.4.1
 	github.com/BurntSushi/toml v1.6.0
-	github.com/go-resty/resty/v2 v2.13.1
+	github.com/go-resty/resty/v2 v2.17.2
 	github.com/infisical/go-sdk v0.9.1
 	golang.org/x/crypto v0.58.0
 )
