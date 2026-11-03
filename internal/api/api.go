@@ -263,9 +263,9 @@ var (
 // of the deny list of DESIGN.md section 5: the name is on the list, or
 // starts with a prefix on it, such as "LD_". prefix is that prefix, or ""
 // when the name itself is on the list. The match ignores case, because
-// some programs read a name in lower case too (npm reads npm_config_*,
-// curl reads http_proxy): "ld_preload" and "npm_config_cache" are refused.
-// Apart from case it is exact: "LD_" does not match "LDAP_PASSWORD". The
+// some programs read a name in lower case too (npm reads npm_config_*):
+// "ld_preload" and "npm_config_cache" are refused. Apart from case it is
+// exact: "LD_" does not match "LDAP_PASSWORD". The
 // client checks it to give a clear error; the broker checks it again.
 func DeniedVar(name string) (prefix string, denied bool) {
 	name = strings.ToUpper(name)

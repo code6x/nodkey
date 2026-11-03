@@ -491,9 +491,9 @@ func TestDeniedVar(t *testing.T) {
 	}
 	// Some names on the list, and the prefix that refuses them, if any.
 	// The match ignores case: some programs read a name in lower case too,
-	// such as npm (npm_config_*) and zsh (path). TF_CLI_ARGS is a name on
-	// the list; terraform reads its forms for one command, such as
-	// TF_CLI_ARGS_plan, with the command in lower case.
+	// such as npm (npm_config_*). TF_CLI_ARGS is a name on the list;
+	// terraform reads its forms for one command, such as TF_CLI_ARGS_plan,
+	// with the command in lower case.
 	for _, tt := range []struct{ name, prefix string }{
 		{"LD_PRELOAD", "LD_"}, {"LC_ALL", "LC_"}, {"GIT_SSH_COMMAND", "GIT_"},
 		{"NPM_CONFIG_SCRIPT_SHELL", "NPM_CONFIG_"}, {"TF_CLI_ARGS", ""}, {"JAVA_OPTS", ""}, {"PATH", ""},

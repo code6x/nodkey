@@ -288,8 +288,8 @@ line (section 15) and exits with 64.
 
 The broker refuses each name in the first column below. `LD_*` means
 every name that starts with `LD_`. The match ignores case, because some
-programs read a name in lower case too: npm reads `npm_config_*`, and
-curl reads `http_proxy`. So `LD_*` refuses `LD_PRELOAD` and
+programs read a name in lower case too, such as npm, which reads
+`npm_config_*`. It also fails closed. So `LD_*` refuses `LD_PRELOAD` and
 `ld_preload`. Apart from case the match is exact: `LD_*` does not refuse
 `LDAP_PASSWORD`. Lower case is allowed in names because some tools need
 it, such as Terraform (`TF_VAR_db_password`, `TF_TOKEN_app_example_com`).
