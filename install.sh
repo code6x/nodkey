@@ -374,12 +374,20 @@ check_paths() {
 # make_tmp makes the private temporary directory in TMPDIR, or /tmp:
 # mktemp gives it mode 0700. TMPDIR, and each directory above it, must be
 # safe as check_tree says: else another user could swap a checked file in
-# it for another one. The trap of main removes the directory.
+# it for another one. The trap of main removes the directory. It also sets
+# tmp_fix, the advice when programs cannot run there.
 make_tmp() {
 	real_dir "${TMPDIR:-/tmp}"
 	tmp_parent=$real
 	check_tree "$tmp_parent" shared
 	tmp=$(mktemp -d "$tmp_parent/nodkey-install.XXXXXXXX") || die "cannot make a temporary directory in $tmp_parent"
+	# nodkey update runs this script as nodkey-install, always with /tmp:
+	# it passes no TMPDIR on (DESIGN.md section 15).
+	if [ "$0" = nodkey-install ]; then
+		tmp_fix="run install.sh as root with TMPDIR set to a directory that only root can write, such as /root, as nodkey update always uses /tmp"
+	else
+		tmp_fix="set TMPDIR to a directory that only root can write, such as /root"
+	fi
 	mkdir "$tmp/home" "$tmp/gh" "$tmp/new" || die "cannot make directories in $tmp"
 }
 
@@ -549,7 +557,7 @@ check_sha256() {
 get_gh() {
 	gh_hint=
 	if [ -z "$gh" ]; then
-		gh_hint=" (if programs cannot run in $tmp_parent, set TMPDIR to a directory that only root can write, such as /root, or use --gh)"
+		gh_hint=" (if programs cannot run in $tmp_parent, use --gh, or $tmp_fix)"
 		gh_tarball=gh_${gh_version}_linux_${arch}.tar.gz
 		say "Downloading gh $gh_version to check the attestation."
 		download "https://github.com/cli/cli/releases/download/v$gh_version/$gh_tarball" "$tmp/$gh_tarball" "$max_big" ||
@@ -611,7 +619,7 @@ unpack() {
 # install_new does. It installs nothing.
 show_notes() {
 	chmod 0700 "$tmp/new/nodkey" || die "cannot make the new nodkey a program"
-	new_out=$("$tmp/new/nodkey" version </dev/null) || die "the new nodkey does not run (if programs cannot run in $tmp_parent, set TMPDIR to a directory that only root can write, such as /root)"
+	new_out=$("$tmp/new/nodkey" version </dev/null) || die "the new nodkey does not run (if programs cannot run in $tmp_parent, $tmp_fix)"
 	if [ "$new_out" != "nodkey $version" ]; then
 		die "the new nodkey does not say that it is nodkey $version"
 	fi
@@ -621,9 +629,9 @@ show_notes() {
 		die "the new nodkey cannot print its changes; read the release notes: https://github.com/$repo/releases/tag/v$version"
 	say ""
 	if [ -n "$want_version" ]; then
-		say "Nothing was installed. To install it, run as root: nodkey update --version $version"
+		say "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update --version $version"
 	else
-		say "Nothing was installed. To install it, run as root: nodkey update"
+		say "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update"
 	fi
 }
 

@@ -2331,7 +2331,7 @@ when they differ.
   sends no claim to compare, so it gets no header:
 
   ```
-  SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.2.0. Ask the owner of the broker host to update this host: run nodkey update as root.
+  SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.2.0. Ask the owner of the broker host to update this host: run nodkey update as root (docs/setup.md section 2).
   ```
 
 - The client's version is a claim: anyone with the client's key can send
@@ -2346,7 +2346,7 @@ when they differ.
 
   ```
   nodkey: warning: the broker runs nodkey 0.2.0, which is older than nodkey 0.3.0 on this machine; to update the broker, run "nodkey update" as root on the broker host
-  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "nodkey update" as root
+  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "nodkey update" as root (docs/setup.md section 2)
   nodkey: warning: the broker runs an older nodkey that does not send its version, and this machine runs nodkey 0.3.0; to update the broker, follow section 13 of docs/setup.md
   ```
 
@@ -2584,6 +2584,22 @@ before any message when:
 - a host is not in the broker's `known_hosts`, or not in the key's `hosts`
   list when it has one;
 - it lists no host, or more than 20 hosts.
+
+The answer is `403`, as for a Deny. When `--for` is longer than the
+key's window, and the key may be used by this client and has the rule
+`window`, the `403` has the header `Nodkey-Window` with the key's window
+in whole seconds, such as `1800`. No other answer has it, so a client
+learns nothing about a key that it may not use. The client already knows
+whether the request waited for the person: the short code comes just
+before the request waits, in the queue or with a message (section 10). So `nodkey ssh-grant` prints `denied by a rule:
+--for 1h is longer than the key's window (30m); no prompt was sent` when
+it got the window, and `denied by a rule of the broker; no prompt was
+sent` for a `403` without a short code before it. After a short code,
+the request waited for the person (in the queue, or with a message on
+the phone), so a `403` is a Deny, a timeout or a cancel: it prints
+`denied`. The client takes the window only when it is one header with a
+plain number of seconds from 60 to 28800 (8 hours); any other value
+counts as none. The exit code is 77 in each case.
 
 Each login under these grants still passes every check of section 6, and
 gets its own audit entries (`request`, `grant_used`, `signed`). A Deny for
@@ -3075,8 +3091,13 @@ it started before.
     take requests.
 
 It stops on SIGTERM or SIGINT, also during the start, when the polling
-stops for good (section 7), and when its server fails. It stops in this
-order:
+stops for good (section 7), when its server fails, and when a write to
+stderr fails (a log line or an audit anchor), such as after the reader
+of stderr went away. The broker catches SIGPIPE with `signal.Notify`, so
+such a write fails with an error and does not kill the broker. It does
+not ignore SIGPIPE: an ignored signal stays ignored in a program that
+the broker starts, such as a store program, and a caught one does not.
+It stops in this order:
 
 1. The check for a newer release: its wait, a lookup or a notice that
    is still running is cancelled, also the dial of a lookup. After this
@@ -3118,7 +3139,7 @@ kills it.
 | code | meaning |
 |---|---|
 | 0 | stopped by SIGTERM or SIGINT, and the stop was clean |
-| 1 | any other end: the start failed, the polling stopped for another reason (such as another refusal of `getUpdates` than 401, 404 or 409), the server failed, or the stop was not clean, such as when the `broker_stopped` entry could not be written |
+| 1 | any other end: the start failed, the polling stopped for another reason (such as another refusal of `getUpdates` than 401, 404 or 409), the server failed, a write to stderr failed, or the stop was not clean, such as when the `broker_stopped` entry could not be written |
 | 64 | wrong usage |
 | 76 | Telegram reported a polling conflict (section 7): the bot token may be stolen. Make a new bot token, then start the broker. |
 | 77 | The approval channel does not accept the token: Telegram's `getUpdates` got 401 or 404, such as for a revoked token or a bot that is gone, or the ntfy server answered the subscription with 401 or 403. Put a new token into the token file, or fix the access rules of the server, then start the broker. |
@@ -3197,7 +3218,8 @@ print one warning about the version of the broker (section 10).
 | 77 | denied, expired or not allowed |
 
 It reads the broker's answers as `nodkey run` does: 77 for `403` and
-`429`, and 69 for every other answer that is not `200`, and when the
+`429` (a `403` with no prompt before it says `denied by a rule`, section
+13), and 69 for every other answer that is not `200`, and when the
 config, the TLS key or the deadline fails. It also exits with 69 for a
 `200` that is not a valid answer, or whose `minutes` is not 1 to the
 minutes of `--for` (section 13): the person approved, and the broker is
@@ -3303,7 +3325,7 @@ release (section 10) and `--offline` is not given, it asks GitHub for the
 newest release, for at most 10 seconds, and prints one line on stderr:
 
 ```
-nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root; what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root (docs/setup.md section 2); what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
 nodkey: this is the newest release
 nodkey: cannot check for a newer release: cannot reach GitHub: the lookup timed out
 ```
@@ -3313,7 +3335,7 @@ older than the newest release, it prints this red line instead (no
 colour when `NO_COLOR` is set and not empty):
 
 ```
-SECURITY UPDATE: <security releases>. This is nodkey 0.3.0. Update now: run nodkey update as root. Checked notes: nodkey update --notes.
+SECURITY UPDATE: <security releases>. This is nodkey 0.3.0. Update now: run nodkey update as root (docs/setup.md section 2). Checked notes: nodkey update --notes.
 ```
 
 A newest release that is older than this nodkey gives "this is the
@@ -3542,7 +3564,7 @@ text of a line. It exits with:
 `nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]` installs a
 release in place of the file that it runs from: the newest release, or
 `X.Y.Z`, also an older one. It runs only as root. Otherwise it prints
-`nodkey: nodkey update must run as root: run it as root (exit 1)`.
+`nodkey: nodkey update must run as root: run it as root, from a root shell that does not come from the agent's account (docs/setup.md section 2) (exit 1)`.
 It runs the install script that is built into the binary (`install.sh`,
 section 18) with `/bin/sh`. The script gets `--bin-dir` with the
 directory of the file of nodkey, after links, and the flags that are
@@ -3582,7 +3604,13 @@ and `no_proxy` if nodkey has them. Nothing else comes from the environment
 of nodkey. With `sudo -E`, or after `su` without `-`, the environment of
 root can come from another user, and variables such as `TAR_OPTIONS`,
 `LD_PRELOAD` or `TMPDIR` would change what the programs of the script do
-as root. Without `TMPDIR`, the script uses `/tmp`.
+as root. Without `TMPDIR`, the script uses `/tmp`. So when programs
+cannot run in `/tmp`, the script says to use `--gh`, or to run
+`install.sh` as root with `TMPDIR`: setting `TMPDIR` for `nodkey update`
+does nothing. With `--notes`, the new nodkey runs in `/tmp` too, so
+then only `install.sh` with `TMPDIR` helps. `ALL_PROXY` and `all_proxy` do not go on either: gh, which
+checks the attestation, does not read them, so a proxy that only they
+name would not work for the whole update. Use `HTTPS_PROXY`.
 
 `install.sh` and `nodkey update` exit with:
 

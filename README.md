@@ -95,12 +95,13 @@ root on the broker host on the agent machine
    The easy way is the installer. It installs the newest release as
    `/usr/local/bin/nodkey`. First it checks the SHA-256 and the build
    attestation of the release, and the version of the new file. Download
-   it as root, read it, and run it as root:
+   it as root, read it, and run it as root. In a root shell that you got
+   as above:
 
    ```sh
-   sudo curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
-   sudo less /root/install.sh
-   sudo sh /root/install.sh
+   curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
+   less /root/install.sh
+   sh /root/install.sh
    ```
 
    The installer needs the Sigstore bundle of the attestation in the

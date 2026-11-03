@@ -904,3 +904,38 @@ func TestPreapproveAnswerHidesToken(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyWindow: the client takes only one plain number of seconds from
+// one minute to eight hours as a window.
+func TestKeyWindow(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		values []string
+		want   time.Duration
+	}{
+		{[]string{"1800"}, 30 * time.Minute},
+		{[]string{"60"}, time.Minute},
+		{[]string{"28800"}, 8 * time.Hour},
+		{nil, 0},
+		{[]string{""}, 0},
+		{[]string{"59"}, 0},
+		{[]string{"28801"}, 0},
+		{[]string{"0060"}, 0},
+		{[]string{"+60"}, 0},
+		{[]string{"-60"}, 0},
+		{[]string{"60s"}, 0},
+		{[]string{" 60"}, 0},
+		{[]string{"1e3"}, 0},
+		{[]string{"99999999999999999999"}, 0},
+		{[]string{"60", "60"}, 0},
+	} {
+		h := http.Header{}
+		for _, v := range tt.values {
+			h.Add(WindowHeader, v)
+		}
+		got, ok := KeyWindow(h)
+		if got != tt.want || ok != (tt.want != 0) {
+			t.Errorf("KeyWindow(%q) = %v, %v; want %v", tt.values, got, ok, tt.want)
+		}
+	}
+}

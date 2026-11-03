@@ -123,7 +123,10 @@ valid names gets `429`, and one with a name that does not exist, or that
 the client may not use, gets `403`, both without a message. So an agent
 can learn, without a message, which secret names it may use, and with
 `nodkey ssh-grant` which hosts are in the broker's `known_hosts` and in
-the `hosts` of a key, and the rule and window of a key. We accept this small leak: these are names, not
+the `hosts` of a key, and the rule and window of a key. For a grant that
+is longer than the window of a key that the client may use, the broker
+says the window outright (header `Nodkey-Window`, DESIGN.md section 13),
+so that a refusal by a rule is not taken for a Deny. We accept this small leak: these are names, not
 secret values. (The client may list its key names anyway, with
 `/v1/keys`.)
 Risk that remains: the agent can learn the names of the secrets and hosts
@@ -469,6 +472,11 @@ Risk that remains:
 - Without a copy of the journal on another machine, root on the broker
   host can rewrite the log unseen.
 - Entries after the newest copied anchor can be removed unseen.
+- When a write to stderr fails, the entry is on disk but its anchor is
+  not in the journal. The broker denies the request, stops and exits with
+  1 (DESIGN.md section 15). That entry is then like an entry after the
+  newest anchor. A broken stderr does not kill the broker by SIGPIPE in
+  the middle of its stop.
 - `chattr +a` does not stop the broker user from appending entries that
   look right. An entry appended while the broker is stopped, with the
   right `seq` and `prev`, becomes the last entry at the next start, and

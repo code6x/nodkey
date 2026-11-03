@@ -65,7 +65,7 @@ func rel(major, minor, patch int) nodkeyversion.Release {
 // it could not check. stdout is the same in every case, and the exit code
 // is 0, also after an error.
 func TestVersionCheck(t *testing.T) {
-	newer := "nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root; " +
+	newer := "nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root (docs/setup.md section 2); " +
 		"what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0\n"
 	for _, tt := range []struct {
 		name   string
@@ -194,7 +194,7 @@ func TestVersionSecurity(t *testing.T) {
 		return out
 	}
 	one := "SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.3.0. " +
-		"Update now: run nodkey update as root. Checked notes: nodkey update --notes."
+		"Update now: run nodkey update as root (docs/setup.md section 2). Checked notes: nodkey update --notes."
 	for _, tt := range []struct {
 		name     string
 		noColor  string
@@ -209,7 +209,7 @@ func TestVersionSecurity(t *testing.T) {
 		{"a skipped one", "1", false, rel(0, 3, 2), sec(rel(0, 3, 1)), one + "\n"},
 		{"two", "1", false, rel(0, 4, 0), sec(rel(0, 3, 1), rel(0, 4, 0)),
 			"SECURITY UPDATE: nodkey 0.3.1 and 0.4.0 fix security problems. This is nodkey 0.3.0. " +
-				"Update now: run nodkey update as root. Checked notes: nodkey update --notes.\n"},
+				"Update now: run nodkey update as root (docs/setup.md section 2). Checked notes: nodkey update --notes.\n"},
 		{"not newer", "", false, rel(0, 3, 0), sec(rel(0, 2, 9), rel(0, 3, 0)), "nodkey: this is the newest release\n"},
 		{"not newer, a normal newer one", "", false, rel(0, 3, 2), sec(rel(0, 3, 0)), "nodkey: a newer release is out: nodkey 0.3.2;"},
 	} {

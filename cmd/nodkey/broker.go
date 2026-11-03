@@ -113,7 +113,8 @@ unit such as contrib/systemd/nodkey.service.
   --config FILE  the broker config (default /etc/nodkey/broker.toml)
 
 It logs to stderr, which systemd keeps in the journal, with the anchors
-of the audit log. SIGTERM or SIGINT stops it.
+of the audit log. SIGTERM or SIGINT stops it. So does a failed write to
+stderr, such as after its reader is gone: it stops with exit code 1.
 
 Exit codes: 0 stopped by SIGTERM or SIGINT, 1 any other error, 64 wrong
 usage, 76 Telegram reports a polling conflict: the bot token may be
@@ -124,6 +125,12 @@ systemd must not start the broker again: only a person can fix them.
 // runBroker runs nodkey broker with args (after "broker") and returns the
 // exit code.
 func runBroker(args []string, stderr io.Writer) int {
+	// A broken stderr must not end the broker with SIGPIPE in the middle
+	// of a line: the write fails instead, and the broker stops in its
+	// order (issue #73).
+	catchBrokenPipe()
+	watch := newStderrWatch(stderr)
+	stderr = watch
 	// One logger for every part: the command, the service, the server,
 	// the approval core and Telegram. Its lines start with "time=" and
 	// escape line breaks, so no line can look like an audit anchor
@@ -148,7 +155,32 @@ func runBroker(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	return serveBroker(ctx, *path, stderr, log)
+	return serveBroker(ctx, *path, watch, log)
+}
+
+// stderrWatch passes each write on to w, and closes failed at the first
+// write that fails. Without a working stderr the broker has no journal for
+// its log lines and the anchors of the audit log, so it stops (issue #73).
+// It is safe for concurrent use.
+type stderrWatch struct {
+	w      io.Writer
+	once   sync.Once
+	failed chan struct{}
+}
+
+func newStderrWatch(w io.Writer) *stderrWatch {
+	return &stderrWatch{w: w, failed: make(chan struct{})}
+}
+
+func (s *stderrWatch) Write(p []byte) (int, error) {
+	n, err := s.w.Write(p)
+	if err == nil && n < len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		s.once.Do(func() { close(s.failed) })
+	}
+	return n, err
 }
 
 // printBrokerUsage writes the usage of nodkey broker to w. A failed write
@@ -160,7 +192,7 @@ func printBrokerUsage(w io.Writer) {
 // serveBroker starts the broker with the config at path, serves until ctx
 // ends (a signal) or a part stops, then stops the broker and returns the
 // exit code (DESIGN.md section 15).
-func serveBroker(ctx context.Context, path string, stderr io.Writer, log *slog.Logger) (code int) {
+func serveBroker(ctx context.Context, path string, stderr *stderrWatch, log *slog.Logger) (code int) {
 	defer func() {
 		// The runtime would print the panic value, and no line of the
 		// broker may hold text it did not choose.
@@ -169,7 +201,7 @@ func serveBroker(ctx context.Context, path string, stderr io.Writer, log *slog.L
 			code = exitFailure
 		}
 	}()
-	b := &brokerParts{log: log, stderr: stderr}
+	b := &brokerParts{log: log, stderr: stderr, stderrFailed: stderr.failed}
 	bySignal := false
 	switch err := b.start(ctx, path); {
 	case err != nil && errors.Is(err, context.Canceled) && ctx.Err() != nil:
@@ -222,6 +254,8 @@ func brokerExitCode(bySignal bool, runErr error, clean bool) int {
 type brokerParts struct {
 	log    *slog.Logger
 	stderr io.Writer
+	// stderrFailed is closed when a write to stderr fails.
+	stderrFailed <-chan struct{}
 
 	cfg    *config.Broker
 	audit  *audit.Logger
@@ -603,8 +637,8 @@ func (b *brokerParts) serve(srv *transport.Server, ln net.Listener) {
 	}()
 }
 
-// wait waits until ctx ends, the approver stops, or the server stops. It
-// reports whether a signal asked to stop.
+// wait waits until ctx ends, the approver stops, the server stops, or a
+// write to stderr fails. It reports whether a signal asked to stop.
 func (b *brokerParts) wait(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
@@ -616,6 +650,11 @@ func (b *brokerParts) wait(ctx context.Context) bool {
 		return false
 	case <-b.serveDone:
 		b.log.Error("nodkey broker: stopping, because the server stopped", slog.String("error", errText(b.serveErr)))
+		return false
+	case <-b.stderrFailed:
+		// This line most likely fails too.
+		b.log.Error("nodkey broker: stopping, because a write to stderr failed: " +
+			"the log lines and the audit anchors have nowhere to go")
 		return false
 	}
 }

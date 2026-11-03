@@ -153,20 +153,20 @@ refuses a directory or a file that another user than root can change:
 (`TMPDIR`, or `/tmp`).
 
 The first time, on each host: download the script as root, read it, and
-run it as root:
+run it as root. In a root shell that you got as above:
 
 ```sh
-sudo curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
-sudo less /root/install.sh
-sudo sh /root/install.sh
+curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
+less /root/install.sh
+sh /root/install.sh
 nodkey version
 ```
 
-On the broker host, where no agent runs, the short form works too. But
-it runs the script before you can read it:
+On the broker host, where no agent runs, the short form works too, in
+the same root shell. But it runs the script before you can read it:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/code6x/nodkey/main/install.sh | sudo sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/code6x/nodkey/main/install.sh | sh
 ```
 
 To check the attestation, the installer downloads gh 2.102.0, and
@@ -1505,6 +1505,13 @@ keeps them.
   `systemd-journal-upload`. Then not even root on the broker host can
   change the copies later.
 
+Without a working log, the broker stops. When a write to stderr fails,
+for example because the program that reads it ended, the broker stops in
+its normal order and exits with code 1. The example unit then starts it
+again after 5 seconds. The audit log stays whole: an entry whose anchor
+did not reach the journal is still checked by `nodkey audit verify`,
+like any entry after the newest anchor.
+
 ## 10. Start the broker
 
 Write the config file first ([section 7](#7-the-config-file)), with at
@@ -1708,6 +1715,14 @@ The message lists the key, the remote user, each host and the end of
 the grants. After **Approve**, logins as `deploy` to these hosts need no
 tap until that time. Other hosts and users still ask. A **Deny** for
 the key ends its grants at once.
+
+`--for` must be at most the key's `window`. A longer one gets no
+message: nodkey prints `denied by a rule: --for 1h is longer than the
+key's window (30m); no prompt was sent` and exits with 77. Any other
+check that fails before a message, such as a host that is not in
+`known_hosts`, prints `denied by a rule of the broker; no prompt was
+sent`. Plain `denied` comes after the `waiting for approval` line: the
+person denied it, or nobody answered in time.
 
 ### A job that runs later: nodkey preapprove
 
@@ -2185,7 +2200,8 @@ error names the file, the section or the key, never a secret value.
 | The broker stopped with exit code 76, and an alert says that another program reads the updates of the bot. | Another program polls with the bot token, or a webhook is set. The token may be stolen. Make a new token ([section 13](#a-new-bot-token)), then start the broker. Right after a restart, see [section 13](#a-new-version-of-nodkey). |
 | The broker stopped with exit code 77. | Telegram does not take the bot token, such as after `/revoke`. Make the credential with the new token, then start the broker. |
 | The installer or `nodkey update` ends with `nothing was installed (exit 1)`. | The last line says which step failed. After a network error, try again later. After a failed SHA-256, attestation or version check, do not install that release in another way: someone may have changed it. Report it ([SECURITY.md](../SECURITY.md)). |
-| The installer says that `group or others can write to` a directory or a file, or that a path `is owned by user`. | As root, the installer runs programs from these places, so only root may be able to change them, and each directory above them. Fix the owner or the mode, such as with `chmod go-w /usr/local/bin`, or choose another place with `--bin-dir`, `--gh` or `TMPDIR`. A Debian system that was set up long ago may still have `/usr/local/bin` writable by the group `staff`. |
+| The installer or `nodkey update` cannot download: a TLS or certificate error, behind a proxy. | The installer removes `SSL_CERT_FILE`, `SSL_CERT_DIR` and `CURL_CA_BUNDLE`, so curl and gh trust only the certificates of the system. If the proxy inspects TLS, put its CA into the system store: on Debian, copy it to `/usr/local/share/ca-certificates/NAME.crt` and run `update-ca-certificates`. Then every program on the host trusts the proxy with its TLS traffic: on the broker host, that includes the calls to Telegram, which hold the bot token. `nodkey update` passes on only `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` and `no_proxy`, not `ALL_PROXY` or `all_proxy`: gh does not read these. Set `HTTPS_PROXY`. |
+| The installer says that `group or others can write to` a directory or a file, or that a path `is owned by user`. | As root, the installer runs programs from these places, so only root may be able to change them, and each directory above them. Fix the owner or the mode, such as with `chmod go-w /usr/local/bin`, or choose another place with `--bin-dir`, `--gh` or `TMPDIR`. `nodkey update` does not pass `TMPDIR` on and always uses `/tmp`: to use another `TMPDIR`, run `install.sh` as root. A Debian system that was set up long ago may still have `/usr/local/bin` writable by the group `staff`. |
 | systemd does not start the broker: `systemctl status nodkey` shows `status=243/CREDENTIALS`. | systemd cannot decrypt a credential, so the broker does not run, and nothing is handed out. Check that each file of a `LoadCredentialEncrypted=` line is there, and was made with that name. After a firmware update or a change of the Secure Boot settings, the TPM2 chip may refuse credentials that are bound to PCR 7 ([section 3](#encrypted-credentials)). If you did not update the firmware or change Secure Boot, find out why first: someone may have changed how the machine starts. Then make each credential again, as in [section 13](#13-upgrades-and-key-changes): a new TLS key (and its pin on each client), the bot token, a new `bws` token, the `bw` master password, and new SSH keys. |
 | The journal says that the bot may not send to this chat. | You did not tap **Start** in the chat with the bot, or you blocked it. |
 | The client prints `nodkey: warning: ...` with the versions of this machine and the broker. | They run different versions of nodkey. Update the older side, as the line says ([section 13](#a-new-version-of-nodkey)). Requests can fail until then, for example with `the answer of the broker is not valid`. |
