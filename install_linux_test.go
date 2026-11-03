@@ -205,6 +205,7 @@ type installer struct {
 	fakes  string   // the fake curl and uname, first in PATH
 	gh     string   // the fake gh, for --gh
 	binArg string   // the value of --bin-dir, if it is not bin
+	update bool     // run the script as nodkey update does: as sh -c, with $0 nodkey-install
 	env    []string // more environment for the script
 }
 
@@ -371,7 +372,11 @@ func (in *installer) command(args ...string) *exec.Cmd {
 	if in.binArg != "" {
 		bin = in.binArg
 	}
-	cmd := exec.CommandContext(in.t.Context(), "/bin/sh", append([]string{in.script, "--bin-dir", bin}, args...)...) //nolint:gosec // G204: the test runs install.sh with its own arguments.
+	start := []string{in.script}
+	if in.update {
+		start = []string{"-c", string(readFile(in.t, in.script)), "nodkey-install"}
+	}
+	cmd := exec.CommandContext(in.t.Context(), "/bin/sh", append(append(start, "--bin-dir", bin), args...)...) //nolint:gosec // G204: the test runs install.sh with its own arguments.
 	cmd.Dir = in.dir
 	cmd.Env = append([]string{
 		"PATH=" + in.fakes + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -948,6 +953,35 @@ func TestInstallDenies(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestInstallTmpHint: when the new nodkey does not run in the temporary
+// directory, the advice of the script works for the way it was started.
+// nodkey update passes no TMPDIR on, so for it the advice is install.sh
+// with TMPDIR, not TMPDIR alone.
+func TestInstallTmpHint(t *testing.T) {
+	for _, tt := range []struct {
+		update  bool
+		want    string
+		notWant string
+	}{
+		{false, "(if programs cannot run in @TMP, set TMPDIR to a directory that only root can write, such as /root)", "nodkey update"},
+		{true, "(if programs cannot run in @TMP, run install.sh as root with TMPDIR set to a directory that only root can write, such as /root; nodkey update always uses /tmp)", "(if programs cannot run in @TMP, set TMPDIR"},
+	} {
+		t.Run(fmt.Sprintf("update=%v", tt.update), func(t *testing.T) {
+			in := newInstaller(t)
+			in.update = tt.update
+			in.latest("v0.2.0")
+			in.release("0.2.0", func(string) []byte { return failingNodkey })
+			in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
+			before := files(t, in.bin)
+			r := in.run("--gh", in.gh, "--notes")
+			in.checkFailed(r, 1, "the new nodkey does not run "+strings.ReplaceAll(tt.want, "@TMP", in.tmp), before)
+			if strings.Contains(r.stderr, strings.ReplaceAll(tt.notWant, "@TMP", in.tmp)) {
+				t.Errorf("stderr %q has %q", r.stderr, tt.notWant)
+			}
+		})
 	}
 }
 

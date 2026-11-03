@@ -3601,7 +3601,12 @@ and `no_proxy` if nodkey has them. Nothing else comes from the environment
 of nodkey. With `sudo -E`, or after `su` without `-`, the environment of
 root can come from another user, and variables such as `TAR_OPTIONS`,
 `LD_PRELOAD` or `TMPDIR` would change what the programs of the script do
-as root. Without `TMPDIR`, the script uses `/tmp`.
+as root. Without `TMPDIR`, the script uses `/tmp`. So when programs
+cannot run in `/tmp`, the script says to use `--gh`, or to run
+`install.sh` as root with `TMPDIR`: setting `TMPDIR` for `nodkey update`
+does nothing. `ALL_PROXY` and `all_proxy` do not go on either: gh, which
+checks the attestation, does not read them, so a proxy that only they
+name would not work for the whole update. Use `HTTPS_PROXY`.
 
 `install.sh` and `nodkey update` exit with:
 
