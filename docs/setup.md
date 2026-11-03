@@ -1716,6 +1716,14 @@ the grants. After **Approve**, logins as `deploy` to these hosts need no
 tap until that time. Other hosts and users still ask. A **Deny** for
 the key ends its grants at once.
 
+`--for` must be at most the key's `window`. A longer one gets no
+message: nodkey prints `denied by a rule: --for 1h is longer than the
+key's window (30m); no prompt was sent` and exits with 77. Any other
+check that fails before a message, such as a host that is not in
+`known_hosts`, prints `denied by a rule of the broker (key, user or
+host); no prompt was sent`. Plain `denied` means that a message was
+sent, and the person denied it or nobody answered in time.
+
 ### A job that runs later: nodkey preapprove
 
 New in 0.3.0: nodkey 0.2.0 does not have it.
