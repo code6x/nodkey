@@ -331,7 +331,7 @@ func TestSecretsBrokerChecks(t *testing.T) {
 		{"a secret of another client", []api.SecretRef{{Var: "A", Name: "backup-token"}}, nil},
 		{"a known and an unknown secret", []api.SecretRef{{Var: "A", Name: "github-token"}, {Var: "B", Name: unknown}},
 			[]string{"github-token"}},
-		{"a variable in lower case", []api.SecretRef{{Var: "gh_token", Name: "github-token"}}, []string{"github-token"}},
+		{"a variable with a dash", []api.SecretRef{{Var: "gh-token", Name: "github-token"}}, []string{"github-token"}},
 		{"a variable with =", []api.SecretRef{{Var: "A=B", Name: "github-token"}}, []string{"github-token"}},
 		{"a variable with a line break", []api.SecretRef{{Var: "A\nB", Name: "github-token"}}, []string{"github-token"}},
 		{"a variable that starts with a digit", []api.SecretRef{{Var: "1A", Name: "github-token"}}, []string{"github-token"}},
@@ -385,6 +385,9 @@ func TestSecretsDeniedVars(t *testing.T) {
 	for _, prefix := range prefixes {
 		names = append(names, prefix, prefix+tail)
 	}
+	// The list matches without case: programs such as npm read the names
+	// in lower case too.
+	names = append(names, "ld_preload", "npm_config_cache", "path", "Git_Dir", "TF_CLI_ARGS_plan")
 	for _, name := range names {
 		for _, c := range []struct {
 			client *http.Client
@@ -446,7 +449,7 @@ func TestSecretsDeniedVarLog(t *testing.T) {
 	}
 	// Other refusals do not name the deny list.
 	before := strings.Count(e.logs.String(), "deny list")
-	mustStatus(t, e.post(t.Context(), c, api.PathSecrets, secretsRequest("gh_token", "github-token")),
+	mustStatus(t, e.post(t.Context(), c, api.PathSecrets, secretsRequest("gh-token", "github-token")),
 		http.StatusForbidden)
 	if strings.Count(e.logs.String(), "deny list") != before {
 		t.Error("the log blames the deny list for a variable name that is not valid")

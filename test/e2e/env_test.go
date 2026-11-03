@@ -51,7 +51,9 @@ import (
 const (
 	keyName    = "deploy"       // the broker's SSH key
 	secretName = "canary-token" // the broker's secret, whose value is the first canary
-	secretVar  = "E2E_TOKEN"    // the variable of nodkey run for it
+	// The variable of nodkey run for it, in lower case as Terraform has it
+	// (#65).
+	secretVar = "TF_VAR_e2e_value" //nolint:gosec // G101: a variable name, not a credential.
 )
 
 // knownTargets are the targets in the broker's known_hosts, and

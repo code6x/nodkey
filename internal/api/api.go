@@ -196,10 +196,11 @@ const (
 
 // varPattern is the form of an environment variable name (DESIGN.md
 // section 5).
-var varPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
+var varPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
 // ValidVar reports whether name is an environment variable name that the
-// broker accepts: it matches [A-Z_][A-Z0-9_]{0,63}. The client checks it
+// broker accepts: it matches [A-Za-z_][A-Za-z0-9_]{0,63}. Lower case is
+// allowed for tools such as Terraform (TF_VAR_db_password). The client checks it
 // to give a quick error; the broker checks it again. The broker also
 // refuses the names of the deny list (DeniedVar).
 func ValidVar(name string) bool { return varPattern.MatchString(name) }
@@ -213,13 +214,14 @@ func ValidVar(name string) bool { return varPattern.MatchString(name) }
 // a test checks that it lists exactly these.
 var (
 	deniedVarPrefixes = []string{
-		"DYLD_",       // the dynamic loader of macOS
-		"GCONV_",      // glibc loads character set modules, which are code, from GCONV_PATH
-		"GIT_",        // git runs, prints or stores the value of most of its GIT_ names
-		"LC_",         // bash and perl print a locale that is not valid; ssh sends LC_ names to the server
-		"LD_",         // the dynamic loader prints LD_PRELOAD, LD_AUDIT and LD_DEBUG, and loads code
-		"NPM_CONFIG_", // npm runs NPM_CONFIG_SCRIPT_SHELL, and makes or prints its other settings
-		"RESOLV_",     // the glibc resolver prints a RESOLV_MULTI or RESOLV_REORDER that is not valid
+		"DYLD_",        // the dynamic loader of macOS
+		"GCONV_",       // glibc loads character set modules, which are code, from GCONV_PATH
+		"GIT_",         // git runs, prints or stores the value of most of its GIT_ names
+		"LC_",          // bash and perl print a locale that is not valid; ssh sends LC_ names to the server
+		"LD_",          // the dynamic loader prints LD_PRELOAD, LD_AUDIT and LD_DEBUG, and loads code
+		"NPM_CONFIG_",  // npm runs NPM_CONFIG_SCRIPT_SHELL, and makes or prints its other settings
+		"RESOLV_",      // the glibc resolver prints a RESOLV_MULTI or RESOLV_REORDER that is not valid
+		"TF_CLI_ARGS_", // terraform adds TF_CLI_ARGS_plan and the like to the options of one command
 	}
 	deniedVars = []string{
 		// The C library, the terminal, and names that many programs use.
@@ -227,9 +229,9 @@ var (
 		"PATH", "SHELL", "SSLKEYLOGFILE", "TEMP", "TERM", "TMP", "TMPDIR", "TZ", "VISUAL",
 		// CA files of curl and Python requests, and the config of wget.
 		"CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "WGETRC",
-		// sh, dash and bash.
+		// sh, dash, bash and zsh.
 		"BASH_COMPAT", "BASH_ENV", "BASH_XTRACEFD", "ENV", "HISTFILE", "PROMPT_COMMAND",
-		"PS0", "PS1", "PS2", "PS3", "PS4", "SHELLOPTS", "TIMEFORMAT",
+		"PROMPT", "PROMPT2", "PROMPT3", "PROMPT4", "PS0", "PS1", "PS2", "PS3", "PS4", "SHELLOPTS", "TIMEFORMAT",
 		// ssh, sudo, gpg, rsync, ls, and the compression programs that tar
 		// runs.
 		"SSH_ASKPASS", "SSH_SK_HELPER", "SSH_SK_PROVIDER", "SUDO_ASKPASS", "GNUPGHOME", "RSYNC_CONNECT_PROG",
@@ -240,7 +242,7 @@ var (
 		// gh, docker and terraform.
 		"GH_BROWSER", "GH_EDITOR", "GH_HOST", "GH_PAGER", "GH_REPO",
 		"COMPOSE_ENV_FILES", "COMPOSE_FILE", "DOCKER_API_VERSION", "DOCKER_CONTEXT", "DOCKER_HOST",
-		"TF_CLI_ARGS", "TF_CLI_CONFIG_FILE", "TF_LOG_PATH", "TF_PLUGIN_CACHE_DIR", "TF_WORKSPACE",
+		"TF_CLI_ARGS", "TF_CLI_CONFIG_FILE", "TF_LOG", "TF_LOG_CORE", "TF_LOG_PATH", "TF_PLUGIN_CACHE_DIR", "TF_WORKSPACE",
 		// The runtimes and build tools of Go, Java, Node.js, Perl, Python,
 		// Ruby and Rust.
 		"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_LDFLAGS", "GO111MODULE", "GOARCH", "GOCACHEPROG",
@@ -260,11 +262,13 @@ var (
 // DeniedVar reports whether the broker refuses the variable name because
 // of the deny list of DESIGN.md section 5: the name is on the list, or
 // starts with a prefix on it, such as "LD_". prefix is that prefix, or ""
-// when the name itself is on the list. The match is exact: "LD_" does not
-// match "LDAP_PASSWORD", and "ld_preload" is not a valid name anyway
-// (ValidVar). The client checks it to give a clear error; the broker
-// checks it again.
+// when the name itself is on the list. The match ignores case, because
+// some programs read a name in lower case too (npm reads npm_config_*):
+// "ld_preload" and "npm_config_cache" are refused. Apart from case it is
+// exact: "LD_" does not match "LDAP_PASSWORD". The
+// client checks it to give a clear error; the broker checks it again.
 func DeniedVar(name string) (prefix string, denied bool) {
+	name = strings.ToUpper(name)
 	for _, p := range deniedVarPrefixes {
 		if strings.HasPrefix(name, p) {
 			return p, true

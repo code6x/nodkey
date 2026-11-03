@@ -45,9 +45,10 @@ on the phone. Then run COMMAND, with the value of the secret NAME in the
 environment variable VAR. nodkey never prints a value.
 
   --secret VAR=NAME  a secret for COMMAND; 1 to 32 of them. VAR must match
-                     [A-Z_][A-Z0-9_]{0,63}, and must not be a name whose
-                     value programs show or run, such as PATH, LD_PRELOAD
-                     or GIT_SSH_COMMAND. NAME is a secret of the broker.
+                     [A-Za-z_][A-Za-z0-9_]{0,63}, and must not be a name
+                     whose value programs show or run, such as PATH,
+                     LD_PRELOAD or GIT_SSH_COMMAND, in any case. NAME is
+                     a secret of the broker.
   --grant-token FILE the token file of a standing grant (nodkey preapprove).
                      With it, no tap is needed inside a window of the grant.
                      nodkey replaces the token in FILE with a new one before
@@ -446,7 +447,7 @@ func parseSecret(value string) (api.SecretRef, error) {
 	case !ok:
 		return api.SecretRef{}, errors.New("--secret needs VAR=NAME, such as GH_TOKEN=github-token")
 	case !api.ValidVar(v):
-		return api.SecretRef{}, fmt.Errorf("--secret: the variable name %.64q must match [A-Z_][A-Z0-9_]{0,63}", v)
+		return api.SecretRef{}, fmt.Errorf("--secret: the variable name %.64q must match [A-Za-z_][A-Za-z0-9_]{0,63}", v)
 	case denied && prefix != "":
 		return api.SecretRef{}, fmt.Errorf("--secret %s=...: nodkey refuses variables that start with %s, "+
 			"because programs show or run their values", v, prefix)
