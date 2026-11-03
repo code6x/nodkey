@@ -962,30 +962,53 @@ func TestInstallDenies(t *testing.T) {
 	}
 }
 
-// TestInstallTmpHint: when the new nodkey does not run in the temporary
+// TestInstallTmpHint: when a program does not run in the temporary
 // directory, the advice of the script works for the way it was started.
 // nodkey update passes no TMPDIR on, so for it the advice is install.sh
-// with TMPDIR, not TMPDIR alone.
+// with TMPDIR, not TMPDIR alone. (The test gives TMPDIR in both ways: only
+// $0 tells the script that nodkey update runs it.) For the downloaded gh,
+// --gh helps too; for --notes, which runs the new nodkey there, it does
+// not.
 func TestInstallTmpHint(t *testing.T) {
+	const (
+		plain  = "set TMPDIR to a directory that only root can write, such as /root)"
+		update = "run install.sh as root with TMPDIR set to a directory that only root can write, such as /root, as nodkey update always uses /tmp)"
+	)
 	for _, tt := range []struct {
-		update  bool
-		want    string
-		notWant string
+		name   string
+		update bool
+		gh     bool // the downloaded gh does not run, else the new nodkey of --notes
+		want   string
 	}{
-		{false, "(if programs cannot run in @TMP, set TMPDIR to a directory that only root can write, such as /root)", "nodkey update"},
-		{true, "(if programs cannot run in @TMP, run install.sh as root with TMPDIR set to a directory that only root can write, such as /root; nodkey update always uses /tmp)", "(if programs cannot run in @TMP, set TMPDIR"},
+		{"install.sh, gh", false, true, "cannot run @TMP/nodkey-install.*/gh/gh_2.102.0_linux_amd64/bin/gh --version (if programs cannot run in @TMP, use --gh, or " + plain},
+		{"nodkey update, gh", true, true, "cannot run @TMP/nodkey-install.*/gh/gh_2.102.0_linux_amd64/bin/gh --version (if programs cannot run in @TMP, use --gh, or " + update},
+		{"install.sh, --notes", false, false, "the new nodkey does not run (if programs cannot run in @TMP, " + plain},
+		{"nodkey update, --notes", true, false, "the new nodkey does not run (if programs cannot run in @TMP, " + update},
 	} {
-		t.Run(fmt.Sprintf("update=%v", tt.update), func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			in := newInstaller(t)
 			in.update = tt.update
 			in.latest("v0.2.0")
-			in.release("0.2.0", func(string) []byte { return failingNodkey })
 			in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
+			args := []string{"--gh", in.gh, "--notes"}
+			if tt.gh {
+				in.release("0.2.0", says("nodkey 0.2.0"))
+				pin := regexp.MustCompile(`(?m)^gh_sha256_amd64=[0-9a-f]{64}$`)
+				script := pin.ReplaceAllString(string(readFile(t, in.script)), "gh_sha256_amd64="+in.ghRelease())
+				in.script = filepath.Join(in.dir, "install-with-fake-gh.sh")
+				writeFile(t, in.script, []byte(script), 0o600)
+				in.env = append(in.env, "FAKE_GH_VERSION_EXIT=1")
+				args = nil
+			} else {
+				in.release("0.2.0", func(string) []byte { return failingNodkey })
+			}
 			before := files(t, in.bin)
-			r := in.run("--gh", in.gh, "--notes")
-			in.checkFailed(r, 1, "the new nodkey does not run "+strings.ReplaceAll(tt.want, "@TMP", in.tmp), before)
-			if strings.Contains(r.stderr, strings.ReplaceAll(tt.notWant, "@TMP", in.tmp)) {
-				t.Errorf("stderr %q has %q", r.stderr, tt.notWant)
+			r := in.run(args...)
+			in.checkFailed(r, 1, "", before)
+			want := "^nodkey: " + strings.ReplaceAll(regexp.QuoteMeta(tt.want), regexp.QuoteMeta("@TMP"), regexp.QuoteMeta(in.tmp))
+			want = strings.ReplaceAll(want, regexp.QuoteMeta(".*"), "[^/]+") + "; nothing was installed \\(exit 1\\)\n$"
+			if !regexp.MustCompile(want).MatchString(lastLine(r.stderr)) {
+				t.Errorf("last line %q, want it to match %q", lastLine(r.stderr), want)
 			}
 		})
 	}
