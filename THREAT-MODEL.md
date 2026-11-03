@@ -408,7 +408,12 @@ broker refuses these names, before any message, grant or rule, and the
 client refuses them before it asks. The match ignores case, because some
 programs read a name in lower case too (`npm_config_*`). DESIGN.md
 section 5 lists them, with the reason for each.
-Risk that remains: masking is best effort and finds the common forms only.
+Risk that remains: the proxy names (`HTTPS_PROXY`, `http_proxy` and the
+like) stay allowed, because a proxy URL can hold a password on purpose.
+A secret in them that is not a proxy URL, such as a bare token, is
+printed by curl and wget and looked up as a host name. The person sees
+the name in the message (`as:`). Masking is best effort and finds the
+common forms only.
 A secret in another form is shown as it is, for example a plain word
 (`htpasswd -b users.txt dev SECRET`) or an option of a program the broker
 does not know. A hostile agent can always get a secret past masking. The
