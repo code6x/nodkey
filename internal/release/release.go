@@ -209,6 +209,14 @@ func (c *Client) Lookup(ctx context.Context) (Info, error) {
 		return Info{}, errors.New("cannot reach GitHub: " + netReason(err))
 	}
 	defer func() { _ = resp.Body.Close() }() // a close error adds nothing
+	// Go's HTTP client can return an answer that came after the context
+	// ended: when the time is up, it tells the server that it closes the
+	// connection, and it can still read the answer that the server then
+	// sends, such as a 200 with no body. Such an answer is not the
+	// answer of GitHub to the lookup (issue #134).
+	if err := ctx.Err(); err != nil {
+		return Info{}, errors.New("cannot reach GitHub: " + netReason(err))
+	}
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusForbidden, http.StatusTooManyRequests:
@@ -218,6 +226,10 @@ func (c *Client) Lookup(ctx context.Context) (Info, error) {
 		return Info{}, fmt.Errorf("GitHub answered with HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer+1))
+	// The same race can end the body early, with no error.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Info{}, errors.New("cannot read the answer of GitHub: " + netReason(ctxErr))
+	}
 	if err != nil {
 		return Info{}, errors.New("cannot read the answer of GitHub: " + netReason(err))
 	}
