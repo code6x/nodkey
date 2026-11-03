@@ -226,6 +226,10 @@ func (c *Client) Lookup(ctx context.Context) (Info, error) {
 		return Info{}, fmt.Errorf("GitHub answered with HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer+1))
+	// The same race can end the body early, with no error.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Info{}, errors.New("cannot read the answer of GitHub: " + netReason(ctxErr))
+	}
 	if err != nil {
 		return Info{}, errors.New("cannot read the answer of GitHub: " + netReason(err))
 	}

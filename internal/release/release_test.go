@@ -577,28 +577,50 @@ func (body lateAnswer) RoundTrip(r *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+// cutBody is a transport that answers in time with a 200 and the start of
+// a list, and then ends the body with no error after the context of the
+// request ended.
+type cutBody struct{}
+
+func (cutBody) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{}, Request: r,
+		Body: io.NopCloser(io.MultiReader(strings.NewReader("["), endAfter{r.Context()})),
+	}, nil
+}
+
+// endAfter is a reader that returns io.EOF after ctx ended.
+type endAfter struct{ ctx context.Context }
+
+func (e endAfter) Read([]byte) (int, error) {
+	<-e.ctx.Done()
+	return 0, io.EOF
+}
+
 // TestLookupLateAnswer: an answer that came after the end of the lookup
 // does not count, even when it is a valid list. A time-out is reported as
 // a time-out, never as a bad answer.
 func TestLookupLateAnswer(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
-		body    string
+		rt      http.RoundTripper
 		limit   time.Duration // the limit of the Client
 		caller  time.Duration // the limit of the caller's context; 0 for none
 		cancel  bool          // the caller cancels its context
 		wantErr string
 	}{
-		{"no body, the limit", "", 50 * time.Millisecond, 0, false, "cannot reach GitHub: the lookup timed out"},
-		{"no body, the caller's limit", "", time.Minute, 50 * time.Millisecond, false,
+		{"no body, the limit", lateAnswer(""), 50 * time.Millisecond, 0, false, "cannot reach GitHub: the lookup timed out"},
+		{"no body, the caller's limit", lateAnswer(""), time.Minute, 50 * time.Millisecond, false,
 			"cannot reach GitHub: the lookup timed out"},
-		{"a valid list", listJSON(releaseJSON("v0.3.0")), 50 * time.Millisecond, 0, false,
+		{"a valid list", lateAnswer(listJSON(releaseJSON("v0.3.0"))), 50 * time.Millisecond, 0, false,
 			"cannot reach GitHub: the lookup timed out"},
-		{"the caller cancels", "", time.Minute, 0, true, "cannot reach GitHub: the lookup was cancelled"},
+		{"the caller cancels", lateAnswer(""), time.Minute, 0, true, "cannot reach GitHub: the lookup was cancelled"},
+		{"a body cut with no error", cutBody{}, 50 * time.Millisecond, 0, false,
+			"cannot read the answer of GitHub: the lookup timed out"},
 	} {
 		c := New(own)
 		c.base = "https://example.com"
-		c.http.Transport = lateAnswer(tt.body)
+		c.http.Transport = tt.rt
 		c.timeout = tt.limit
 		ctx, cancel := context.WithCancel(t.Context())
 		if tt.caller > 0 {
