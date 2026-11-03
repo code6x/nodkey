@@ -3338,8 +3338,11 @@ The lookup, of `nodkey version` and of the broker (step 10 of the start):
   only. It follows no redirect: a redirect is an error. It keeps no
   connection open.
 - The TCP connection, the TLS handshake and the headers of the answer
-  each have 10 seconds, and the whole lookup 30 seconds. The answer is
-  at most 1 MiB; a larger one is an error.
+  each have 10 seconds, and the whole lookup 30 seconds. An answer that
+  comes after the end of the lookup (its time is up, or it was
+  cancelled) does not count: the error says that the lookup timed out
+  or was cancelled. The answer is at most 1 MiB; a larger one is an
+  error.
 - The answer must be a JSON list of at most 20 objects. Of each one it
   reads only `tag_name`, `draft`, `prerelease` and `body`, with exactly
   these names, and ignores the other keys. A missing key (other than `body`), or
