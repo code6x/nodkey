@@ -2590,8 +2590,8 @@ key's window, and the key may be used by this client and has the rule
 `window`, the `403` has the header `Nodkey-Window` with the key's window
 in whole seconds, such as `1800`. No other answer has it, so a client
 learns nothing about a key that it may not use. The client already knows
-whether a message was sent: the short code comes just before the
-message (section 10). So `nodkey ssh-grant` prints `denied by a rule:
+whether the request waited for the person: the short code comes just
+before the request waits, in the queue or with a message (section 10). So `nodkey ssh-grant` prints `denied by a rule:
 --for 1h is longer than the key's window (30m); no prompt was sent` when
 it got the window, and `denied by a rule of the broker; no prompt was
 sent` for a `403` without a short code before it. After a short code,
