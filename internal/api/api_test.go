@@ -455,12 +455,13 @@ func TestSecretValueHidesItself(t *testing.T) {
 }
 
 func TestValidVar(t *testing.T) {
-	for _, ok := range []string{"GH_TOKEN", "_", "A", "A1", "_9", strings.Repeat("A", 64)} {
+	for _, ok := range []string{"GH_TOKEN", "_", "A", "A1", "_9", strings.Repeat("A", 64),
+		"gh_token", "TF_VAR_db_password", "TF_TOKEN_app_example_com", "a", "_z9", strings.Repeat("z", 64)} {
 		if !ValidVar(ok) {
 			t.Errorf("ValidVar(%q) = false", ok)
 		}
 	}
-	for _, bad := range []string{"", "gh_token", "1A", "A-B", "A B", "A=B", "Ä", strings.Repeat("A", 65), "A\n"} {
+	for _, bad := range []string{"", "1A", "1a", "A-B", "A B", "A=B", "Ä", strings.Repeat("A", 65), "A\n"} {
 		if ValidVar(bad) {
 			t.Errorf("ValidVar(%q) = true", bad)
 		}
@@ -489,14 +490,18 @@ func TestDeniedVar(t *testing.T) {
 		}
 	}
 	// Some names on the list, and the prefix that refuses them, if any.
-	// TF_CLI_ARGS is a name on the list. terraform reads its forms for one
-	// command, such as TF_CLI_ARGS_plan, only in lower case, which
-	// ValidVar refuses.
+	// The match ignores case: some programs read a name in lower case too,
+	// such as npm (npm_config_*) and zsh (path). TF_CLI_ARGS is a name on
+	// the list; terraform reads its forms for one command, such as
+	// TF_CLI_ARGS_plan, with the command in lower case.
 	for _, tt := range []struct{ name, prefix string }{
 		{"LD_PRELOAD", "LD_"}, {"LC_ALL", "LC_"}, {"GIT_SSH_COMMAND", "GIT_"},
 		{"NPM_CONFIG_SCRIPT_SHELL", "NPM_CONFIG_"}, {"TF_CLI_ARGS", ""}, {"JAVA_OPTS", ""}, {"PATH", ""},
 		{"MAKEFLAGS", ""}, {"GOFLAGS", ""}, {"GH_HOST", ""}, {"DOCKER_HOST", ""}, {"SUDO_ASKPASS", ""},
 		{"MANPAGER", ""},
+		{"ld_preload", "LD_"}, {"npm_config_cache", "NPM_CONFIG_"}, {"Npm_Config_Script_Shell", "NPM_CONFIG_"},
+		{"path", ""}, {"Path", ""}, {"git_ssh_command", "GIT_"}, {"java_tool_options", ""},
+		{"TF_CLI_ARGS_plan", "TF_CLI_ARGS_"}, {"TF_CLI_ARGS_apply", "TF_CLI_ARGS_"}, {"tf_cli_args", ""},
 	} {
 		if prefix, denied := DeniedVar(tt.name); !denied || prefix != tt.prefix {
 			t.Errorf("DeniedVar(%q) = %q, %v; want %q, true", tt.name, prefix, denied, tt.prefix)
@@ -511,9 +516,8 @@ func TestDeniedVar(t *testing.T) {
 		"PATHS", "HOME_DIR", "TERM_TOKEN", "PS", "PS5", "ENVIRONMENT", "LANGFUSE_SECRET_KEY", "CC_TOKEN",
 		"NPM_CONFIG", "MY_NPM_CONFIG_X", "TF_CLI_ARG", "TF_LOG", "TF_IN_AUTOMATION", "DOCKER_CONFIG_TOKEN",
 		"NODE_PATH", "PYTHONPATH", "RUBYLIB", "IFS", "LESSOPEN",
-		// Lower case is not on the list; ValidVar refuses it anyway, also
-		// Terraform's own forms of TF_TOKEN_ and TF_VAR_.
-		"ld_preload", "path", "TF_TOKEN_example_com", "TF_VAR_db_password",
+		// Lower case, for Terraform's TF_TOKEN_ and TF_VAR_.
+		"TF_TOKEN_example_com", "TF_VAR_db_password", "gh_token", "ldap_password", "paths",
 	} {
 		if prefix, denied := DeniedVar(ok); denied {
 			t.Errorf("DeniedVar(%q) = %q, true; want false", ok, prefix)
@@ -687,7 +691,7 @@ func TestSecretsAnswerEncode(t *testing.T) {
 		}
 	}
 	for _, bad := range []SecretsAnswer{
-		{Secrets: []SecretValue{{Var: "gh_token", Value: []byte("v")}}},
+		{Secrets: []SecretValue{{Var: "gh-token", Value: []byte("v")}}},
 		{Secrets: []SecretValue{{Var: "A<B", Value: []byte("v")}}},
 		{Secrets: []SecretValue{{Var: `A"`, Value: []byte("v")}}},
 		{Secrets: []SecretValue{{Var: "", Value: []byte("v")}}},

@@ -35,7 +35,7 @@ func TestRunUsage(t *testing.T) {
 		{"no value", []string{"--secret"}, "--secret needs a value"},
 		{"no reason", []string{"--secret", "GH_TOKEN=github-token", "--reason"}, "--reason needs a value"},
 		{"no =", []string{"--secret", "GH_TOKEN", "--", "gh"}, "--secret needs VAR=NAME"},
-		{"lower case", []string{"--secret", "gh_token=github-token", "--", "gh"}, `the variable name "gh_token" must match`},
+		{"a dash", []string{"--secret", "gh-token=github-token", "--", "gh"}, `the variable name "gh-token" must match`},
 		{"digit first", []string{"--secret", "1TOKEN=github-token", "--", "gh"}, `the variable name "1TOKEN" must match`},
 		{"variable too long", []string{"--secret", strings.Repeat("A", 65) + "=x", "--", "gh"}, "must match"},
 		{"no secret name", []string{"--secret", "GH_TOKEN=", "--", "gh"}, "the secret name must have 1 to 64 bytes"},
@@ -95,6 +95,12 @@ func TestRunDeniedVars(t *testing.T) {
 		want := "nodkey refuses variables that start with " + p + ", because programs show or run their values"
 		tests = append(tests, test{p, want}, test{p + "X", want})
 	}
+	// The list matches without case.
+	tests = append(tests,
+		test{"path", "nodkey refuses the variable path, because programs show or run its value"},
+		test{"ld_preload", "nodkey refuses variables that start with LD_, because programs show or run their values"},
+		test{"npm_config_cache", "nodkey refuses variables that start with NPM_CONFIG_, " +
+			"because programs show or run their values"})
 	for _, tt := range tests {
 		fx := &fakeExec{}
 		code, stderr := runIn(t.Context(), testRunner(fb.b, nil, fx), "--secret", "GH_TOKEN=github-token",
@@ -111,7 +117,8 @@ func TestRunDeniedVars(t *testing.T) {
 		t.Errorf("%d requests reached the broker, want none", n)
 	}
 	for _, ok := range []string{"GH_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "LDAP_PASSWORD", "NODE_AUTH_TOKEN",
-		"NPM_TOKEN", "DOCKER_PASSWORD", "CARGO_REGISTRY_TOKEN", "TF_TOKEN_EXAMPLE_COM", "GOPROXY", "HTTPS_PROXY"} {
+		"NPM_TOKEN", "DOCKER_PASSWORD", "CARGO_REGISTRY_TOKEN", "TF_TOKEN_EXAMPLE_COM", "GOPROXY", "HTTPS_PROXY",
+		"TF_VAR_db_password", "TF_TOKEN_app_example_com", "ldap_password"} {
 		if _, err := parseArgs([]string{"--secret", ok + "=github-token", "--", "gh"}); err != nil {
 			t.Errorf("%s: %v", ok, err)
 		}

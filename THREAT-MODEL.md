@@ -161,7 +161,7 @@ capped, HTML is escaped, the text sits in `<code>`, link previews are off,
 and claimed fields always come after the verified ones. The verified part holds only names from the
 broker's config and data the broker checked. The broker itself checks that
 the remote user name matches a strict pattern, and that environment
-variable names match `[A-Z_][A-Z0-9_]{0,63}`; variable names are shown as
+variable names match `[A-Za-z_][A-Za-z0-9_]{0,63}`; variable names are shown as
 claimed. The broker never relies on checks done by the client. The
 approval core checks again that each claimed field is one clean line, and
 denies the request if one is not. The Telegram code cleans each claimed
@@ -405,8 +405,9 @@ name, send it to a server, or run it, for example `LD_PRELOAD`,
 `JAVA_TOOL_OPTIONS`, `GIT_TRACE`, `PS4` or `PYTHONWARNINGS`. The person
 sees the name in the message, but may not know what it means. So the
 broker refuses these names, before any message, grant or rule, and the
-client refuses them before it asks. DESIGN.md section 5 lists them, with
-the reason for each.
+client refuses them before it asks. The match ignores case, because some
+programs read a name in lower case too (`npm_config_*`). DESIGN.md
+section 5 lists them, with the reason for each.
 Risk that remains: masking is best effort and finds the common forms only.
 A secret in another form is shown as it is, for example a plain word
 (`htpasswd -b users.txt dev SECRET`) or an option of a program the broker

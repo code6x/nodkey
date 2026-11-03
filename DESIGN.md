@@ -208,7 +208,7 @@ nodkey run --secret GH_TOKEN=github-token \
 3. The broker takes the client name only from the pinned TLS key (section
    10). It refuses a body that is not a valid request (400). Then it checks
    that there are 1 to 32 variables, that each variable name matches
-   `[A-Z_][A-Z0-9_]{0,63}`, is not on the deny list below and is there
+   `[A-Za-z_][A-Za-z0-9_]{0,63}`, is not on the deny list below and is there
    only once, that each secret name exists in the broker config, and that
    this client may use it. If any check fails, the answer is **deny**
    (403), and the audit log gets the request with only the names that
@@ -287,8 +287,13 @@ these names too, before it asks anyone: it prints a usage error of one
 line (section 15) and exits with 64.
 
 The broker refuses each name in the first column below. `LD_*` means
-every name that starts with `LD_`. The match is exact, on the name in
-upper case: `LD_*` refuses `LD_PRELOAD`, but not `LDAP_PASSWORD`. Each
+every name that starts with `LD_`. The match ignores case, because some
+programs read a name in lower case too: npm reads `npm_config_*`, and zsh
+ties `path` to `PATH`. So `LD_*` refuses `LD_PRELOAD` and `ld_preload`.
+Apart from case the match is exact: `LD_*` does not refuse
+`LDAP_PASSWORD`. Lower case is allowed in names because some tools need
+it, such as Terraform (`TF_VAR_db_password`, `TF_TOKEN_app_example_com`).
+Each
 entry was checked on 2026-10-15 on Ubuntu 24.04, with a made-up value,
 unless the table says otherwise. A test checks that this table and the
 list in the code (`api.DeniedVar`) are the same.
@@ -336,7 +341,8 @@ list in the code (`api.DeniedVar`) are the same.
 | `GH_HOST` | gh connects to the host that it names, and prints the name when it cannot. |
 | `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_API_VERSION` | docker prints a value that it cannot use. It connects to the host in `DOCKER_HOST`. |
 | `COMPOSE_FILE`, `COMPOSE_ENV_FILES` | docker compose prints a file that it cannot open. |
-| `TF_CLI_ARGS` | terraform reads it as options, and prints a value that it cannot use. Its forms for one command, such as `TF_CLI_ARGS_plan`, are lower case, so nodkey refuses them anyway. |
+| `TF_CLI_ARGS` | terraform reads it as options, and prints a value that it cannot use. |
+| `TF_CLI_ARGS_*` | The same, for one command, such as `TF_CLI_ARGS_plan`. Not checked. |
 | `TF_CLI_CONFIG_FILE`, `TF_PLUGIN_CACHE_DIR` | terraform prints them. |
 | `TF_WORKSPACE` | `terraform init` and `terraform plan` make a directory `terraform.tfstate.d/<value>`. |
 | `TF_LOG_PATH` | terraform writes its log to a file named after the value. |
