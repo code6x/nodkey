@@ -2331,7 +2331,7 @@ when they differ.
   sends no claim to compare, so it gets no header:
 
   ```
-  SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.2.0. Ask the owner of the broker host to update this host: run nodkey update as root.
+  SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.2.0. Ask the owner of the broker host to update this host: run nodkey update as root (docs/setup.md section 2).
   ```
 
 - The client's version is a claim: anyone with the client's key can send
@@ -2346,7 +2346,7 @@ when they differ.
 
   ```
   nodkey: warning: the broker runs nodkey 0.2.0, which is older than nodkey 0.3.0 on this machine; to update the broker, run "nodkey update" as root on the broker host
-  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "nodkey update" as root
+  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "nodkey update" as root (docs/setup.md section 2)
   nodkey: warning: the broker runs an older nodkey that does not send its version, and this machine runs nodkey 0.3.0; to update the broker, follow section 13 of docs/setup.md
   ```
 
@@ -3325,7 +3325,7 @@ release (section 10) and `--offline` is not given, it asks GitHub for the
 newest release, for at most 10 seconds, and prints one line on stderr:
 
 ```
-nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root; what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root (docs/setup.md section 2); what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
 nodkey: this is the newest release
 nodkey: cannot check for a newer release: cannot reach GitHub: the lookup timed out
 ```
@@ -3335,7 +3335,7 @@ older than the newest release, it prints this red line instead (no
 colour when `NO_COLOR` is set and not empty):
 
 ```
-SECURITY UPDATE: <security releases>. This is nodkey 0.3.0. Update now: run nodkey update as root. Checked notes: nodkey update --notes.
+SECURITY UPDATE: <security releases>. This is nodkey 0.3.0. Update now: run nodkey update as root (docs/setup.md section 2). Checked notes: nodkey update --notes.
 ```
 
 A newest release that is older than this nodkey gives "this is the
@@ -3561,7 +3561,7 @@ text of a line. It exits with:
 `nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]` installs a
 release in place of the file that it runs from: the newest release, or
 `X.Y.Z`, also an older one. It runs only as root. Otherwise it prints
-`nodkey: nodkey update must run as root: run it as root (exit 1)`.
+`nodkey: nodkey update must run as root: run it as root, from a root shell that does not come from the agent's account (docs/setup.md section 2) (exit 1)`.
 It runs the install script that is built into the binary (`install.sh`,
 section 18) with `/bin/sh`. The script gets `--bin-dir` with the
 directory of the file of nodkey, after links, and the flags that are
@@ -3601,7 +3601,13 @@ and `no_proxy` if nodkey has them. Nothing else comes from the environment
 of nodkey. With `sudo -E`, or after `su` without `-`, the environment of
 root can come from another user, and variables such as `TAR_OPTIONS`,
 `LD_PRELOAD` or `TMPDIR` would change what the programs of the script do
-as root. Without `TMPDIR`, the script uses `/tmp`.
+as root. Without `TMPDIR`, the script uses `/tmp`. So when programs
+cannot run in `/tmp`, the script says to use `--gh`, or to run
+`install.sh` as root with `TMPDIR`: setting `TMPDIR` for `nodkey update`
+does nothing. With `--notes`, the new nodkey runs in `/tmp` too, so
+then only `install.sh` with `TMPDIR` helps. `ALL_PROXY` and `all_proxy` do not go on either: gh, which
+checks the attestation, does not read them, so a proxy that only they
+name would not work for the whole update. Use `HTTPS_PROXY`.
 
 `install.sh` and `nodkey update` exit with:
 

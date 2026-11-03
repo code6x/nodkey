@@ -95,7 +95,7 @@ func (v *versions) checkSecurity(h http.Header) {
 // client that runs own. It holds fixed text and the two release versions.
 func securityWarning(fix, own version.Release) string {
 	return "SECURITY UPDATE: nodkey " + fix.String() + " fixes a security problem. This is nodkey " + own.String() +
-		". Ask the owner of the broker host to update this host: run nodkey update as root."
+		". Ask the owner of the broker host to update this host: run nodkey update as root (docs/setup.md section 2)."
 }
 
 // checkVersion is the part of check about the version of the broker.
@@ -131,7 +131,7 @@ func versionWarning(own, broker string, diff version.Diff) string {
 			` on this machine; to update the broker, run "nodkey update" as root on the broker host`
 	case version.OtherNewer:
 		return "warning: this machine runs nodkey " + own + ", which is older than nodkey " + broker +
-			` on the broker; to update this machine, run "nodkey update" as root`
+			` on the broker; to update this machine, run "nodkey update" as root (docs/setup.md section 2)`
 	}
 	return ""
 }

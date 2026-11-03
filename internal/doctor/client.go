@@ -75,7 +75,7 @@ func ClientChecks(ctx context.Context, env ClientEnv) []Check {
 				return "", &Problem{
 					What: strings.TrimPrefix(strings.Join(warnings, "; "), "warning: "),
 					Why:  "a client and a broker of different versions can disagree on what a request means",
-					Fix:  "run nodkey update as root on the side with the older version",
+					Fix:  "run nodkey update as root on the side with the older version, from a root shell that does not come from the agent's account (docs/setup.md section 2)",
 					Docs: "docs/setup.md section 13",
 				}
 			}
@@ -108,12 +108,12 @@ func checkVersion(ctx context.Context, env ClientEnv) (string, *Problem) {
 		return "", &Problem{
 			What: detail + "; " + release.SecurityFixes(fixes),
 			Why:  "this nodkey has a known security problem",
-			Fix:  "run nodkey update as root",
+			Fix:  "run nodkey update as root, from a root shell that does not come from the agent's account (docs/setup.md section 2)",
 			Docs: "docs/setup.md section 13",
 		}
 	}
 	if info.Newest.Compare(own) > 0 {
-		return detail + "; a newer release is out: nodkey " + info.Newest.String() + "; run nodkey update as root", nil
+		return detail + "; a newer release is out: nodkey " + info.Newest.String() + "; run nodkey update as root (docs/setup.md section 2)", nil
 	}
 	return detail + "; the newest release", nil
 }

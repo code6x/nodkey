@@ -95,7 +95,8 @@ func TestClientNewerRelease(t *testing.T) {
 		return release.Info{Newest: rel(t, "0.4.0")}, nil
 	}
 	res := result(t, Run(ClientChecks(t.Context(), env)), "version")
-	if res.Status != OK || !strings.Contains(res.Detail, "nodkey 0.4.0") {
+	if res.Status != OK || !strings.Contains(res.Detail, "nodkey 0.4.0") ||
+		!strings.Contains(res.Detail, "run nodkey update as root (docs/setup.md section 2)") {
 		t.Errorf("version %+v", res)
 	}
 }
@@ -167,6 +168,12 @@ func TestClientFails(t *testing.T) {
 				t.Fatalf("check %q: %+v, want FAIL with %q", tt.check, res, tt.what)
 			}
 			checkProblem(t, &Problem{What: res.What, Why: res.Why, Fix: res.Fix, Docs: res.Docs})
+			// A fix that updates nodkey says "as root", never sudo, and
+			// points to how to get a root shell (AGENTS.md).
+			if strings.Contains(res.Fix, "nodkey update") &&
+				(!strings.Contains(res.Fix, "as root") || !strings.Contains(res.Fix, "docs/setup.md section 2") || strings.Contains(res.Fix, "sudo")) {
+				t.Errorf("check %q: fix %q, want as root and docs/setup.md section 2, without sudo", tt.check, res.Fix)
+			}
 			for _, s := range tt.skips {
 				if st := result(t, r, s).Status; st != Skip {
 					t.Errorf("check %q: %s, want skip", s, st)

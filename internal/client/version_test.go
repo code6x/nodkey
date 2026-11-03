@@ -18,7 +18,7 @@ import (
 // The warnings of the tests below.
 const (
 	warnClientOlder = `nodkey: warning: this machine runs nodkey 0.1.0, which is older than nodkey 0.2.0 on the ` +
-		`broker; to update this machine, run "nodkey update" as root`
+		`broker; to update this machine, run "nodkey update" as root (docs/setup.md section 2)`
 	warnBrokerOlder = `nodkey: warning: the broker runs nodkey 0.1.0, which is older than nodkey 0.2.0 on this ` +
 		`machine; to update the broker, run "nodkey update" as root on the broker host`
 	warnNotSent = `nodkey: warning: the broker runs an older nodkey that does not send its version, and this ` +
@@ -254,7 +254,7 @@ func TestSSHAgentVersion(t *testing.T) {
 		strings.Replace(warnBrokerOlder, "0.1.0", "0.1.1", 1),
 		warnNotSent,
 		`nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; ` +
-			`to update this machine, run "nodkey update" as root`,
+			`to update this machine, run "nodkey update" as root (docs/setup.md section 2)`,
 		"nodkey: stopped by SIGTERM (exit 143)",
 	}
 	if got := linesOf(stderr.String()); !slices.Equal(got, want) {
@@ -306,7 +306,7 @@ func TestVersionWithTheRealBroker(t *testing.T) {
 // warnSecurity is the line about the security release 0.3.1 for a client
 // on 0.3.0.
 const warnSecurity = "nodkey: SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.3.0. " +
-	"Ask the owner of the broker host to update this host: run nodkey update as root."
+	"Ask the owner of the broker host to update this host: run nodkey update as root (docs/setup.md section 2)."
 
 // TestSecurityWarning: the client takes the header api.SecurityUpdateHeader
 // only when it holds one release version that is newer than the client's
@@ -320,9 +320,9 @@ func TestSecurityWarning(t *testing.T) {
 		want   string
 	}{
 		{"0.3.0", []string{"0.3.1"}, "SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey " +
-			"0.3.0. Ask the owner of the broker host to update this host: run nodkey update as root."},
+			"0.3.0. Ask the owner of the broker host to update this host: run nodkey update as root (docs/setup.md section 2)."},
 		{"0.3.0", []string{"1.0.0"}, "SECURITY UPDATE: nodkey 1.0.0 fixes a security problem. This is nodkey " +
-			"0.3.0. Ask the owner of the broker host to update this host: run nodkey update as root."},
+			"0.3.0. Ask the owner of the broker host to update this host: run nodkey update as root (docs/setup.md section 2)."},
 		{"0.3.0", []string{"0.3.0"}, ""},
 		{"0.3.0", []string{"0.2.9"}, ""},
 		{"0.3.0", []string{"0.3.1-rc1"}, ""},

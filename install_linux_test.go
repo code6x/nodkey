@@ -205,6 +205,7 @@ type installer struct {
 	fakes  string   // the fake curl and uname, first in PATH
 	gh     string   // the fake gh, for --gh
 	binArg string   // the value of --bin-dir, if it is not bin
+	update bool     // run the script as nodkey update does: as sh -c, with $0 nodkey-install
 	env    []string // more environment for the script
 }
 
@@ -371,7 +372,11 @@ func (in *installer) command(args ...string) *exec.Cmd {
 	if in.binArg != "" {
 		bin = in.binArg
 	}
-	cmd := exec.CommandContext(in.t.Context(), "/bin/sh", append([]string{in.script, "--bin-dir", bin}, args...)...) //nolint:gosec // G204: the test runs install.sh with its own arguments.
+	start := []string{in.script}
+	if in.update {
+		start = []string{"-c", string(readFile(in.t, in.script)), "nodkey-install"}
+	}
+	cmd := exec.CommandContext(in.t.Context(), "/bin/sh", append(append(start, "--bin-dir", bin), args...)...) //nolint:gosec // G204: the test runs install.sh with its own arguments.
 	cmd.Dir = in.dir
 	cmd.Env = append([]string{
 		"PATH=" + in.fakes + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -832,6 +837,12 @@ func TestInstallDenies(t *testing.T) {
 		}, noCurl: true, noRun: true, want: "--gh DIR/gh-link is not a program file; name the file itself, not a link"},
 		{name: "a gh that is not there", args: []string{"--gh", "/nonexistent/gh"}, noCurl: true, noRun: true,
 			want: "--gh /nonexistent/gh is not a program file"},
+		{name: "a gh that is not a program", setup: func(in *installer) { chmod(in.t, in.gh, 0o600) },
+			noCurl: true, noRun: true, want: "--gh DIR/gh is not a program file"},
+		{name: "a gh that is a directory", setup: func(in *installer) {
+			in.gh = filepath.Join(in.dir, "gh-dir")
+			mkdir(in.t, in.gh, 0o700)
+		}, noCurl: true, noRun: true, want: "--gh DIR/gh-dir is not a program file"},
 
 		// The newest release, and the files of the release.
 		{name: "no answer from the API", setup: func(in *installer) { in.unserve(latestPath) }, want: "cannot ask GitHub for the newest release"},
@@ -951,6 +962,58 @@ func TestInstallDenies(t *testing.T) {
 	}
 }
 
+// TestInstallTmpHint: when a program does not run in the temporary
+// directory, the advice of the script works for the way it was started.
+// nodkey update passes no TMPDIR on, so for it the advice is install.sh
+// with TMPDIR, not TMPDIR alone. (The test gives TMPDIR in both ways: only
+// $0 tells the script that nodkey update runs it.) For the downloaded gh,
+// --gh helps too; for --notes, which runs the new nodkey there, it does
+// not.
+func TestInstallTmpHint(t *testing.T) {
+	const (
+		plain  = "set TMPDIR to a directory that only root can write, such as /root)"
+		update = "run install.sh as root with TMPDIR set to a directory that only root can write, such as /root, as nodkey update always uses /tmp)"
+	)
+	for _, tt := range []struct {
+		name   string
+		update bool
+		gh     bool // the downloaded gh does not run, else the new nodkey of --notes
+		want   string
+	}{
+		{"install.sh, gh", false, true, "cannot run @TMP/nodkey-install.*/gh/gh_2.102.0_linux_amd64/bin/gh --version (if programs cannot run in @TMP, use --gh, or " + plain},
+		{"nodkey update, gh", true, true, "cannot run @TMP/nodkey-install.*/gh/gh_2.102.0_linux_amd64/bin/gh --version (if programs cannot run in @TMP, use --gh, or " + update},
+		{"install.sh, --notes", false, false, "the new nodkey does not run (if programs cannot run in @TMP, " + plain},
+		{"nodkey update, --notes", true, false, "the new nodkey does not run (if programs cannot run in @TMP, " + update},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			in := newInstaller(t)
+			in.update = tt.update
+			in.latest("v0.2.0")
+			in.installed(fakeNodkey("installed", "nodkey 0.1.0"))
+			args := []string{"--gh", in.gh, "--notes"}
+			if tt.gh {
+				in.release("0.2.0", says("nodkey 0.2.0"))
+				pin := regexp.MustCompile(`(?m)^gh_sha256_amd64=[0-9a-f]{64}$`)
+				script := pin.ReplaceAllString(string(readFile(t, in.script)), "gh_sha256_amd64="+in.ghRelease())
+				in.script = filepath.Join(in.dir, "install-with-fake-gh.sh")
+				writeFile(t, in.script, []byte(script), 0o600)
+				in.env = append(in.env, "FAKE_GH_VERSION_EXIT=1")
+				args = nil
+			} else {
+				in.release("0.2.0", func(string) []byte { return failingNodkey })
+			}
+			before := files(t, in.bin)
+			r := in.run(args...)
+			in.checkFailed(r, 1, "", before)
+			want := "^nodkey: " + strings.ReplaceAll(regexp.QuoteMeta(tt.want), regexp.QuoteMeta("@TMP"), regexp.QuoteMeta(in.tmp))
+			want = strings.ReplaceAll(want, regexp.QuoteMeta(".*"), "[^/]+") + "; nothing was installed \\(exit 1\\)\n$"
+			if !regexp.MustCompile(want).MatchString(lastLine(r.stderr)) {
+				t.Errorf("last line %q, want it to match %q", lastLine(r.stderr), want)
+			}
+		})
+	}
+}
+
 // TestInstallRunsNoNewFileBeforeTheCheck: when the attestation fails, the
 // new nodkey never runs, not even for its version.
 func TestInstallRunsNoNewFileBeforeTheCheck(t *testing.T) {
@@ -990,9 +1053,9 @@ func TestInstallNotes(t *testing.T) {
 		args []string
 		want string // a part of stdout
 	}{
-		{name: "the newest release", want: "Nothing was installed. To install it, run as root: nodkey update\n"},
+		{name: "the newest release", want: "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update\n"},
 		{name: "a release with --version", args: []string{"--version", "0.2.0"},
-			want: "Nothing was installed. To install it, run as root: nodkey update --version 0.2.0\n"},
+			want: "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update --version 0.2.0\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			in := newInstaller(t)
@@ -1409,6 +1472,32 @@ func TestInstallCleansTheEnvironment(t *testing.T) {
 	// The real script uses the directories of the system.
 	if !strings.Contains(string(readFile(t, "install.sh")), "\nroot_path=/usr/sbin:/usr/bin:/sbin:/bin\n") {
 		t.Error("install.sh does not set root_path=/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+}
+
+// TestInstallChecksTheUserID: clean_env stops when id -u fails, or prints
+// something that is not a user ID.
+func TestInstallChecksTheUserID(t *testing.T) {
+	dir := privateDir(t)
+	lib := functions(t, dir)
+	for i, tt := range []struct {
+		id   string // the fake id
+		want string
+	}{
+		{"echo root", "id -u does not print a user ID"},
+		{"echo 0x0", "id -u does not print a user ID"},
+		{"echo ' 0'", "id -u does not print a user ID"},
+		{"echo -1", "id -u does not print a user ID"},
+		{"true", "id -u does not print a user ID"},
+		{"exit 1", "cannot run id -u"},
+	} {
+		fakes := filepath.Join(dir, "fakes"+strconv.Itoa(i))
+		mkdir(t, fakes, 0o700)
+		writeFile(t, filepath.Join(fakes, "id"), []byte("#!/bin/sh\n"+tt.id+"\n"), 0o700)
+		r := runFunctions(t, lib, []string{"PATH=" + os.Getenv("PATH")}, "root_path="+fakes+"\nclean_env\necho passed")
+		if want := "nodkey: " + tt.want + "; nothing was installed (exit 1)\n"; r.code != 1 || lastLine(r.stderr) != want || r.stdout != "" {
+			t.Errorf("id that runs %q: exit code %d, stdout %q, stderr %q; want 1 and %q", tt.id, r.code, r.stdout, r.stderr, want)
+		}
 	}
 }
 

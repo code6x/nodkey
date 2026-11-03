@@ -125,7 +125,7 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		return usageFail(stderr, "update", "--notes installs nothing, so it does not go with --reinstall")
 	}
 	if geteuid() != 0 {
-		return fail(stderr, exitFailure, "nodkey update must run as root: run it as root")
+		return fail(stderr, exitFailure, "nodkey update must run as root: run it as root, from a root shell that does not come from the agent's account (docs/setup.md section 2)")
 	}
 	exe, err := executable()
 	if err != nil {
