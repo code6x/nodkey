@@ -2331,7 +2331,7 @@ when they differ.
   sends no claim to compare, so it gets no header:
 
   ```
-  SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.2.0. Ask the owner of the broker host to update this host: run nodkey update as root.
+  SECURITY UPDATE: nodkey 0.3.1 fixes a security problem. This is nodkey 0.2.0. Ask the owner of the broker host to update this host: run nodkey update as root (docs/setup.md section 2).
   ```
 
 - The client's version is a claim: anyone with the client's key can send
@@ -2346,7 +2346,7 @@ when they differ.
 
   ```
   nodkey: warning: the broker runs nodkey 0.2.0, which is older than nodkey 0.3.0 on this machine; to update the broker, run "nodkey update" as root on the broker host
-  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "nodkey update" as root
+  nodkey: warning: this machine runs nodkey 0.2.0, which is older than nodkey 0.3.0 on the broker; to update this machine, run "nodkey update" as root (docs/setup.md section 2)
   nodkey: warning: the broker runs an older nodkey that does not send its version, and this machine runs nodkey 0.3.0; to update the broker, follow section 13 of docs/setup.md
   ```
 
