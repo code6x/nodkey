@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1111,5 +1112,34 @@ func TestBrokerBadRecoveryStopsTheStart(t *testing.T) {
 				t.Errorf("the log does not say why; its log:\n%s", e.stderr.text())
 			}
 		})
+	}
+}
+
+// TestBrokerBrokenStderr: the reader of the broker's stderr goes away, as
+// when "2> >(tee FILE)" ends (issue #73). The next write to stderr fails.
+// The broker must not die by SIGPIPE: it denies the request, stops in its
+// order, and exits with 1, which the example unit restarts. The audit log
+// still passes nodkey audit verify, with the anchors from before.
+func TestBrokerBrokenStderr(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{})
+	e.stderr.wait(t, lineListening)
+	journal := filepath.Join(e.dir, "journal")
+	writeTestFile(t, journal, []byte(e.stderr.text()), 0o600)
+	if err := e.stderrPipe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The request makes an audit entry, and so an anchor on stderr.
+	a := e.post(e.httpClient(), api.PathSecrets, secretsRequest("GH_TOKEN", "github-token"))
+	if a.err == nil && a.status == http.StatusOK {
+		t.Error("the broker handed out a secret with a broken stderr")
+	}
+	if bytes.Contains(a.body, []byte(e.values["github-token"])) {
+		t.Error("the answer holds the secret value")
+	}
+	e.mustExit(exitFailure)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"audit", "verify", e.auditPath, "--anchors", journal}, strings.NewReader(""), &out, &errOut); code != exitOK {
+		t.Errorf("nodkey audit verify: exit code %d; stdout %q; stderr %q", code, out.String(), errOut.String())
 	}
 }

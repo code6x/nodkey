@@ -1505,6 +1505,13 @@ keeps them.
   `systemd-journal-upload`. Then not even root on the broker host can
   change the copies later.
 
+Without a working log, the broker stops. When a write to stderr fails,
+for example because the program that reads it ended, the broker stops in
+its normal order and exits with code 1. The example unit then starts it
+again after 5 seconds. The audit log stays whole: an entry whose anchor
+did not reach the journal is still checked by `nodkey audit verify`,
+like any entry after the newest anchor.
+
 ## 10. Start the broker
 
 Write the config file first ([section 7](#7-the-config-file)), with at

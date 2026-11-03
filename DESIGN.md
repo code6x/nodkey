@@ -3075,8 +3075,13 @@ it started before.
     take requests.
 
 It stops on SIGTERM or SIGINT, also during the start, when the polling
-stops for good (section 7), and when its server fails. It stops in this
-order:
+stops for good (section 7), when its server fails, and when a write to
+stderr fails (a log line or an audit anchor), such as after the reader
+of stderr went away. The broker catches SIGPIPE with `signal.Notify`, so
+such a write fails with an error and does not kill the broker. It does
+not ignore SIGPIPE: an ignored signal stays ignored in a program that
+the broker starts, such as a store program, and a caught one does not.
+It stops in this order:
 
 1. The check for a newer release: its wait, a lookup or a notice that
    is still running is cancelled, also the dial of a lookup. After this
@@ -3118,7 +3123,7 @@ kills it.
 | code | meaning |
 |---|---|
 | 0 | stopped by SIGTERM or SIGINT, and the stop was clean |
-| 1 | any other end: the start failed, the polling stopped for another reason (such as another refusal of `getUpdates` than 401, 404 or 409), the server failed, or the stop was not clean, such as when the `broker_stopped` entry could not be written |
+| 1 | any other end: the start failed, the polling stopped for another reason (such as another refusal of `getUpdates` than 401, 404 or 409), the server failed, a write to stderr failed, or the stop was not clean, such as when the `broker_stopped` entry could not be written |
 | 64 | wrong usage |
 | 76 | Telegram reported a polling conflict (section 7): the bot token may be stolen. Make a new bot token, then start the broker. |
 | 77 | The approval channel does not accept the token: Telegram's `getUpdates` got 401 or 404, such as for a revoked token or a bot that is gone, or the ntfy server answered the subscription with 401 or 403. Put a new token into the token file, or fix the access rules of the server, then start the broker. |

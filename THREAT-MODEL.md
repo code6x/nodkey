@@ -469,6 +469,11 @@ Risk that remains:
 - Without a copy of the journal on another machine, root on the broker
   host can rewrite the log unseen.
 - Entries after the newest copied anchor can be removed unseen.
+- When a write to stderr fails, the entry is on disk but its anchor is
+  not in the journal. The broker denies the request, stops and exits with
+  1 (DESIGN.md section 15). That entry is then like an entry after the
+  newest anchor. A broken stderr does not kill the broker by SIGPIPE in
+  the middle of its stop.
 - `chattr +a` does not stop the broker user from appending entries that
   look right. An entry appended while the broker is stopped, with the
   right `seq` and `prev`, becomes the last entry at the next start, and

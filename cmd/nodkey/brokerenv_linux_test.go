@@ -356,10 +356,12 @@ type brokerEnv struct {
 	userKey   ssh.Signer        // the key of [key.deploy]
 	hostKeys  map[string]ssh.Signer
 
-	cmd     *exec.Cmd
-	stderr  *lineLog // the child's stderr: the broker's journal
-	exited  chan struct{}
-	waitErr error // set before exited is closed
+	cmd    *exec.Cmd
+	stderr *lineLog // the child's stderr: the broker's journal
+	// stderrPipe is the end of the child's stderr that the test reads.
+	stderrPipe io.ReadCloser
+	exited     chan struct{}
+	waitErr    error // set before exited is closed
 	// proxyUser is the user name in HTTPS_PROXY of the last start: a new
 	// one for each start (see fakeTelegram.proxiedBy).
 	proxyUser string
@@ -702,7 +704,7 @@ func (e *brokerEnv) start(seams ...string) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	e.cmd = cmd
+	e.cmd, e.stderrPipe = cmd, stderr
 	exited, log := make(chan struct{}), e.stderr
 	e.exited = exited
 	go func() {

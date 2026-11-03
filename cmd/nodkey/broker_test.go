@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -552,4 +553,42 @@ func TestBrokerUsageErrorIsShort(t *testing.T) {
 		t.Errorf("the line has %d bytes and %d line breaks", len(got), strings.Count(got, "\n"))
 	}
 	noAnchorLine(t, got)
+}
+
+// shortWriter takes one byte less than it gets, without an error.
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return max(len(p)-1, 0), nil }
+
+// TestStderrWatch: a working stderr never closes failed. A failed or a
+// short write closes it, once, also when many writes fail at the same
+// time (issue #73).
+func TestStderrWatch(t *testing.T) {
+	var buf bytes.Buffer
+	ok := newStderrWatch(&buf)
+	if n, err := ok.Write([]byte("line\n")); n != 5 || err != nil || buf.String() != "line\n" {
+		t.Fatalf("Write = %d, %v; wrote %q", n, err, buf.String())
+	}
+	select {
+	case <-ok.failed:
+		t.Fatal("failed is closed after a good write")
+	default:
+	}
+	for _, w := range []io.Writer{failingWriter{}, shortWriter{}} {
+		s := newStderrWatch(w)
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() {
+				if _, err := s.Write([]byte("line\n")); err == nil {
+					t.Errorf("%T: Write gave no error", w)
+				}
+			})
+		}
+		wg.Wait()
+		select {
+		case <-s.failed:
+		default:
+			t.Errorf("%T: failed is not closed", w)
+		}
+	}
 }
