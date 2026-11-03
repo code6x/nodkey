@@ -837,6 +837,12 @@ func TestInstallDenies(t *testing.T) {
 		}, noCurl: true, noRun: true, want: "--gh DIR/gh-link is not a program file; name the file itself, not a link"},
 		{name: "a gh that is not there", args: []string{"--gh", "/nonexistent/gh"}, noCurl: true, noRun: true,
 			want: "--gh /nonexistent/gh is not a program file"},
+		{name: "a gh that is not a program", setup: func(in *installer) { chmod(in.t, in.gh, 0o600) },
+			noCurl: true, noRun: true, want: "--gh DIR/gh is not a program file"},
+		{name: "a gh that is a directory", setup: func(in *installer) {
+			in.gh = filepath.Join(in.dir, "gh-dir")
+			mkdir(in.t, in.gh, 0o700)
+		}, noCurl: true, noRun: true, want: "--gh DIR/gh-dir is not a program file"},
 
 		// The newest release, and the files of the release.
 		{name: "no answer from the API", setup: func(in *installer) { in.unserve(latestPath) }, want: "cannot ask GitHub for the newest release"},
@@ -1443,6 +1449,32 @@ func TestInstallCleansTheEnvironment(t *testing.T) {
 	// The real script uses the directories of the system.
 	if !strings.Contains(string(readFile(t, "install.sh")), "\nroot_path=/usr/sbin:/usr/bin:/sbin:/bin\n") {
 		t.Error("install.sh does not set root_path=/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+}
+
+// TestInstallChecksTheUserID: clean_env stops when id -u fails, or prints
+// something that is not a user ID.
+func TestInstallChecksTheUserID(t *testing.T) {
+	dir := privateDir(t)
+	lib := functions(t, dir)
+	for i, tt := range []struct {
+		id   string // the fake id
+		want string
+	}{
+		{"echo root", "id -u does not print a user ID"},
+		{"echo 0x0", "id -u does not print a user ID"},
+		{"echo ' 0'", "id -u does not print a user ID"},
+		{"echo -1", "id -u does not print a user ID"},
+		{"true", "id -u does not print a user ID"},
+		{"exit 1", "cannot run id -u"},
+	} {
+		fakes := filepath.Join(dir, "fakes"+strconv.Itoa(i))
+		mkdir(t, fakes, 0o700)
+		writeFile(t, filepath.Join(fakes, "id"), []byte("#!/bin/sh\n"+tt.id+"\n"), 0o700)
+		r := runFunctions(t, lib, []string{"PATH=" + os.Getenv("PATH")}, "root_path="+fakes+"\nclean_env\necho passed")
+		if want := "nodkey: " + tt.want + "; nothing was installed (exit 1)\n"; r.code != 1 || lastLine(r.stderr) != want || r.stdout != "" {
+			t.Errorf("id that runs %q: exit code %d, stdout %q, stderr %q; want 1 and %q", tt.id, r.code, r.stdout, r.stderr, want)
+		}
 	}
 }
 
