@@ -562,6 +562,60 @@ func TestLookupTimeout(t *testing.T) {
 	checkErr(t, "a cancelled context", errOf(c.Lookup(ctx)), "cannot reach GitHub: the lookup was cancelled")
 }
 
+// lateAnswer is a transport that answers only after the context of the
+// request ended, with a 200 and the body. Go's HTTP client does so in a
+// race (issue #134): when the time is up, it tells the server that it
+// closes the connection, and it can still read the answer that the server
+// then sends.
+type lateAnswer string
+
+func (body lateAnswer) RoundTrip(r *http.Request) (*http.Response, error) {
+	<-r.Context().Done()
+	return &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{}, Request: r,
+		Body: io.NopCloser(strings.NewReader(string(body))),
+	}, nil
+}
+
+// TestLookupLateAnswer: an answer that came after the end of the lookup
+// does not count, even when it is a valid list. A time-out is reported as
+// a time-out, never as a bad answer.
+func TestLookupLateAnswer(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		body    string
+		limit   time.Duration // the limit of the Client
+		caller  time.Duration // the limit of the caller's context; 0 for none
+		cancel  bool          // the caller cancels its context
+		wantErr string
+	}{
+		{"no body, the limit", "", 50 * time.Millisecond, 0, false, "cannot reach GitHub: the lookup timed out"},
+		{"no body, the caller's limit", "", time.Minute, 50 * time.Millisecond, false,
+			"cannot reach GitHub: the lookup timed out"},
+		{"a valid list", listJSON(releaseJSON("v0.3.0")), 50 * time.Millisecond, 0, false,
+			"cannot reach GitHub: the lookup timed out"},
+		{"the caller cancels", "", time.Minute, 0, true, "cannot reach GitHub: the lookup was cancelled"},
+	} {
+		c := New(own)
+		c.base = "https://example.com"
+		c.http.Transport = lateAnswer(tt.body)
+		c.timeout = tt.limit
+		ctx, cancel := context.WithCancel(t.Context())
+		if tt.caller > 0 {
+			ctx, cancel = context.WithTimeout(t.Context(), tt.caller)
+		}
+		if tt.cancel {
+			time.AfterFunc(50*time.Millisecond, cancel)
+		}
+		info, err := c.Lookup(ctx)
+		cancel()
+		checkErr(t, tt.name, err, tt.wantErr)
+		if !reflect.DeepEqual(info, Info{}) {
+			t.Errorf("%s: info %+v, want none", tt.name, info)
+		}
+	}
+}
+
 // TestLookupEndsItsDial: a lookup that ends during its dial ends the dial
 // too, such as when the broker stops while the proxy has not answered the
 // CONNECT yet. Go's HTTP client goes on with a dial after its request
