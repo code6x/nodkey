@@ -49,9 +49,9 @@ import (
 
 // The names of the test, from the example names of AGENTS.md.
 const (
-	keyName    = "deploy"       // the broker's SSH key
-	secretName = "canary-token" // the broker's secret, whose value is the first canary
-	secretVar  = "E2E_TOKEN"    // the variable of nodkey run for it
+	keyName    = "deploy"           // the broker's SSH key
+	secretName = "canary-token"     // the broker's secret, whose value is the first canary
+	secretVar  = "TF_VAR_e2e_token" // the variable of nodkey run for it, in lower case as Terraform has it (#65)
 )
 
 // knownTargets are the targets in the broker's known_hosts, and
