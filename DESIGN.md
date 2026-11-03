@@ -288,13 +288,12 @@ line (section 15) and exits with 64.
 
 The broker refuses each name in the first column below. `LD_*` means
 every name that starts with `LD_`. The match ignores case, because some
-programs read a name in lower case too: npm reads `npm_config_*`, and zsh
-ties `path` to `PATH`. So `LD_*` refuses `LD_PRELOAD` and `ld_preload`.
-Apart from case the match is exact: `LD_*` does not refuse
+programs read a name in lower case too: npm reads `npm_config_*`, and
+curl reads `http_proxy`. So `LD_*` refuses `LD_PRELOAD` and
+`ld_preload`. Apart from case the match is exact: `LD_*` does not refuse
 `LDAP_PASSWORD`. Lower case is allowed in names because some tools need
 it, such as Terraform (`TF_VAR_db_password`, `TF_TOKEN_app_example_com`).
-Each
-entry was checked on 2026-10-15 on Ubuntu 24.04, with a made-up value,
+Each entry was checked on 2026-10-15 on Ubuntu 24.04, with a made-up value,
 unless the table says otherwise. A test checks that this table and the
 list in the code (`api.DeniedVar`) are the same.
 
@@ -323,6 +322,7 @@ list in the code (`api.DeniedVar`) are the same.
 | `BASH_ENV`, `ENV` | bash for a script, and an interactive sh, expand the value, which can run commands, and run the file it names. |
 | `SHELLOPTS`, `BASH_XTRACEFD`, `BASH_COMPAT` | bash prints a value that is not valid, every time it starts. |
 | `PS0`, `PS1`, `PS2`, `PS3`, `PS4` | The shell prints them as prompts, most of them after an expansion that can run commands: `PS4` before each command that `set -x` traces, `PS3` for `select`, the others in an interactive shell. |
+| `PROMPT`, `PROMPT2`, `PROMPT3`, `PROMPT4` | zsh's other names for `PS1` to `PS4`. `PROMPT4` was checked with `zsh -x` (2026-11-03); the others were not checked. |
 | `PROMPT_COMMAND` | An interactive bash runs it before each prompt. |
 | `TIMEFORMAT` | bash prints it after `time`. |
 | `HISTFILE` | An interactive bash writes its history to a file named after the value. |
@@ -345,6 +345,7 @@ list in the code (`api.DeniedVar`) are the same.
 | `TF_CLI_ARGS_*` | The same, for one command, such as `TF_CLI_ARGS_plan`. Not checked. |
 | `TF_CLI_CONFIG_FILE`, `TF_PLUGIN_CACHE_DIR` | terraform prints them. |
 | `TF_WORKSPACE` | `terraform init` and `terraform plan` make a directory `terraform.tfstate.d/<value>`. |
+| `TF_LOG`, `TF_LOG_CORE` | terraform prints a log level that it does not know, in upper case: `Invalid log level: "<VALUE>"`. Checked with terraform 1.9.8 on 2026-11-03. |
 | `TF_LOG_PATH` | terraform writes its log to a file named after the value. |
 | `NPM_CONFIG_*` | npm reads its settings from them, also in upper case. `npm run` runs `NPM_CONFIG_SCRIPT_SHELL`. `NPM_CONFIG_CACHE` and `NPM_CONFIG_LOGS_DIR` make a directory named after the value. npm prints others, such as `NPM_CONFIG_PROXY`: `npm warn invalid config proxy="<value>"`. |
 | `GOMEMLIMIT` | Every Go program, such as gh or docker, prints a value that is not valid, and stops. |
@@ -380,8 +381,11 @@ Not on the list, on purpose:
 - `IFS`: bash, dash, zsh and busybox `sh` ignore it in the environment.
 - `LESSOPEN`: less runs it only when it holds `%s` exactly once.
   Otherwise less says so, without the value.
-- `GOPROXY`, `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`: their URL can
-  hold a password on purpose, and curl does not print the password.
+- `GOPROXY`, `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`, also in lower
+  case: their URL can hold a password on purpose, and curl does not print
+  the password of a URL. But curl and wget print the host, and look it
+  up: a value that is not a proxy URL, such as a bare token, is printed
+  and sent in a DNS query. Use these names only for a proxy URL.
 - Names that hold a secret on purpose, such as `GH_TOKEN`,
   `NODE_AUTH_TOKEN`, `NPM_TOKEN`, `AWS_SECRET_ACCESS_KEY`,
   `LDAP_PASSWORD`, `DOCKER_PASSWORD`, `CARGO_REGISTRY_TOKEN`, and

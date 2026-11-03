@@ -229,9 +229,9 @@ var (
 		"PATH", "SHELL", "SSLKEYLOGFILE", "TEMP", "TERM", "TMP", "TMPDIR", "TZ", "VISUAL",
 		// CA files of curl and Python requests, and the config of wget.
 		"CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "WGETRC",
-		// sh, dash and bash.
+		// sh, dash, bash and zsh.
 		"BASH_COMPAT", "BASH_ENV", "BASH_XTRACEFD", "ENV", "HISTFILE", "PROMPT_COMMAND",
-		"PS0", "PS1", "PS2", "PS3", "PS4", "SHELLOPTS", "TIMEFORMAT",
+		"PROMPT", "PROMPT2", "PROMPT3", "PROMPT4", "PS0", "PS1", "PS2", "PS3", "PS4", "SHELLOPTS", "TIMEFORMAT",
 		// ssh, sudo, gpg, rsync, ls, and the compression programs that tar
 		// runs.
 		"SSH_ASKPASS", "SSH_SK_HELPER", "SSH_SK_PROVIDER", "SUDO_ASKPASS", "GNUPGHOME", "RSYNC_CONNECT_PROG",
@@ -242,7 +242,7 @@ var (
 		// gh, docker and terraform.
 		"GH_BROWSER", "GH_EDITOR", "GH_HOST", "GH_PAGER", "GH_REPO",
 		"COMPOSE_ENV_FILES", "COMPOSE_FILE", "DOCKER_API_VERSION", "DOCKER_CONTEXT", "DOCKER_HOST",
-		"TF_CLI_ARGS", "TF_CLI_CONFIG_FILE", "TF_LOG_PATH", "TF_PLUGIN_CACHE_DIR", "TF_WORKSPACE",
+		"TF_CLI_ARGS", "TF_CLI_CONFIG_FILE", "TF_LOG", "TF_LOG_CORE", "TF_LOG_PATH", "TF_PLUGIN_CACHE_DIR", "TF_WORKSPACE",
 		// The runtimes and build tools of Go, Java, Node.js, Perl, Python,
 		// Ruby and Rust.
 		"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_LDFLAGS", "GO111MODULE", "GOARCH", "GOCACHEPROG",
@@ -264,7 +264,7 @@ var (
 // starts with a prefix on it, such as "LD_". prefix is that prefix, or ""
 // when the name itself is on the list. The match ignores case, because
 // some programs read a name in lower case too (npm reads npm_config_*,
-// zsh ties path to PATH): "ld_preload" and "npm_config_cache" are refused.
+// curl reads http_proxy): "ld_preload" and "npm_config_cache" are refused.
 // Apart from case it is exact: "LD_" does not match "LDAP_PASSWORD". The
 // client checks it to give a clear error; the broker checks it again.
 func DeniedVar(name string) (prefix string, denied bool) {

@@ -501,7 +501,7 @@ func TestDeniedVar(t *testing.T) {
 		{"MANPAGER", ""},
 		{"ld_preload", "LD_"}, {"npm_config_cache", "NPM_CONFIG_"}, {"Npm_Config_Script_Shell", "NPM_CONFIG_"},
 		{"path", ""}, {"Path", ""}, {"git_ssh_command", "GIT_"}, {"java_tool_options", ""},
-		{"TF_CLI_ARGS_plan", "TF_CLI_ARGS_"}, {"TF_CLI_ARGS_apply", "TF_CLI_ARGS_"}, {"tf_cli_args", ""},
+		{"TF_LOG", ""}, {"tf_log_core", ""}, {"PROMPT4", ""}, {"TF_CLI_ARGS_plan", "TF_CLI_ARGS_"}, {"TF_CLI_ARGS_apply", "TF_CLI_ARGS_"}, {"tf_cli_args", ""},
 	} {
 		if prefix, denied := DeniedVar(tt.name); !denied || prefix != tt.prefix {
 			t.Errorf("DeniedVar(%q) = %q, %v; want %q, true", tt.name, prefix, denied, tt.prefix)
@@ -514,7 +514,7 @@ func TestDeniedVar(t *testing.T) {
 		"GOPROXY", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
 		"LD", "LDX_PRELOAD", "XLD_PRELOAD", "LC", "GIT", "MY_GIT_TOKEN", "DYLD", "GCONV", "RESOLV",
 		"PATHS", "HOME_DIR", "TERM_TOKEN", "PS", "PS5", "ENVIRONMENT", "LANGFUSE_SECRET_KEY", "CC_TOKEN",
-		"NPM_CONFIG", "MY_NPM_CONFIG_X", "TF_CLI_ARG", "TF_LOG", "TF_IN_AUTOMATION", "DOCKER_CONFIG_TOKEN",
+		"NPM_CONFIG", "MY_NPM_CONFIG_X", "TF_CLI_ARG", "TF_LOG_PROVIDER", "TF_IN_AUTOMATION", "DOCKER_CONFIG_TOKEN",
 		"NODE_PATH", "PYTHONPATH", "RUBYLIB", "IFS", "LESSOPEN",
 		// Lower case, for Terraform's TF_TOKEN_ and TF_VAR_.
 		"TF_TOKEN_example_com", "TF_VAR_db_password", "gh_token", "ldap_password", "paths",
