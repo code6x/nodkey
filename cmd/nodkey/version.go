@@ -109,11 +109,11 @@ func releaseLine(own nodkeyversion.Release, info release.Info, err error) string
 	}
 	if fixes, _ := info.SecurityNewer(own); len(fixes) > 0 {
 		return "SECURITY UPDATE: " + release.SecurityFixes(fixes) + ". This is nodkey " + own.String() +
-			". Update now: run nodkey update as root. Checked notes: nodkey update --notes."
+			". Update now: run nodkey update as root (docs/setup.md section 2). Checked notes: nodkey update --notes."
 	}
 	if info.Newest.Compare(own) > 0 {
 		return "nodkey: a newer release is out: nodkey " + info.Newest.String() +
-			"; to update, run nodkey update as root; what is new: nodkey update --notes; release notes: " +
+			"; to update, run nodkey update as root (docs/setup.md section 2); what is new: nodkey update --notes; release notes: " +
 			release.PageURL(info.Newest)
 	}
 	return "nodkey: this is the newest release"

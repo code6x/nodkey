@@ -621,9 +621,9 @@ show_notes() {
 		die "the new nodkey cannot print its changes; read the release notes: https://github.com/$repo/releases/tag/v$version"
 	say ""
 	if [ -n "$want_version" ]; then
-		say "Nothing was installed. To install it, run as root: nodkey update --version $version"
+		say "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update --version $version"
 	else
-		say "Nothing was installed. To install it, run as root: nodkey update"
+		say "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update"
 	fi
 }
 

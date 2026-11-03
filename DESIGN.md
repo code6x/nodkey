@@ -3325,7 +3325,7 @@ release (section 10) and `--offline` is not given, it asks GitHub for the
 newest release, for at most 10 seconds, and prints one line on stderr:
 
 ```
-nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root; what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+nodkey: a newer release is out: nodkey 0.3.0; to update, run nodkey update as root (docs/setup.md section 2); what is new: nodkey update --notes; release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
 nodkey: this is the newest release
 nodkey: cannot check for a newer release: cannot reach GitHub: the lookup timed out
 ```
@@ -3335,7 +3335,7 @@ older than the newest release, it prints this red line instead (no
 colour when `NO_COLOR` is set and not empty):
 
 ```
-SECURITY UPDATE: <security releases>. This is nodkey 0.3.0. Update now: run nodkey update as root. Checked notes: nodkey update --notes.
+SECURITY UPDATE: <security releases>. This is nodkey 0.3.0. Update now: run nodkey update as root (docs/setup.md section 2). Checked notes: nodkey update --notes.
 ```
 
 A newest release that is older than this nodkey gives "this is the
@@ -3561,7 +3561,7 @@ text of a line. It exits with:
 `nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]` installs a
 release in place of the file that it runs from: the newest release, or
 `X.Y.Z`, also an older one. It runs only as root. Otherwise it prints
-`nodkey: nodkey update must run as root: run it as root (exit 1)`.
+`nodkey: nodkey update must run as root: run it as root, from a root shell that does not come from the agent's account (docs/setup.md section 2) (exit 1)`.
 It runs the install script that is built into the binary (`install.sh`,
 section 18) with `/bin/sh`. The script gets `--bin-dir` with the
 directory of the file of nodkey, after links, and the flags that are

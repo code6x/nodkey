@@ -990,9 +990,9 @@ func TestInstallNotes(t *testing.T) {
 		args []string
 		want string // a part of stdout
 	}{
-		{name: "the newest release", want: "Nothing was installed. To install it, run as root: nodkey update\n"},
+		{name: "the newest release", want: "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update\n"},
 		{name: "a release with --version", args: []string{"--version", "0.2.0"},
-			want: "Nothing was installed. To install it, run as root: nodkey update --version 0.2.0\n"},
+			want: "Nothing was installed. To install it, run as root (docs/setup.md section 2): nodkey update --version 0.2.0\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			in := newInstaller(t)

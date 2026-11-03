@@ -153,12 +153,12 @@ refuses a directory or a file that another user than root can change:
 (`TMPDIR`, or `/tmp`).
 
 The first time, on each host: download the script as root, read it, and
-run it as root:
+run it as root. In a root shell that you got as above:
 
 ```sh
-sudo curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
-sudo less /root/install.sh
-sudo sh /root/install.sh
+curl --proto '=https' --tlsv1.2 -fsSL -o /root/install.sh https://raw.githubusercontent.com/code6x/nodkey/main/install.sh
+less /root/install.sh
+sh /root/install.sh
 nodkey version
 ```
 
@@ -166,7 +166,7 @@ On the broker host, where no agent runs, the short form works too. But
 it runs the script before you can read it:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/code6x/nodkey/main/install.sh | sudo sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/code6x/nodkey/main/install.sh | sh
 ```
 
 To check the attestation, the installer downloads gh 2.102.0, and

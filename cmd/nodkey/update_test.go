@@ -121,7 +121,7 @@ func TestUpdateNeedsRoot(t *testing.T) {
 	if code := run([]string{"update"}, strings.NewReader(""), &stdout, &stderr); code != exitFailure {
 		t.Errorf("exit code %d, want %d", code, exitFailure)
 	}
-	if want := "nodkey: nodkey update must run as root: run it as root (exit 1)\n"; stderr.String() != want {
+	if want := "nodkey: nodkey update must run as root: run it as root, from a root shell that does not come from the agent's account (docs/setup.md section 2) (exit 1)\n"; stderr.String() != want {
 		t.Errorf("stderr = %q, want %q", stderr.String(), want)
 	}
 	if stdout.Len() != 0 || got.calls != 0 {
