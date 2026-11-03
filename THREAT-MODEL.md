@@ -123,7 +123,10 @@ valid names gets `429`, and one with a name that does not exist, or that
 the client may not use, gets `403`, both without a message. So an agent
 can learn, without a message, which secret names it may use, and with
 `nodkey ssh-grant` which hosts are in the broker's `known_hosts` and in
-the `hosts` of a key, and the rule and window of a key. We accept this small leak: these are names, not
+the `hosts` of a key, and the rule and window of a key. For a grant that
+is longer than the window of a key that the client may use, the broker
+says the window outright (header `Nodkey-Window`, DESIGN.md section 13),
+so that a refusal by a rule is not taken for a Deny. We accept this small leak: these are names, not
 secret values. (The client may list its key names anyway, with
 `/v1/keys`.)
 Risk that remains: the agent can learn the names of the secrets and hosts

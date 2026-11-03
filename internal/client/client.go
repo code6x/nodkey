@@ -121,6 +121,12 @@ type Error struct {
 	// none came.
 	Status int
 	text   string
+	// prompted is set when the broker sent the short code before its
+	// answer: the request waited for the person (DESIGN.md section 5).
+	prompted bool
+	// window is the key's window from api.WindowHeader of a 403, when the
+	// broker sent a valid one, or 0.
+	window time.Duration
 }
 
 func (e *Error) Error() string { return e.text }
@@ -195,6 +201,13 @@ func (tr *trace) got1xx(status int, h textproto.MIMEHeader) error {
 		tr.onCode(code)
 	}
 	return nil
+}
+
+// wasShown reports whether onCode got the short code.
+func (tr *trace) wasShown() bool {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.shown
 }
 
 // finish ends the calls of onCode. It waits for a call that runs.
@@ -281,7 +294,12 @@ func postWith[T any, P interface {
 	if resp.StatusCode != http.StatusOK {
 		// The body of an error answer is never read: it is not needed, and
 		// it must never be shown.
-		return nil, statusError(resp.StatusCode)
+		e := statusError(resp.StatusCode)
+		e.prompted = tr.wasShown()
+		if e.Status == http.StatusForbidden {
+			e.window, _ = api.KeyWindow(resp.Header)
+		}
+		return nil, e
 	}
 	ans, err := api.ReadAnswer[T, P](resp.Body)
 	if err != nil {

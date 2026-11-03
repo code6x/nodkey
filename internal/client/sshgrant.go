@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -33,13 +34,15 @@ keys still ask.
   --host NAME     a host by its name in the broker's known_hosts; 1 to 20
                   hosts, each with its own --host
   --for DURATION  how long the grants last, in whole minutes, such as 15m
-                  or 1h; at most the window of the key
+                  or 1h; it must be at most the window of the key, or the
+                  broker refuses it with no prompt
   --reason TEXT   why the logins are needed. Without it, the reason is the
                   environment variable NODKEY_REASON.
 
 The client config is ~/.config/nodkey/client.toml. nodkey ssh-grant exits
 with 0 when the person approved, or with 64 (wrong usage), 69 (the broker
-cannot be reached) or 77 (denied). SIGINT or SIGTERM while it waits
+cannot be reached) or 77 (denied: by the person, by a timeout, or by a
+rule of the broker before any prompt). SIGINT or SIGTERM while it waits
 cancel the request.
 `
 
@@ -150,6 +153,10 @@ func (g granter) run(ctx context.Context, args []string, w io.Writer) int {
 		err = context.Cause(ctx)
 	}
 	if err != nil {
+		var e *Error
+		if ctx.Err() == nil && errors.As(err, &e) && e.Status == http.StatusForbidden && !e.prompted {
+			return fail(stderr, exitDenied, ruleDenied(o.duration, e.window))
+		}
 		return requestFailed(ctx, stderr, err)
 	}
 	minutes := int(o.duration / time.Minute)
@@ -167,6 +174,31 @@ func (g granter) run(ctx context.Context, args []string, w io.Writer) int {
 	_, _ = fmt.Fprintf(stderr, "nodkey: SSH logins as %s to %s allowed until %s (exit %d)\n",
 		o.user, grantHostCount(len(o.hosts)), until.Format(grantClock), exitOK)
 	return exitOK
+}
+
+// ruleDenied returns the reason of a 403 that came with no short code: a
+// rule of the broker refused the grant, and no prompt was sent (#106).
+// window is the key's window from the broker, or 0. The text is fixed,
+// and holds only the window and the client's own --for.
+func ruleDenied(asked, window time.Duration) string {
+	if window > 0 && asked > window {
+		return fmt.Sprintf("denied by a rule: --for %s is longer than the key's window (%s); no prompt was sent",
+			shortDuration(asked), shortDuration(window))
+	}
+	return "denied by a rule of the broker; no prompt was sent"
+}
+
+// shortDuration writes d as Go does, without the zero parts at the end:
+// "1h", "1h30m", "30m", "90s".
+func shortDuration(d time.Duration) string {
+	t := d.String()
+	if strings.HasSuffix(t, "m0s") {
+		t = strings.TrimSuffix(t, "0s")
+	}
+	if strings.HasSuffix(t, "h0m") {
+		t = strings.TrimSuffix(t, "0m")
+	}
+	return t
 }
 
 // grantHostCount returns "1 host" or "N hosts".

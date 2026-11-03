@@ -217,22 +217,33 @@ func TestSSHGrantRefusedByTheBroker(t *testing.T) {
 		}
 		return args
 	}
+	const (
+		rule = "nodkey: denied by a rule of the broker; no prompt was sent (exit 77)\n"
+		long = "nodkey: denied by a rule: --for 16m is longer than the key's window (15m); no prompt was sent (exit 77)\n"
+	)
 	for _, tt := range []struct {
 		name   string
 		client string
 		args   []string
+		want   string
 	}{
-		{"a key whose rule is always", "laptop", grant("admin", "15m", "web-1")},
-		{"a key whose rule is never", "ci", grant("backup", "15m", "web-1")},
-		{"longer than the key's window", "laptop", grant("deploy", "16m", "web-1")},
-		{"a host that is not in known_hosts", "laptop", grant("deploy", "15m", "web-1", "web-9")},
-		{"a host that is not in the key's hosts", "laptop", grant("web", "15m", "web-1", "db-1")},
-		{"an unknown key", "laptop", grant("nope", "15m", "web-1")},
-		{"a key of another client", "ci", grant("web", "15m", "web-1")},
+		{"a key whose rule is always", "laptop", grant("admin", "15m", "web-1"), rule},
+		{"a key whose rule is always, for long", "laptop", grant("admin", "1h", "web-1"), rule},
+		{"a key whose rule is never", "ci", grant("backup", "15m", "web-1"), rule},
+		{"longer than the key's window", "laptop", grant("deploy", "16m", "web-1"), long},
+		{"an hour, longer than the key's window", "laptop", grant("deploy", "1h", "web-1"),
+			"nodkey: denied by a rule: --for 1h is longer than the key's window (15m); no prompt was sent (exit 77)\n"},
+		{"longer than the window, and a bad host", "laptop", grant("deploy", "16m", "web-1", "web-9"), long},
+		{"a host that is not in known_hosts", "laptop", grant("deploy", "15m", "web-1", "web-9"), rule},
+		{"a host that is not in the key's hosts", "laptop", grant("web", "15m", "web-1", "db-1"), rule},
+		{"an unknown key", "laptop", grant("nope", "15m", "web-1"), rule},
+		{"a key of another client", "ci", grant("web", "15m", "web-1"), rule},
+		// The window of a key that the client may not use stays hidden.
+		{"a key of another client, for long", "ci", grant("web", "1h", "web-1"), rule},
 	} {
 		code, stderr := grantIn(t.Context(), testGranter(gb.client(t, tt.client), nil), tt.args...)
-		if code != exitDenied || stderr != "nodkey: denied (exit 77)\n" {
-			t.Errorf("%s: exit code %d, stderr %q; want 77 without a waiting line", tt.name, code, stderr)
+		if code != exitDenied || stderr != tt.want {
+			t.Errorf("%s: exit code %d, stderr %q; want 77 and only %q", tt.name, code, stderr, tt.want)
 		}
 		if got := gb.lastEvents(); got != "request denied:not_allowed" {
 			t.Errorf("%s: audit entries %s", tt.name, got)
@@ -289,6 +300,12 @@ func TestSSHGrantBrokerChecksItself(t *testing.T) {
 		var e *Error
 		if !errors.As(err, &e) || e.Status != tt.status {
 			t.Errorf("%s: %v; want status %d", tt.name, err, tt.status)
+		}
+		// Only a time over the window gets the window, not a bad time.
+		over := req.Seconds > 15*60
+		if e != nil && (e.prompted || (e.window == 15*time.Minute) != over || (!over && e.window != 0)) {
+			t.Errorf("%s: prompted %v, window %v; want no prompt, and the window only for a time over it",
+				tt.name, e.prompted, e.window)
 		}
 		if got := gb.lastEvents(); got != "request denied:not_allowed" {
 			t.Errorf("%s: audit entries %s", tt.name, got)

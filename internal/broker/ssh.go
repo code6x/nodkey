@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -137,6 +138,11 @@ func (rq *request) grant(ctx context.Context, r *http.Request) {
 	rq.pre = sub
 	rq.releaseBody()
 	if !ok {
+		if w, long := rq.s.grantTooLong(rq.client, req); long {
+			// Only a client that may use the key gets its window, so that
+			// the person at the client sees why no prompt came (#106).
+			rq.w.Header().Set(api.WindowHeader, strconv.FormatInt(int64(w/time.Second), 10))
+		}
 		rq.deny(sub, audit.CauseNotAllowed, "", http.StatusForbidden)
 		return
 	}
@@ -186,6 +192,17 @@ func (s *Service) checkGrant(client string, req *api.GrantRequest) (audit.Subjec
 	}
 	ok = s.checkHosts(k, known, req.Hosts, &sub) && ok
 	return sub, ok
+}
+
+// grantTooLong reports whether the SSH grant req asks for more time than
+// the window of its key, when the key may be used by client and has the
+// "window" rule. It returns the window then.
+func (s *Service) grantTooLong(client string, req *api.GrantRequest) (time.Duration, bool) {
+	k, known := s.cfg.Keys[req.Key]
+	if !known || !slices.Contains(k.Clients, client) || k.Rule.Ask != config.AskWindow {
+		return 0, false
+	}
+	return k.Rule.Window, req.Seconds > int64(k.Rule.Window/time.Second)
 }
 
 // checkHosts checks the host names of an SSH grant or a scheduled grant:

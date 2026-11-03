@@ -2585,6 +2585,22 @@ before any message when:
   list when it has one;
 - it lists no host, or more than 20 hosts.
 
+The answer is `403`, as for a Deny. When `--for` is longer than the
+key's window, and the key may be used by this client and has the rule
+`window`, the `403` has the header `Nodkey-Window` with the key's window
+in whole seconds, such as `1800`. No other answer has it, so a client
+learns nothing about a key that it may not use. The client already knows
+whether the request waited for the person: the short code comes just
+before the request waits, in the queue or with a message (section 10). So `nodkey ssh-grant` prints `denied by a rule:
+--for 1h is longer than the key's window (30m); no prompt was sent` when
+it got the window, and `denied by a rule of the broker; no prompt was
+sent` for a `403` without a short code before it. After a short code,
+the request waited for the person (in the queue, or with a message on
+the phone), so a `403` is a Deny, a timeout or a cancel: it prints
+`denied`. The client takes the window only when it is one header with a
+plain number of seconds from 60 to 28800 (8 hours); any other value
+counts as none. The exit code is 77 in each case.
+
 Each login under these grants still passes every check of section 6, and
 gets its own audit entries (`request`, `grant_used`, `signed`). A Deny for
 the key ends the grants at once (section 8).
@@ -3202,7 +3218,8 @@ print one warning about the version of the broker (section 10).
 | 77 | denied, expired or not allowed |
 
 It reads the broker's answers as `nodkey run` does: 77 for `403` and
-`429`, and 69 for every other answer that is not `200`, and when the
+`429` (a `403` with no prompt before it says `denied by a rule`, section
+13), and 69 for every other answer that is not `200`, and when the
 config, the TLS key or the deadline fails. It also exits with 69 for a
 `200` that is not a valid answer, or whose `minutes` is not 1 to the
 minutes of `--for` (section 13): the person approved, and the broker is

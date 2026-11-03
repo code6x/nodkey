@@ -23,9 +23,11 @@ import (
 	"net/textproto"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/version"
 )
 
@@ -78,6 +80,38 @@ const VersionHeader = "Nodkey-Version"
 // version.ParseRelease accepts it and it is newer than the client's own
 // release, and then prints one fixed line; it ignores any other value.
 const SecurityUpdateHeader = "Nodkey-Security-Update"
+
+// WindowHeader holds the window of a key, in whole seconds as a decimal
+// number such as "1800", in the 403 answer to a request for SSH grants
+// whose --for is longer than that window (DESIGN.md section 13). The
+// broker sends it only when the key may be used by the client and has
+// the "window" rule, so it tells the client nothing about a key that the
+// client may not use. Read it with KeyWindow.
+const WindowHeader = "Nodkey-Window"
+
+// KeyWindow returns the window in the header WindowHeader of an answer. ok is
+// false when there is no such header, more than one, or a value that is
+// not a decimal number of seconds from config.MinWindow to
+// config.MaxWindow.
+func KeyWindow(h http.Header) (window time.Duration, ok bool) {
+	values := h.Values(WindowHeader)
+	if len(values) != 1 {
+		return 0, false
+	}
+	v := values[0]
+	if len(v) == 0 || len(v) > 5 || strings.Trim(v, "0123456789") != "" || v[0] == '0' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false
+	}
+	window = time.Duration(n) * time.Second
+	if window < config.MinWindow || window > config.MaxWindow {
+		return 0, false
+	}
+	return window, true
+}
 
 // GrantTokenHeader holds the token of a standing grant (DESIGN.md
 // sections 8 and 10). nodkey run sends it with the request for secrets. The
