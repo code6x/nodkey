@@ -218,7 +218,7 @@ func TestSSHGrantRefusedByTheBroker(t *testing.T) {
 		return args
 	}
 	const (
-		rule = "nodkey: denied by a rule of the broker (key, user or host); no prompt was sent (exit 77)\n"
+		rule = "nodkey: denied by a rule of the broker; no prompt was sent (exit 77)\n"
 		long = "nodkey: denied by a rule: --for 16m is longer than the key's window (15m); no prompt was sent (exit 77)\n"
 	)
 	for _, tt := range []struct {

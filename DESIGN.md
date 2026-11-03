@@ -2593,9 +2593,10 @@ learns nothing about a key that it may not use. The client already knows
 whether a message was sent: the short code comes just before the
 message (section 10). So `nodkey ssh-grant` prints `denied by a rule:
 --for 1h is longer than the key's window (30m); no prompt was sent` when
-it got the window, and `denied by a rule of the broker (key, user or
-host); no prompt was sent` for a `403` without a short code before it.
-After a short code, a `403` is a Deny, a timeout or a cancel: it prints
+it got the window, and `denied by a rule of the broker; no prompt was
+sent` for a `403` without a short code before it. After a short code,
+the request waited for the person (in the queue, or with a message on
+the phone), so a `403` is a Deny, a timeout or a cancel: it prints
 `denied`. The client takes the window only when it is one header with a
 plain number of seconds from 60 to 28800 (8 hours); any other value
 counts as none. The exit code is 77 in each case.

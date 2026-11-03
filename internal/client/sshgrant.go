@@ -185,7 +185,7 @@ func ruleDenied(asked, window time.Duration) string {
 		return fmt.Sprintf("denied by a rule: --for %s is longer than the key's window (%s); no prompt was sent",
 			shortDuration(asked), shortDuration(window))
 	}
-	return "denied by a rule of the broker (key, user or host); no prompt was sent"
+	return "denied by a rule of the broker; no prompt was sent"
 }
 
 // shortDuration writes d as Go does, without the zero parts at the end:

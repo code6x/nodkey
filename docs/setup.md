@@ -1720,9 +1720,9 @@ the key ends its grants at once.
 message: nodkey prints `denied by a rule: --for 1h is longer than the
 key's window (30m); no prompt was sent` and exits with 77. Any other
 check that fails before a message, such as a host that is not in
-`known_hosts`, prints `denied by a rule of the broker (key, user or
-host); no prompt was sent`. Plain `denied` means that a message was
-sent, and the person denied it or nobody answered in time.
+`known_hosts`, prints `denied by a rule of the broker; no prompt was
+sent`. Plain `denied` comes after the `waiting for approval` line: the
+person denied it, or nobody answered in time.
 
 ### A job that runs later: nodkey preapprove
 
