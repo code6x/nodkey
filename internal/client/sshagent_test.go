@@ -986,6 +986,9 @@ func TestPeerCredentials(t *testing.T) {
 	fb := newFakeSSHBroker(t, nil, nil)
 	au := startAgent(t, fb.b, agentOptions{peer: func(c *net.UnixConn) (peer, error) {
 		p, err := peerCredentials(c)
+		if p.gone || (p.pidfd != nil && !processRuns(p.pidfd)) {
+			t.Errorf("SO_PEERPIDFD: gone %v; want a pidfd of a process that runs, or none on an old kernel", p.gone)
+		}
 		got <- p
 		return p, err
 	}})

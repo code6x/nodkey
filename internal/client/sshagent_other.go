@@ -28,3 +28,6 @@ func lockFile(*os.File) error {
 // waitHangUp cannot watch a connection here: it reports false at once, so
 // a request is not cancelled when ssh hangs up.
 func waitHangUp(*net.UnixConn) bool { return false }
+
+// processRuns cannot tell here; peerCredentials gives no pidfd anyway.
+func processRuns(*os.File) bool { return false }
