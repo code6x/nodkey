@@ -452,6 +452,13 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
      (such as a kernel thread), or is there twice. The client opens the
      directory `/proc/PID` of a process once, and reads its files through
      it, so that they all come from that one process.
+   - A process ID can be used again by a new process. On Linux 6.5 and
+     newer the client gets a pidfd of `ssh` too (`SO_PEERPIDFD`). After it
+     opens `/proc/PID`, it checks with the pidfd that `ssh` still runs. If
+     `ssh` has ended, or the kernel has pidfds but gives none, the request
+     goes without the command lines and the reason. A parent counts only
+     if, after the client opened the parent's directory, its child still
+     names it as its parent. On an older kernel there is no pidfd check.
    - A read of `/proc` can block, such as on a stuck FUSE or NFS file
      system. The client waits for it at most 2 seconds, and runs at most
      4 such reads at the same time. Otherwise the request goes without

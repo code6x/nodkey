@@ -17,7 +17,7 @@ import (
 func pidfdOf(t *testing.T, pid int) *os.File {
 	t.Helper()
 	const sysPidfdOpen = 434                                          // the same on amd64 and arm64
-	fd, _, errno := syscall.Syscall(sysPidfdOpen, uintptr(pid), 0, 0) //nolint:gosec // G115: a process ID is not negative.
+	fd, _, errno := syscall.Syscall(sysPidfdOpen, uintptr(pid), 0, 0)
 	if errno != 0 {
 		t.Skipf("pidfd_open: %v", errno)
 	}
@@ -77,7 +77,7 @@ func TestPeerExitedBeforeRead(t *testing.T) {
 					if err != nil {
 						return peer{}, err
 					}
-					p.pidfd = os.NewFile(uintptr(fd), "pidfd") //nolint:gosec // G115: a file descriptor is not negative.
+					p.pidfd = os.NewFile(uintptr(fd), "pidfd")
 				}
 				return p, nil
 			}})
