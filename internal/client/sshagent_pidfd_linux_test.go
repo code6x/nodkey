@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -94,6 +95,10 @@ func TestPeerExitedBeforeRead(t *testing.T) {
 			if len(req.Commands) != 0 || req.Reason != "" {
 				t.Errorf("the request has %d command lines and a reason of %d bytes; want none", len(req.Commands),
 					len(req.Reason))
+			}
+			ended := "sent a sign request without the command lines and the reason: ssh has ended"
+			if countLines(au.log.String(), ended) != 1 || strings.Contains(au.log.String(), canary) {
+				t.Errorf("the agent wrote %q; want one line that ssh has ended", au.lines())
 			}
 		})
 	}

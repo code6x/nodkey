@@ -456,7 +456,8 @@ NODKEY_REASON="apply the nginx fix" ansible-playbook site.yml
      newer the client gets a pidfd of `ssh` too (`SO_PEERPIDFD`). After it
      opens `/proc/PID`, it checks with the pidfd that `ssh` still runs. If
      `ssh` has ended, or the kernel has pidfds but gives none, the request
-     goes without the command lines and the reason. A parent counts only
+     goes without the command lines and the reason, and a line says so.
+     A parent counts only
      if, after the client opened the parent's directory, its child still
      names it as its parent. On an older kernel there is no pidfd check.
    - A read of `/proc` can block, such as on a stuck FUSE or NFS file

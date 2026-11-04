@@ -666,18 +666,25 @@ func (c *agentConn) sign(ctx context.Context, key, data []byte, flags uint32) []
 // counts only if p still runs after its directory in /proc is open: else
 // the directory may be a new process with the same ID. When the kernel
 // has pidfds but gave none for p, p has ended, and the request goes
-// without the context. It waits for the reads of /proc at most
+// without the context; a line says so. It waits for the reads of /proc at most
 // a.procTimeout, and at most maxProcReads such reads run at the same
 // time: a read can block, such as on a stuck FUSE or NFS file system.
 // Otherwise the request goes without the command lines and the reason,
 // and a line says why.
 func (a *sshAgent) claimed(ctx context.Context, p peer) ([][]string, string) {
+	const ended = "sent a sign request without the command lines and the reason: ssh has ended"
 	if p.gone {
+		a.log.note(ended)
 		return [][]string{}, ""
 	}
 	var running func() bool
+	stopped := false // read only after claimedContext returned
 	if p.pidfd != nil {
-		running = func() bool { return processRuns(p.pidfd) }
+		running = func() bool {
+			r := processRuns(p.pidfd)
+			stopped = !r
+			return r
+		}
 	}
 	if a.procReads.Add(1) > maxProcReads {
 		a.procReads.Add(-1)
@@ -699,6 +706,9 @@ func (a *sshAgent) claimed(ctx context.Context, p peer) ([][]string, string) {
 	defer t.Stop()
 	select {
 	case c := <-got:
+		if stopped {
+			a.log.note(ended)
+		}
 		return c.commands, c.reason
 	case <-t.C:
 		a.log.note("sent a sign request without the command lines and the reason: /proc did not answer within %s",

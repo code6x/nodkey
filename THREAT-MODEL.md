@@ -158,8 +158,10 @@ the command lines and the reason. A parent counts only if its child still
 names it as its parent after the open of the parent's directory, as a
 process whose parent ends gets another parent. Tests check both: no text
 of a new process with the same ID is sent. On an older kernel the open of
-`/proc/PID` of `ssh` can still land on a new process, but only within the
-same user, and only in claimed text.
+`/proc/PID` of `ssh` can still land on a new process, also of another
+user. Then its command line and those of its parents can be sent as
+claimed text; its reason only if it runs as the same user, as Linux shows
+the environment only to that user.
 Risk that remains: the person can still be fooled. Deny any request that
 looks strange.
 
