@@ -89,17 +89,58 @@ func TestClaimedContextParents(t *testing.T) {
 	p.add(t, 97, 96, []string{"node", "agent.js"}, nil)
 	p.add(t, 96, 1, []string{"sshd: dev@pts/0"}, nil)
 	p.add(t, 1, 0, []string{"/sbin/init"}, nil)
-	commands, reason := p.fs().claimedContext(100)
+	commands, reason := p.fs().claimedContext(100, nil)
 	want := [][]string{{"ssh", "deploy@web-1"}, {"ansible-playbook", "site.yml"}, {"/bin/bash", "-c", "make deploy"},
 		{"node", "agent.js"}}
 	if !slices.EqualFunc(commands, want, slices.Equal) || reason != "apply the nginx fix" {
 		t.Errorf("claimedContext = %q, %q; want %q, the reason of process 100", commands, reason, want)
 	}
-	if got, _ := p.fs().claimedContext(98); len(got) != 4 || got[3][0] != "/sbin/init" {
+	if got, _ := p.fs().claimedContext(98, nil); len(got) != 4 || got[3][0] != "/sbin/init" {
 		t.Errorf("from process 98: %q; want 98, 97, 96 and 1", got)
 	}
-	if got, reason := p.fs().claimedContext(1); len(got) != 1 || reason != "" {
+	if got, reason := p.fs().claimedContext(1, nil); len(got) != 1 || reason != "" {
 		t.Errorf("from process 1: %q, %q; it has no parent", got, reason)
+	}
+}
+
+// TestClaimedContextNotRunning: when the process that connected has ended
+// by the time its directory in /proc is open, the directory may be a new
+// process with the same ID, so there is no claimed context at all (issue
+// #61).
+func TestClaimedContextNotRunning(t *testing.T) {
+	t.Parallel()
+	p := newFakeProc(t)
+	p.add(t, 100, 99, []string{"new-process"}, []string{"NODKEY_REASON=from the new process"})
+	p.add(t, 99, 1, []string{"bash"}, nil)
+	asked := 0
+	commands, reason := p.fs().claimedContext(100, func() bool { asked++; return false })
+	if len(commands) != 0 || reason != "" || asked != 1 {
+		t.Errorf("claimedContext = %q, %q, asked %d times; want nothing, asked once", commands, reason, asked)
+	}
+	commands, _ = p.fs().claimedContext(100, func() bool { return true })
+	if len(commands) != 2 {
+		t.Errorf("a process that runs: %q; want it and its parent", commands)
+	}
+}
+
+// TestClaimedContextParentChanged: a parent counts only if its child still
+// names it as its parent after the parent's directory is open. Else the
+// parent may have ended, and its ID may be a new process (issue #61).
+func TestClaimedContextParentChanged(t *testing.T) {
+	t.Parallel()
+	p := newFakeProc(t)
+	p.add(t, 100, 99, []string{"ssh", "web-1"}, nil)
+	p.add(t, 99, 98, []string{"new-process"}, nil)
+	p.add(t, 98, 1, []string{"bash"}, nil)
+	fs := p.fs()
+	fs.opened = func(pid int) {
+		if pid == 99 { // the parent ended; process 100 has a new parent now
+			p.add(t, 100, 1, []string{"ssh", "web-1"}, nil)
+		}
+	}
+	commands, _ := fs.claimedContext(100, nil)
+	if want := [][]string{{"ssh", "web-1"}}; !slices.EqualFunc(commands, want, slices.Equal) {
+		t.Errorf("claimedContext = %q; want %q, without the new process", commands, want)
 	}
 }
 
@@ -138,7 +179,7 @@ func TestClaimedContextStops(t *testing.T) {
 		{-1, [][]string{}, ""},
 	}
 	for _, tt := range tests {
-		commands, reason := p.fs().claimedContext(tt.pid)
+		commands, reason := p.fs().claimedContext(tt.pid, nil)
 		if !slices.EqualFunc(commands, tt.want, slices.Equal) || commands == nil || reason != tt.reason {
 			t.Errorf("process %d: %q, %q; want %q, %q", tt.pid, commands, reason, tt.want, tt.reason)
 		}

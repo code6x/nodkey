@@ -45,6 +45,9 @@ const (
 // give it a tree of their own.
 type procFS struct {
 	root string
+	// opened, when not nil, is called after the directory of a process
+	// is open. Only tests set it.
+	opened func(pid int)
 }
 
 // claimedContext returns the claimed context of a sign request from the
@@ -55,6 +58,15 @@ type procFS struct {
 // stops at the first one that cannot be read, has no command line, such
 // as a kernel thread, or is there twice.
 //
+// A process ID can be used again by a new process once the process ended
+// (issue #61). So when running is not nil, the context counts only if
+// running reports true after the directory of pid is open: then the
+// directory is of the process that connected, and the reads through it
+// stay on it. running is nil when the kernel cannot tell (before Linux
+// 6.5); then the open may land on a new process. A parent counts only if
+// its child, after the open of the parent's directory, still names it as
+// its parent: a process whose parent ended gets another parent.
+//
 // Each command line and the reason are as nodkey run sends them: a field
 // that is too long becomes "[hidden: too long]" (claimedCommand,
 // claimedText). Nothing else of the environment is kept or sent.
@@ -62,21 +74,23 @@ type procFS struct {
 // A read of /proc can block, such as on a mapping of a stuck FUSE or NFS
 // file system; sshAgent.claimed waits for claimedContext only for a short
 // time.
-func (p procFS) claimedContext(pid int32) (commands [][]string, reason string) {
+func (p procFS) claimedContext(pid int32, running func() bool) (commands [][]string, reason string) {
 	commands = [][]string{}
-	pr, err := p.openProcess(int(pid))
+	child, err := p.openProcess(int(pid))
 	if err != nil {
 		return commands, ""
 	}
-	argv, ok := pr.commandLine()
+	defer func() { child.close() }()
+	if running != nil && !running() {
+		return commands, ""
+	}
+	argv, ok := child.commandLine()
 	if !ok {
-		pr.close()
 		return commands, ""
 	}
 	commands = append(commands, argv)
-	reason = pr.reason()
-	parent, hasParent := pr.parent()
-	pr.close()
+	reason = child.reason()
+	parent, hasParent := child.parent()
 	seen := map[int]bool{int(pid): true}
 	for range maxParents {
 		if !hasParent || seen[parent] {
@@ -87,13 +101,18 @@ func (p procFS) claimedContext(pid int32) (commands [][]string, reason string) {
 		if err != nil {
 			break
 		}
-		argv, ok := pr.commandLine()
-		parent, hasParent = pr.parent()
-		pr.close()
+		if again, ok := child.parent(); !ok || again != parent {
+			pr.close()
+			break
+		}
+		child.close()
+		child = pr
+		argv, ok := child.commandLine()
 		if !ok {
 			break
 		}
 		commands = append(commands, argv)
+		parent, hasParent = child.parent()
 	}
 	return commands, reason
 }
@@ -114,6 +133,9 @@ func (p procFS) openProcess(pid int) (*process, error) {
 	dir, err := os.OpenRoot(filepath.Join(p.root, strconv.Itoa(pid)))
 	if err != nil {
 		return nil, err
+	}
+	if p.opened != nil {
+		p.opened(pid)
 	}
 	return &process{dir: dir}, nil
 }

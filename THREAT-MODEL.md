@@ -147,8 +147,21 @@ root). This helps against honest mistakes and tricks, not against a
 hostile agent: the client runs on the agent machine.
 For an SSH login, `nodkey ssh-agent` reads the command lines of `ssh` and
 its parents, and the reason, from `/proc` (DESIGN.md section 6). A
-process can change its own command line and environment, and a process ID
-can be used again by a new process. So these are claims too.
+process can change its own command line and environment. So these are
+claims too. A process ID can also be used again by a new process: if `ssh`
+ends before the agent opens `/proc/PID`, the open could land on another
+process (issue #61). So on Linux 6.5 and newer the agent gets a pidfd of
+`ssh` (`SO_PEERPIDFD`), opens `/proc/PID`, and then checks with the pidfd
+that `ssh` still runs; its files are read through that open directory. If
+`ssh` has ended, or the kernel has pidfds but gives none, the request goes without
+the command lines and the reason. A parent counts only if its child still
+names it as its parent after the open of the parent's directory, as a
+process whose parent ends gets another parent. Tests check both: no text
+of a new process with the same ID is sent. On an older kernel the open of
+`/proc/PID` of `ssh` can still land on a new process, also of another
+user. Then its command line and those of its parents can be sent as
+claimed text; its reason only if it runs as the same user, as Linux shows
+the environment only to that user.
 Risk that remains: the person can still be fooled. Deny any request that
 looks strange.
 

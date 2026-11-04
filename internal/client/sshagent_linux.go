@@ -12,23 +12,31 @@ import (
 // peerCredentials returns the user ID and the process ID of the process
 // that connected to c, as the kernel recorded them at connect(2)
 // (SO_PEERCRED). The process cannot change them. The process ID is 0 when
-// the process is in a PID namespace that nodkey cannot see.
+// the process is in a PID namespace that nodkey cannot see. On Linux 6.5
+// and newer it also returns a pidfd of the process; the caller closes it
+// (peer.close).
 func peerCredentials(c *net.UnixConn) (peer, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return peer{}, err
 	}
-	var cred *syscall.Ucred
+	var p peer
 	var credErr error
 	if err := raw.Control(func(fd uintptr) {
+		var cred *syscall.Ucred
 		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+		if credErr == nil {
+			p = peer{uid: cred.Uid, pid: cred.Pid}
+			peerPidfd(int(fd), &p)
+		}
 	}); err != nil {
+		p.close()
 		return peer{}, err
 	}
 	if credErr != nil {
 		return peer{}, credErr
 	}
-	return peer{uid: cred.Uid, pid: cred.Pid}, nil
+	return p, nil
 }
 
 // ownerOf returns the user ID that owns the file of fi.
@@ -120,4 +128,44 @@ func waitHangUp(c *net.UnixConn) bool {
 		return h
 	})
 	return err == nil && gone
+}
+
+// Linux numbers that the syscall package of Go does not have. They are the
+// same on amd64 and arm64, the systems that nodkey is released for.
+const (
+	soPeerPidfd        = 77  // SO_PEERPIDFD, Linux 6.5
+	sysPidfdSendSignal = 424 // pidfd_send_signal(2), Linux 5.1
+)
+
+// peerPidfd sets the pidfd of the process that connected to fd
+// (SO_PEERPIDFD) in p. On a kernel without SO_PEERPIDFD it leaves p as it
+// is. Any other error, such as when the process already ended,
+// marks p as gone: its claimed context is not sent.
+func peerPidfd(fd int, p *peer) {
+	pidfd, err := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, soPeerPidfd)
+	switch {
+	case errors.Is(err, syscall.ENOPROTOOPT):
+	case err != nil || pidfd < 0:
+		p.gone = true
+	default:
+		syscall.CloseOnExec(pidfd)
+		p.pidfd = os.NewFile(uintptr(pidfd), "pidfd")
+	}
+}
+
+// processRuns reports whether the process of pidfd has not ended, with
+// signal 0 (pidfd_send_signal), which sends nothing. It reports false on
+// any error, also after pidfd was closed.
+func processRuns(pidfd *os.File) bool {
+	raw, err := pidfd.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var errno syscall.Errno
+	if err := raw.Control(func(fd uintptr) {
+		_, _, errno = syscall.Syscall6(sysPidfdSendSignal, fd, 0, 0, 0, 0, 0)
+	}); err != nil {
+		return false
+	}
+	return errno == 0
 }

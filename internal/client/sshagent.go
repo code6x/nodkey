@@ -310,6 +310,19 @@ func currentUID() (uint32, error) {
 type peer struct {
 	uid uint32
 	pid int32 // 0 when it is not known
+	// pidfd refers to the process itself, not to its ID (SO_PEERPIDFD,
+	// Linux 6.5 and newer). It is nil on an older kernel.
+	pidfd *os.File
+	// gone is true when the kernel has SO_PEERPIDFD but gave no pidfd:
+	// the process may have ended, and its ID may be a new process now.
+	gone bool
+}
+
+// close closes the pidfd of p, if it has one.
+func (p peer) close() {
+	if p.pidfd != nil {
+		_ = p.pidfd.Close()
+	}
 }
 
 // checkPeer allows only the user that runs nodkey ssh-agent (DESIGN.md
@@ -490,11 +503,12 @@ func (a *sshAgent) serveConn(ctx context.Context, c *net.UnixConn) {
 		a.log.note("refused a connection: its user cannot be checked")
 		return
 	}
+	defer p.close()
 	if err := checkPeer(p, a.self); err != nil {
 		a.log.note("%s", err.Error())
 		return
 	}
-	conn := &agentConn{a: a, conn: c, pid: p.pid}
+	conn := &agentConn{a: a, conn: c, peer: p}
 	for {
 		msg, err := readAgentMessage(c)
 		if err != nil {
@@ -519,7 +533,7 @@ func (a *sshAgent) serveConn(ctx context.Context, c *net.UnixConn) {
 type agentConn struct {
 	a    *sshAgent
 	conn *net.UnixConn
-	pid  int32 // the process that connected, from SO_PEERCRED
+	peer peer // the process that connected, from SO_PEERCRED
 	// binds are the contents of the session-bind@openssh.com messages of
 	// this connection, in order: at most api.MaxBinds.
 	binds [][]byte
@@ -606,7 +620,7 @@ func (c *agentConn) sign(ctx context.Context, key, data []byte, flags uint32) []
 		a.log.note("no signature: the key or the data to sign is longer than the broker reads")
 		return failureMessage
 	}
-	commands, reason := a.claimed(ctx, c.pid)
+	commands, reason := a.claimed(ctx, c.peer)
 	body, err := encodeSignRequest(newSignRequest(key, data, flags, c.binds, commands, reason))
 	if err != nil {
 		a.log.note("no signature: %s", err.Error())
@@ -647,13 +661,31 @@ func (c *agentConn) sign(ctx context.Context, key, data []byte, flags uint32) []
 	return signAnswerMessage(sig)
 }
 
-// claimed returns the claimed context of a sign request from process pid
-// (procFS.claimedContext). It waits for the reads of /proc at most
+// claimed returns the claimed context of a sign request from the process
+// p (procFS.claimedContext). When the kernel has a pidfd of p, the context
+// counts only if p still runs after its directory in /proc is open: else
+// the directory may be a new process with the same ID. When the kernel
+// has pidfds but gave none for p, p has ended, and the request goes
+// without the context; a line says so. It waits for the reads of /proc at most
 // a.procTimeout, and at most maxProcReads such reads run at the same
 // time: a read can block, such as on a stuck FUSE or NFS file system.
 // Otherwise the request goes without the command lines and the reason,
 // and a line says why.
-func (a *sshAgent) claimed(ctx context.Context, pid int32) ([][]string, string) {
+func (a *sshAgent) claimed(ctx context.Context, p peer) ([][]string, string) {
+	const ended = "sent a sign request without the command lines and the reason: ssh has ended"
+	if p.gone {
+		a.log.note(ended)
+		return [][]string{}, ""
+	}
+	var running func() bool
+	stopped := false // read only after claimedContext returned
+	if p.pidfd != nil {
+		running = func() bool {
+			r := processRuns(p.pidfd)
+			stopped = !r
+			return r
+		}
+	}
 	if a.procReads.Add(1) > maxProcReads {
 		a.procReads.Add(-1)
 		a.log.note("sent a sign request without the command lines and the reason: %d reads of /proc are stuck",
@@ -667,13 +699,16 @@ func (a *sshAgent) claimed(ctx context.Context, pid int32) ([][]string, string) 
 	got := make(chan found, 1)
 	go func() {
 		defer a.procReads.Add(-1)
-		commands, reason := a.proc.claimedContext(pid)
+		commands, reason := a.proc.claimedContext(p.pid, running)
 		got <- found{commands, reason}
 	}()
 	t := time.NewTimer(a.procTimeout)
 	defer t.Stop()
 	select {
 	case c := <-got:
+		if stopped {
+			a.log.note(ended)
+		}
 		return c.commands, c.reason
 	case <-t.C:
 		a.log.note("sent a sign request without the command lines and the reason: /proc did not answer within %s",

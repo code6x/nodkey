@@ -48,7 +48,7 @@ func TestClaimedContextRealProcess(t *testing.T) {
 		return len(argv) > 0 && argv[0] == sleep
 	})
 	proc := procFS{root: procDir}
-	commands, reason := proc.claimedContext(int32(pid)) //nolint:gosec // G115: a process ID fits in an int32.
+	commands, reason := proc.claimedContext(int32(pid), nil) //nolint:gosec // G115: a process ID fits in an int32.
 	want := [][]string{{sleep, "60"}, {sh, "-c", script, sleep, canary}, os.Args}
 	if parent := realCommandLine(t, os.Getppid()); parent != nil {
 		want = append(want, parent)
