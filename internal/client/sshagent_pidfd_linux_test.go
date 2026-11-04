@@ -16,7 +16,7 @@ import (
 // 5.3).
 func pidfdOf(t *testing.T, pid int) *os.File {
 	t.Helper()
-	const sysPidfdOpen = 434                                          // the same on amd64 and arm64
+	const sysPidfdOpen = 434 // the same on amd64 and arm64
 	fd, _, errno := syscall.Syscall(sysPidfdOpen, uintptr(pid), 0, 0)
 	if errno != 0 {
 		t.Skipf("pidfd_open: %v", errno)
