@@ -153,7 +153,7 @@ ends before the agent opens `/proc/PID`, the open could land on another
 process (issue #61). So on Linux 6.5 and newer the agent gets a pidfd of
 `ssh` (`SO_PEERPIDFD`), opens `/proc/PID`, and then checks with the pidfd
 that `ssh` still runs; its files are read through that open directory. If
-`ssh` has ended, or the kernel gives no pidfd, the request goes without
+`ssh` has ended, or the kernel has pidfds but gives none, the request goes without
 the command lines and the reason. A parent counts only if its child still
 names it as its parent after the open of the parent's directory, as a
 process whose parent ends gets another parent. Tests check both: no text

@@ -139,7 +139,7 @@ const (
 
 // peerPidfd sets the pidfd of the process that connected to fd
 // (SO_PEERPIDFD) in p. On a kernel without SO_PEERPIDFD it leaves p as it
-// is. Any other error, such as ESRCH when the process already ended,
+// is. Any other error, such as when the process already ended,
 // marks p as gone: its claimed context is not sent.
 func peerPidfd(fd int, p *peer) {
 	pidfd, err := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, soPeerPidfd)

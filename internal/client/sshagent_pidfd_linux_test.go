@@ -74,6 +74,9 @@ func TestPeerExitedBeforeRead(t *testing.T) {
 				p := tt.peer
 				if p.pidfd != nil { // the agent closes its pidfd: it gets a copy
 					fd, err := syscall.Dup(int(p.pidfd.Fd()))
+					if err == nil {
+						syscall.CloseOnExec(fd)
+					}
 					if err != nil {
 						return peer{}, err
 					}
