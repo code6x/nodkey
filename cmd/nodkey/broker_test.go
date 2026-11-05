@@ -22,10 +22,10 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/broker"
 	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/sshauth"
-	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/telegram"
 )
 

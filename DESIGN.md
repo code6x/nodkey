@@ -2101,7 +2101,10 @@ power cut changed the file then. A second power cut during the recovery
 write itself can also leave the file like this. Then run
 `nodkey audit verify` to see where. Keep the file, move it away, and let
 the broker start a new log. `audit verify` checks the new log with the
-whole journal; the old log shows as another log (above).
+whole journal; the old log shows as another log (above). This needs a
+journal with log IDs: if the journal still has anchor lines without a
+log ID (from an earlier version), check the new log only with the lines
+since it began, such as `journalctl -u nodkey -o cat --since TIME`.
 
 **What `nodkey audit verify` checks.** It reads the file line by line, so
 the file can be large.

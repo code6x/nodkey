@@ -499,8 +499,11 @@ Risk that remains:
 - Entries after the newest copied anchor can be removed unseen.
 - When a write to stderr fails, the entry is on disk but its anchor is
   not in the journal. The broker denies the request, stops and exits with
-  1 (DESIGN.md section 15). That entry is then like an entry after the
-  newest anchor. A broken stderr does not kill the broker by SIGPIPE in
+  1 (DESIGN.md section 15). At the next start, the open line names that
+  entry, and `audit verify --anchors` reports a gap. A failed sync or a
+  power cut that loses journal lines does the same. This fails closed,
+  but a person must then check the log by hand and check the rest of the
+  journal with `--since` after that start. A broken stderr does not kill the broker by SIGPIPE in
   the middle of its stop.
 - `chattr +a` does not stop the broker user from appending entries that
   look right. An entry appended while the broker is stopped, with the

@@ -1508,9 +1508,15 @@ keeps them.
 Without a working log, the broker stops. When a write to stderr fails,
 for example because the program that reads it ended, the broker stops in
 its normal order and exits with code 1. The example unit then starts it
-again after 5 seconds. The audit log stays whole: an entry whose anchor
-did not reach the journal is still checked by `nodkey audit verify`,
-like any entry after the newest anchor.
+again after 5 seconds. The entry whose anchor did not reach the journal
+is on disk. At the next start, the broker writes an `audit open` line at
+that entry, and `nodkey audit verify --anchors` then reports that
+entries were added while the broker was stopped. A failed sync and a
+power cut can do the same: journald may lose its last minutes of lines.
+Then look at the log near that entry and at the time of the stop. If you
+are sure the gap has a cause like this, check the log with only the
+journal lines after that start: `journalctl -u nodkey -o cat --since
+TIME`, where TIME is a moment after that start.
 
 ## 10. Start the broker
 
@@ -1971,6 +1977,14 @@ line that does not match the last anchor before it.
   entry was on disk, but the power went before its anchor reached the
   journal. `nodkey audit verify` cannot tell. Look at the log around that
   entry and at the time of the crash.
+- If journald removed its oldest lines (`SystemMaxUse=` or its age
+  limits), the first line of the log in the journal can be an `audit
+  open` line with no anchor before it, and the check fails. Keep the
+  journal for as long as the log, or copy it to another machine.
+- Anchor lines without a log ID come from an earlier version. They count
+  as anchors of the log you check. If the journal has such lines of more
+  than one log, check each log with only the lines since it began, with
+  `--since`.
 - If the journal holds lines of another log, `nodkey audit verify` prints
   `other log in the journal: ID …, up to entry N; if no person moved it
   away, it was deleted or replaced`. If you moved the log away, this is
