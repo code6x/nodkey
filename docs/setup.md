@@ -1516,7 +1516,8 @@ power cut can do the same: journald may lose its last minutes of lines.
 Then look at the log near that entry and at the time of the stop. If you
 are sure the gap has a cause like this, check the log with only the
 journal lines after that start: `journalctl -u nodkey -o cat --since
-TIME`, where TIME is a moment after that start.
+TIME`, where TIME is a moment after that start. This works once the
+broker has written at least one entry after that start.
 
 ## 10. Start the broker
 

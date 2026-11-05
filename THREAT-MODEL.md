@@ -503,8 +503,8 @@ Risk that remains:
   entry, and `audit verify --anchors` reports a gap. A failed sync or a
   power cut that loses journal lines does the same. This fails closed,
   but a person must then check the log by hand and check the rest of the
-  journal with `--since` after that start. A broken stderr does not kill the broker by SIGPIPE in
-  the middle of its stop.
+  journal with `--since` after that start. A broken stderr does not kill
+  the broker by SIGPIPE in the middle of its stop.
 - `chattr +a` does not stop the broker user from appending entries that
   look right. An entry appended while the broker is stopped, with the
   right `seq` and `prev`, becomes the last entry at the next start, and
