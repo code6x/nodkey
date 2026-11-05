@@ -456,7 +456,9 @@ Each entry holds the hash of the one before. That finds accidental damage
 and simple edits, but not a careful attacker: with write access they can
 change a line and compute every later hash again, or remove entries from
 the end. So the broker also writes each entry's number and hash to the
-systemd journal (`audit anchor SEQ:HASH`), after the entry is on disk. The
+systemd journal (`audit anchor SEQ:HASH LOGID`, where LOGID is the SHA-256
+of line 1 of the log), after the entry is on disk. When it opens the log,
+it also writes `audit open SEQ:HASH LOGID` with the head it found. The
 broker's own user cannot change the journal, so a break-in as that user
 cannot hide its tracks there, if the journal is kept on disk long enough.
 Forward the journal to another machine, and not even root on the broker
@@ -465,7 +467,10 @@ host can change the copies. Check the log with every anchor since it began
 restart, the broker builds on the log as it finds it, so its new anchors
 also cover a change made while it was stopped. With every anchor, a changed
 entry and a cut log are found, also when the broker wrote more entries
-after the cut. A torn line from a power cut is not part of the chain, but
+after the cut. The open line closes the gap of a stop: `audit verify`
+checks that each open line equals the last anchor of the same log before
+it, so an entry added, removed or changed while the broker was stopped is
+found. A torn line from a power cut is not part of the chain, but
 its `log_recovered` entry holds the torn line's length and hash, so a
 change to it or its removal is found too. The broker locks the log, so a
 second broker cannot write to it. `nodkey audit verify` never prints the
@@ -473,7 +478,8 @@ text of a line, only line numbers, because a line can hold a secret that
 the masking missed (T15). On Linux, `chattr +a` makes the file append-only
 for everyone except root.
 The anchor lines are trusted only because no other broker output can
-print a line that is exactly `audit anchor SEQ:HASH`: not a log line, a
+print a line that is exactly `audit anchor SEQ:HASH LOGID` or
+`audit open SEQ:HASH LOGID`: not a log line, a
 panic, a server error or a child program's error output. A false anchor
 line could make a good log fail, or make entries after the newest real
 anchor look checked. So the broker logs with slog's text handler, whose
@@ -499,16 +505,27 @@ Risk that remains:
 - `chattr +a` does not stop the broker user from appending entries that
   look right. An entry appended while the broker is stopped, with the
   right `seq` and `prev`, becomes the last entry at the next start, and
-  the later anchors cover it. The anchors do not find it; only the missing
-  `audit anchor` line for that entry shows it. An appended
+  the later anchors cover it. The anchors alone do not find it, but the
+  open line does: its head is not the last anchor, so `audit verify`
+  fails. (Only a journal from before the open line was added has just the
+  missing `audit anchor` line to show it.) An appended
   `log_recovered` entry can also make the last real entry look like a
   torn line. The anchor of that entry finds this. When the forged entry
   is the last entry, the next start also sends one alert about a torn
   line; when more entries were appended after it, nothing alerts at the
   start.
-- A log that was removed or moved away looks like a new log. Its anchors
-  and those of the old log differ, so check with the anchors since the
-  current log began, and keep the old file.
+- A crash after the entry is synced but before its anchor reaches the
+  journal (journald can lose its last lines in a power cut) makes the next
+  open line differ from the last anchor. `audit verify` fails. This fails
+  closed, but it looks like an attack. The person checks the log and the
+  time of the crash.
+- A log that was removed or moved away looks like a new log. Its lines in
+  the journal have another log ID. `audit verify` shows the old log as
+  "other log in the journal" and does not fail, because a log that a
+  person moved on purpose looks the same as a deleted one. A restart at
+  entry 1 after a deletion is shown this way, but only the person can
+  tell if the move was on purpose. A moved log is not a cut. Keep the old
+  file.
 
 **T18. The store programs leak a token.**
 (The `infisical` store is like the `1password` store: no program, no
