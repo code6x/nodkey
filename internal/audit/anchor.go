@@ -110,12 +110,14 @@ type JournalLine struct {
 }
 
 // parseJournalLine reads one line, without its line end. It reports false
-// for every line that is not exactly an anchor or an open line.
+// for every line that is not exactly an anchor or an open line. SEQ:HASH
+// must be in the form that Anchor.String writes: no leading zero in SEQ,
+// and lowercase hex.
 func parseJournalLine(line []byte) (JournalLine, bool) {
 	if rest, ok := bytes.CutPrefix(line, []byte(JournalPrefix)); ok {
 		anchorText, idText, hasID := bytes.Cut(rest, []byte(" "))
 		a, err := ParseAnchor(string(anchorText))
-		if err != nil {
+		if err != nil || a.String() != string(anchorText) {
 			return JournalLine{}, false
 		}
 		if !hasID {
@@ -141,7 +143,7 @@ func parseJournalLine(line []byte) (JournalLine, bool) {
 		var a Anchor
 		if string(anchorText) != "0:"+zeroHash {
 			var err error
-			if a, err = ParseAnchor(string(anchorText)); err != nil {
+			if a, err = ParseAnchor(string(anchorText)); err != nil || a.String() != string(anchorText) {
 				return JournalLine{}, false
 			}
 		}
@@ -166,7 +168,8 @@ const maxAnchorLine = 256
 // ReadJournal reads the anchor and open lines from a copy of the journal,
 // such as the output of journalctl -o cat. It uses only the lines that are
 // exactly one of the forms of JournalKind, with a newline or a carriage
-// return and a newline at the end. It skips every other line, so the
+// return and a newline at the end; the last line may have no line end.
+// It skips every other line, so the
 // broker's other log lines may be there too. It returns the lines in the
 // order of the journal: VerifyJournal needs that order. An error is only a
 // read error, and it never holds text from r.
@@ -181,7 +184,9 @@ func ReadJournal(r io.Reader) ([]JournalLine, error) {
 			_, err = br.ReadSlice('\n')
 		}
 		if !long {
-			line = bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+			if l, ok := bytes.CutSuffix(line, []byte("\n")); ok {
+				line = bytes.TrimSuffix(l, []byte("\r")) // only a CR before the LF
+			}
 			if jl, ok := parseJournalLine(line); ok {
 				jl.Line = no
 				lines = append(lines, jl)
