@@ -61,3 +61,88 @@ func TestReadAnchorsReadError(t *testing.T) {
 		t.Errorf("ReadAnchors = %v; a read error is not a *VerifyError", err)
 	}
 }
+
+func TestReadJournal(t *testing.T) {
+	h1, h2 := sha256.Sum256([]byte("one")), sha256.Sum256([]byte("two"))
+	a1, a2 := Anchor{Seq: 1, Hash: h1}, Anchor{Seq: 2, Hash: h2}
+	id := LogID(sha256.Sum256([]byte("line 1")))
+	hexID := id.String()
+	anchor := func(a Anchor) string { return JournalPrefix + a.String() + " " + hexID }
+	open := func(a Anchor) string { return JournalOpenPrefix + a.String() + " " + hexID }
+	newOpen := JournalOpenPrefix + "0:" + zeros + " " + zeros
+	tests := []struct {
+		name string
+		text string
+		want []JournalLine
+	}{
+		{"empty", "", nil},
+		{"every kind, in order", "x\n" + open(a1) + "\n" + anchor(a2) + "\n" + JournalPrefix + a1.String() + "\n" + newOpen + "\r\n",
+			[]JournalLine{
+				{Line: 2, Kind: JournalOpen, Anchor: a1, LogID: id},
+				{Line: 3, Kind: JournalAnchor, Anchor: a2, LogID: id},
+				{Line: 4, Kind: JournalOldAnchor, Anchor: a1},
+				{Line: 5, Kind: JournalOpen},
+			}},
+		{"no newline at the end", anchor(a1), []JournalLine{{Line: 1, Kind: JournalAnchor, Anchor: a1, LogID: id}}},
+		// Lines that are not exactly one of the forms are skipped.
+		{"an anchor with a bad hash", JournalPrefix + "1:" + strings.Repeat("g", 64) + " " + hexID + "\n", nil},
+		{"an anchor with a short hash", JournalPrefix + "1:abcd " + hexID + "\n", nil},
+		{"an anchor with seq 0", JournalPrefix + "0:" + zeros + " " + hexID + "\n", nil},
+		{"an anchor with two spaces", JournalPrefix + a1.String() + "  " + hexID + "\n", nil},
+		{"an anchor with a space at the end", anchor(a1) + " \n", nil},
+		{"an anchor with a space at the end, old form", JournalPrefix + a1.String() + " \n", nil},
+		{"an anchor with text after", anchor(a1) + " more\n", nil},
+		{"an anchor with a short log ID", JournalPrefix + a1.String() + " " + hexID[:62] + "\n", nil},
+		{"an anchor with an upper-case log ID", JournalPrefix + a1.String() + " " + strings.ToUpper(hexID) + "\n", nil},
+		{"an anchor with a zero log ID", JournalPrefix + a1.String() + " " + zeros + "\n", nil},
+		{"an anchor with an upper-case hash", JournalPrefix + "1:" + strings.ToUpper(hex.EncodeToString(h1[:])) + " " + hexID + "\n", nil},
+		{"an old-form anchor with an upper-case hash", JournalPrefix + "1:" + strings.ToUpper(hex.EncodeToString(h1[:])) + "\n", nil},
+		{"an anchor with a leading zero", JournalPrefix + "0" + a1.String() + " " + hexID + "\n", nil},
+		{"an old-form anchor with a leading zero", JournalPrefix + "0" + a1.String() + "\n", nil},
+		{"an open with an upper-case hash", JournalOpenPrefix + "1:" + strings.ToUpper(hex.EncodeToString(h1[:])) + " " + hexID + "\n", nil},
+		{"an open with a leading zero", JournalOpenPrefix + "0" + a1.String() + " " + hexID + "\n", nil},
+		{"an open of entry 00", JournalOpenPrefix + "00:" + zeros + " " + zeros + "\n", nil},
+		{"a carriage return at the end without a newline", anchor(a1) + "\r", nil},
+		{"a carriage return alone", anchor(a1) + "\r" + anchor(a2) + "\n", nil},
+		{"two spaces after the prefix", "audit anchor  " + a1.String() + " " + hexID + "\n", nil},
+		{"a long line", strings.Repeat("x", 3*maxAnchorLine) + anchor(a1) + "\n" + anchor(a2) + "\n",
+			[]JournalLine{{Line: 2, Kind: JournalAnchor, Anchor: a2, LogID: id}}},
+		{"text before", "nodkey[1]: " + anchor(a1) + "\n", nil},
+		{"an open without a log ID", JournalOpenPrefix + a1.String() + "\n", nil},
+		{"an open with a bad log ID", JournalOpenPrefix + a1.String() + " " + strings.Repeat("x", 64) + "\n", nil},
+		{"an open with a space at the end", open(a1) + " \n", nil},
+		{"an open with text after", open(a1) + " more\n", nil},
+		{"an open with two spaces", JournalOpenPrefix + a1.String() + "  " + hexID + "\n", nil},
+		{"an open with a bad head", JournalOpenPrefix + "1:xyz " + hexID + "\n", nil},
+		{"an open of entry 0 with a hash", JournalOpenPrefix + "0:" + hex.EncodeToString(h1[:]) + " " + zeros + "\n", nil},
+		{"an open of entry 0 with a log ID", JournalOpenPrefix + "0:" + zeros + " " + hexID + "\n", nil},
+		{"an open of entry 1 with a zero log ID", JournalOpenPrefix + a1.String() + " " + zeros + "\n", nil},
+		{"an open too long", open(a1) + strings.Repeat("0", maxAnchorLine) + "\n", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ReadJournal(strings.NewReader(tt.text))
+			if err != nil {
+				t.Fatalf("ReadJournal: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("ReadJournal = %+v, want %+v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("line %d = %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestLogID(t *testing.T) {
+	if !(LogID{}).IsZero() || (LogID{}).String() != zeros {
+		t.Errorf("zero LogID: %q, %v", LogID{}.String(), LogID{}.IsZero())
+	}
+	id := LogID(sha256.Sum256([]byte("x")))
+	if id.IsZero() || id.String() != hex.EncodeToString(id[:]) {
+		t.Errorf("LogID = %q", id.String())
+	}
+}

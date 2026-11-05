@@ -22,23 +22,31 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/broker"
 	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/sshauth"
 	"github.com/code6x/nodkey/internal/telegram"
 )
 
-// fakeAnchor is a line that looks like an audit anchor (DESIGN.md section
-// 9). No line of the broker may start with "audit anchor ".
-var fakeAnchor = "audit anchor 1:" + strings.Repeat("ab", 32)
+// fakeAnchor is text with an audit anchor line and an audit open line
+// (DESIGN.md section 9), each with a log ID, on lines of their own. No
+// line of the broker may start with "audit anchor " or "audit open ".
+var fakeAnchor = "audit anchor 1:" + strings.Repeat("ab", 32) + " " + strings.Repeat("ab", 32) +
+	"\naudit open 1:" + strings.Repeat("ab", 32) + " " + strings.Repeat("ab", 32) + "\n"
 
-// noAnchorLine fails if a line of out starts like an audit anchor.
+// noAnchorLine fails if a line of out starts like an audit anchor or an
+// audit open line, or if audit.ReadJournal finds such a line in out.
 func noAnchorLine(t *testing.T, out string) {
 	t.Helper()
 	for line := range strings.SplitSeq(out, "\n") {
-		if strings.HasPrefix(line, "audit anchor ") {
+		if strings.HasPrefix(line, audit.JournalPrefix) || strings.HasPrefix(line, audit.JournalOpenPrefix) {
 			t.Errorf("a line looks like an audit anchor: %q", line)
 		}
+	}
+	lines, err := audit.ReadJournal(strings.NewReader(out))
+	if err != nil || len(lines) != 0 {
+		t.Errorf("audit.ReadJournal found %d journal lines in the broker's output (error %v)", len(lines), err)
 	}
 }
 

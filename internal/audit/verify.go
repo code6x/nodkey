@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,28 @@ type Result struct {
 	// Anchors is the number of different anchors that Verify checked.
 	// Each one matched its entry.
 	Anchors uint64
+	// LogID is the log ID of the log: the SHA-256 of its line 1.
+	LogID LogID
+	// Opens is the number of open lines of this log that VerifyJournal
+	// checked. Each one matched the last anchor before it.
+	Opens uint64
+	// NewStarts is the number of open lines with a zero log ID: each is
+	// a start on a log with no line 1 yet, such as a new log. VerifyJournal
+	// does not check them.
+	NewStarts uint64
+	// OtherLogs are the other logs that the journal names, in the order
+	// of their first line in the journal. VerifyJournal does not check
+	// them. A log that was deleted, or moved away, is one of them.
+	OtherLogs []OtherLog
+}
+
+// OtherLog is a log in the journal other than the log that VerifyJournal
+// checked.
+type OtherLog struct {
+	LogID LogID
+	// Newest is the highest seq in the journal lines of this log: in its
+	// anchors and in the heads of its open lines.
+	Newest uint64
 }
 
 // VerifyError says which line of a log failed the check, and why. It
@@ -85,16 +108,122 @@ func problem(line uint64, format string, args ...uint64) *VerifyError {
 // without a clock battery. seq and prev prove the order, and an attacker
 // who can compute the chain again can fix the times too.
 func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
-	v := verifier{want: make(map[uint64][sha256.Size]byte, len(anchors)), found: make(map[uint64]bool)}
-	for _, a := range anchors {
-		if a.Seq == 0 {
-			return Result{}, problem(0, "an anchor needs an entry number from 1")
+	return verify(r, func(LogID) []Anchor { return anchors })
+}
+
+// VerifyJournal checks a log from r, like Verify, with the lines of its
+// journal from ReadJournal, in the order of the journal. extra are more
+// anchors, such as from --anchor flags; they count like old-form anchors.
+// The log ID of the log is the SHA-256 of its line 1. The checks after
+// those of Verify:
+//
+//   - The anchors that Verify checks are extra, the old-form anchors, and
+//     the anchors with the log ID. Anchors of other log IDs are of other
+//     logs, so they are not checked against this log.
+//   - Each open line with the log ID must hold the last anchor of the log
+//     before it in the journal (old-form anchors count as anchors of the
+//     log). If it does not, entries were added or changed while the
+//     broker was stopped. If no anchor of the log comes before it, the log
+//     was replaced, or the journal lost its older lines.
+//   - The journal must have a line of this log: an anchor or an open line.
+//
+// Open lines with a zero log ID are counted in Result.NewStarts, and the
+// other log IDs are listed in Result.OtherLogs: a log that was deleted and
+// started again at entry 1 shows up there, and so does a log that a
+// person moved away. Check that log with the same journal.
+func VerifyJournal(r io.Reader, journal []JournalLine, extra ...Anchor) (Result, error) {
+	var id LogID
+	res, err := verify(r, func(first LogID) []Anchor {
+		id = first
+		anchors := slices.Clone(extra)
+		for _, jl := range journal {
+			if jl.Kind == JournalOldAnchor || (jl.Kind == JournalAnchor && jl.LogID == id) {
+				anchors = append(anchors, jl.Anchor)
+			}
 		}
-		if h, ok := v.want[a.Seq]; ok && h != a.Hash {
-			return Result{}, problem(0, "two anchors for entry %d have different hashes: the log was cut or changed, "+
-				"and the entry was written again, or the anchors come from two logs", a.Seq)
+		return anchors
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	if err := checkOpens(&res, journal); err != nil {
+		return Result{}, err
+	}
+	return res, nil
+}
+
+// checkOpens makes the checks of the open lines for the log res.LogID,
+// and adds what it found to res.
+func checkOpens(res *Result, journal []JournalLine) error {
+	last := make(map[LogID]Anchor)
+	others := make(map[LogID]int) // the index in res.OtherLogs
+	seen := false                 // the journal has a line of this log
+	for _, jl := range journal {
+		id := jl.LogID
+		if jl.Kind == JournalOldAnchor {
+			id = res.LogID
 		}
-		v.want[a.Seq] = a.Hash
+		if id != res.LogID {
+			if id.IsZero() { // an open line of a log with no line 1
+				res.NewStarts++
+				continue
+			}
+			i, ok := others[id]
+			if !ok {
+				i = len(res.OtherLogs)
+				others[id] = i
+				res.OtherLogs = append(res.OtherLogs, OtherLog{LogID: id})
+			}
+			res.OtherLogs[i].Newest = max(res.OtherLogs[i].Newest, jl.Anchor.Seq)
+			continue
+		}
+		seen = true
+		if jl.Kind != JournalOpen {
+			last[id] = jl.Anchor
+			continue
+		}
+		prev, ok := last[id]
+		switch {
+		case !ok:
+			return problem(0, "journal line %d: the journal has no anchor of this log before the broker opened it at "+
+				"entry %d: the log was replaced, or the journal lost its older lines", jl.Line, jl.Anchor.Seq)
+		case prev.Seq != jl.Anchor.Seq:
+			return problem(0, "journal line %d: the broker opened the log at entry %d, but the last anchor of this log "+
+				"before it is entry %d: entries were added or removed while the broker was stopped",
+				jl.Line, jl.Anchor.Seq, prev.Seq)
+		case prev.Hash != jl.Anchor.Hash:
+			return problem(0, "journal line %d: the broker opened the log at entry %d, and its hash is not the hash "+
+				"in the anchor before it: entries were changed while the broker was stopped", jl.Line, jl.Anchor.Seq)
+		}
+		res.Opens++
+	}
+	if !seen {
+		return problem(0, "the journal has no anchor and no open line of this log; check that the journal "+
+			"is of this broker, and that it still has the lines since the log began")
+	}
+	return nil
+}
+
+// verify is Verify. anchors gets the log ID, once line 1 is read, and
+// returns the anchors to check.
+func verify(r io.Reader, anchors func(LogID) []Anchor) (Result, error) {
+	v := verifier{found: make(map[uint64]bool)}
+	var want []Anchor
+	setAnchors := func(id LogID) error {
+		v.res.LogID = id
+		want = anchors(id)
+		v.want = make(map[uint64][sha256.Size]byte, len(want))
+		for _, a := range want {
+			if a.Seq == 0 {
+				return problem(0, "an anchor needs an entry number from 1")
+			}
+			if h, ok := v.want[a.Seq]; ok && h != a.Hash {
+				return problem(0, "two anchors for entry %d have different hashes: the log was cut or changed, "+
+					"and the entry was written again, or the anchors come from two logs", a.Seq)
+			}
+			v.want[a.Seq] = a.Hash
+		}
+		return nil
 	}
 	br := bufio.NewReaderSize(r, MaxLineSize+1)
 	var no uint64 // the number of the last line read
@@ -102,6 +231,13 @@ func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
 	for {
 		raw, err := br.ReadSlice('\n')
 		if errors.Is(err, bufio.ErrBufferFull) {
+			if no == 0 {
+				// Line 1 is too long to have a log ID: check the
+				// anchors alone, for the error that Verify gives.
+				if err := setAnchors(LogID{}); err != nil {
+					return Result{}, err
+				}
+			}
 			// A line this long is not a log_recovered entry, so the line
 			// before it is not torn: check it first.
 			if pending != nil {
@@ -117,6 +253,13 @@ func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
 		if len(raw) > 0 {
 			no++
 			cur := readLine(no, raw)
+			if no == 1 {
+				// Line 1 is applied only with line 2, so the anchors are
+				// set before any entry is checked.
+				if err := setAnchors(LogID(cur.hash)); err != nil {
+					return Result{}, err
+				}
+			}
 			// The role of a line depends on the next one: a line is torn
 			// when the next line is its log_recovered entry.
 			if pending != nil {
@@ -134,12 +277,15 @@ func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
 		}
 	}
 	if pending == nil {
+		if err := setAnchors(LogID{}); err != nil {
+			return Result{}, err
+		}
 		return Result{}, problem(0, "the log is empty")
 	}
 	if err := v.apply(pending); err != nil {
 		return Result{}, err
 	}
-	for _, a := range anchors {
+	for _, a := range want {
 		if !v.found[a.Seq] {
 			return Result{}, problem(0, "no entry %d: the log ends at entry %d", a.Seq, v.res.Last.Seq)
 		}

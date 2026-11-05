@@ -1880,14 +1880,20 @@ and the alarm comes. Run the job as its own system user (see
   at once, before any message (503), and sends one alert message. The file
   may now end in a torn line, and the broker records it at the next start
   (below).
-- After an entry is on disk, the broker writes `audit anchor SEQ:HASH` to
-  stderr: the entry's number and the hash of its line. It never writes the
-  content of an entry there. If this write fails, it counts as a failed
-  write too.
+- After an entry is on disk, the broker writes `audit anchor SEQ:HASH LOGID`
+  to stderr: the entry's number, the hash of its line, and the log ID.
+  The log ID is the SHA-256 of line 1 of the log, as 64 hex digits. It
+  names the log, so anchors of two logs can be told apart. It never writes
+  the content of an entry there. If this write fails, it counts as a
+  failed write too.
+- When the broker opens the log, it writes `audit open SEQ:HASH LOGID`: the
+  number and hash of the last entry it found, and the log ID. A log with
+  no line 1 yet has the head `0:` and 64 zeros, and the log ID is 64
+  zeros. This is a new log.
 - `nodkey audit verify FILE` checks every line and prints the first
   problem. With anchors (`--anchor SEQ:HASH`, or `--anchors FILE` for a
   copy of the journal), it also checks that each entry `SEQ` has that
-  hash. The rules are below. The output and the exit codes are in section
+  hash, and that each open line matches the log (below). The rules are below. The output and the exit codes are in section
   15.
 
 The fields of each event, after `seq`, `time`, `event` and `prev`:
@@ -2024,12 +2030,38 @@ shows as an anchor whose entry is not there, or, if the broker wrote more
 entries after the cut, as two anchors for one entry that differ. Entries
 after the newest anchor are not proven.
 
+**The open line.** The last anchor before a stop is the head of the log at
+the stop. At the next start, the open line is the head that the broker
+finds. So `audit verify` checks each open line of this log against the
+last anchor of this log before it. If someone added, removed or changed
+an entry while the broker was stopped, the two differ, and the check
+fails. Only anchors and open lines with the log ID of the checked log are
+used. Anchor lines from earlier versions have no log ID; they count as
+anchors of the checked log. An open line of a new log (zero log ID) is
+not checked, and is counted as a "new log start".
+
+**Other logs.** The journal can hold lines of other logs, such as after a
+person moved the log away and the broker started a new one. `audit verify`
+does not check them. It prints each one: `other log in the journal: ID …,
+up to entry N; if no person moved it away, it was deleted or replaced`.
+A deleted log and a log moved away on purpose look the same in the
+journal, so the person decides. They can check the old log with the same
+journal.
+
 What the anchors do not find:
 
 - An entry that someone appends while the broker is stopped, with the
   right `seq` and `prev`. At the next start, the broker takes it as the
-  last entry, and every later anchor covers it. Only the missing
-  `audit anchor` line for that entry shows it.
+  last entry, and every later anchor covers it. The open line shows it:
+  its head is not the last anchor. Without the open lines (a journal
+  from an earlier version), only the missing `audit anchor` line for
+  that entry shows it.
+- A crash after the entry is synced but before its anchor reaches the
+  journal (journald can lose its last lines in a power cut). The next
+  open line then does not match the last anchor. `audit verify` fails.
+  This fails closed: the person checks the log and the time of the
+  crash, and then knows it was not an attack. It cannot tell the two
+  apart by itself.
 - On Linux, `chattr +a` on the file stops anyone except root from changing
   old lines. It does not stop the broker user from appending. For example,
   it can append a `log_recovered` entry that names the last real entry as
@@ -2039,8 +2071,10 @@ What the anchors do not find:
   nothing alerts at the start. The anchor of that last real entry then
   does not match, so check with every anchor.
 - If a person moves the log away, the broker starts a new log at entry 1.
-  The journal then has anchors of both logs, and they differ. Use only the
-  anchors since the new log began, and keep the old file.
+  The journal then has lines of both logs. They have different log IDs, so
+  `audit verify` checks the new log and shows the old one as "other log
+  in the journal", not as a failure. But a deleted log looks the same,
+  so the person must know whether they moved it. Keep the old file.
 
 THREAT-MODEL.md T17 lists the risk that remains.
 
@@ -2066,8 +2100,11 @@ is not a valid entry or is longer than 64 KiB. Something other than a
 power cut changed the file then. A second power cut during the recovery
 write itself can also leave the file like this. Then run
 `nodkey audit verify` to see where. Keep the file, move it away, and let
-the broker start a new log. Check the new log only with the anchors since
-it began.
+the broker start a new log. `audit verify` checks the new log with the
+whole journal; the old log shows as another log (above). This needs a
+journal with log IDs: if the journal still has anchor lines without a
+log ID (from an earlier version), check the new log only with the lines
+since it began, such as `journalctl -u nodkey -o cat --since TIME`.
 
 **What `nodkey audit verify` checks.** It reads the file line by line, so
 the file can be large.
@@ -2412,7 +2449,7 @@ a field of its certificate, or a line break:
   broker never logs claimed text, except the version that a client claims
   when it is a release version, which is only digits and dots (see
   "Versions" above), and cuts each value to 1 KiB. So no line
-  can start with `audit anchor ` (section 9), and none comes near the
+  can start with `audit anchor ` or `audit open ` (section 9), and none comes near the
   48 KiB at which journald splits a line. It logs at most 20 requests in
   a minute that a check refused, SSH logins (section 6) and variables on
   the deny list (section 5), and counts the others.
@@ -3550,8 +3587,13 @@ takes `FILE` before or after the options.
 
 - `--anchor SEQ:HASH` may repeat.
 - `--anchors FILE` reads anchors from a file, or from stdin for `-`. It
-  uses every line that is exactly `audit anchor SEQ:HASH`, and skips the
-  other lines, so it takes the output of `journalctl -u nodkey -o cat`.
+  uses every line that is exactly `audit anchor SEQ:HASH LOGID` or
+  `audit open SEQ:HASH LOGID`, and skips the other lines, so it takes the
+  output of `journalctl -u nodkey -o cat`. A line `audit anchor SEQ:HASH`
+  without a log ID (from an earlier version) counts as an anchor of the
+  checked log. Lines with another log ID are not checked, and are shown.
+  Each open line of the checked log must equal the last anchor of that log
+  before it.
   If no line is an anchor, that is wrong usage (64, with the one line of a
   usage error): a check with no anchor must not pass by mistake.
 - Two anchors for one entry must not differ.
@@ -3562,10 +3604,16 @@ passes, it prints to stdout:
 ```
 ok: 1234 entries (torn lines: 0)
 anchors: 1234 checked, all match; the newest is entry 1234
+log ID: 5c2e0b8f4a1d7e3396b0c1f2a8d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6
+open lines: 12 checked, all match the anchor before them; new log starts: 1
+other log in the journal: ID 0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0, up to entry 57; if no person moved it away, it was deleted or replaced
 last entry: 1234:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 ```
 
-Without anchors, the middle line is `anchors: none checked`. Entries after
+The `log ID`, `open lines` and `other log` lines appear only with
+`--anchors`. There is one `other log` line for each other log ID in the
+journal, and none if there is no other log. Without anchors, the
+`anchors` line is `anchors: none checked`. Entries after
 the newest anchor are not proven. When the log fails, it prints the first
 problem to stderr, with the line number, for example
 `nodkey: audit log FILE: line 57: has seq 58, want 57`. It never prints the
@@ -3576,7 +3624,7 @@ text of a line. It exits with:
 | 0 | the log passed |
 | 1 | the result cannot be printed |
 | 64 | wrong usage, such as an anchor that is not `SEQ:HASH`, or an anchors file without an anchor |
-| 65 | the log failed: a broken link, a line that is not a valid entry, a torn line without its `log_recovered` entry, an anchor that does not match or whose entry is not in the log, or two anchors for one entry that differ |
+| 65 | the log failed: a broken link, a line that is not a valid entry, a torn line without its `log_recovered` entry, an anchor that does not match or whose entry is not in the log, two anchors for one entry that differ, or an open line that does not match the last anchor before it |
 | 66 | the log or the anchors file cannot be opened or read |
 
 `nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]` installs a

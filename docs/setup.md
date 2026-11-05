@@ -1508,9 +1508,16 @@ keeps them.
 Without a working log, the broker stops. When a write to stderr fails,
 for example because the program that reads it ended, the broker stops in
 its normal order and exits with code 1. The example unit then starts it
-again after 5 seconds. The audit log stays whole: an entry whose anchor
-did not reach the journal is still checked by `nodkey audit verify`,
-like any entry after the newest anchor.
+again after 5 seconds. The entry whose anchor did not reach the journal
+is on disk. At the next start, the broker writes an `audit open` line at
+that entry, and `nodkey audit verify --anchors` then reports that
+entries were added while the broker was stopped. A failed sync and a
+power cut can do the same: journald may lose its last minutes of lines.
+Then look at the log near that entry and at the time of the stop. If you
+are sure the gap has a cause like this, check the log with only the
+journal lines after that start: `journalctl -u nodkey -o cat --since
+TIME`, where TIME is a moment after that start. This works once the
+broker has written at least one entry after that start.
 
 ## 10. Start the broker
 
@@ -1534,15 +1541,19 @@ level=INFO msg="nodkey broker: core dumps are off: the soft and the hard limit o
 level=INFO msg="nodkey broker: the TLS key is loaded" pin=sha256:Q2b9...
 level=INFO msg="nodkey broker: an SSH key is loaded and can sign" key=deploy fingerprint=SHA256:3SMw...
 level=INFO msg="nodkey broker: the audit log is open" path=/var/lib/nodkey/audit.jsonl
+audit open 0:0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000
 level=INFO msg="nodkey broker: a store started" store=main
 level=INFO msg="nodkey broker: the listen address is open; nothing reads from it yet" address=192.0.2.10:7743
-audit anchor 1:8318bd865cb1923faea0c3a1837f636ad1f8781898606701949120d612c85da0
+audit anchor 1:8318bd865cb1923faea0c3a1837f636ad1f8781898606701949120d612c85da0 8318bd865cb1923faea0c3a1837f636ad1f8781898606701949120d612c85da0
 level=INFO msg="nodkey broker: the approver runs: it polls Telegram for the answers"
 level=INFO msg="nodkey broker: listening; the broker is ready" address=192.0.2.10:7743
 ```
 
-The lines `audit anchor SEQ:HASH` are the anchors of the audit log
-([section 12](#12-check-the-audit-log)). When something is wrong, the
+The lines `audit anchor SEQ:HASH LOGID` and `audit open SEQ:HASH LOGID`
+are the anchors of the audit log
+([section 12](#12-check-the-audit-log)). LOGID names the log. On a new
+log, the open line has a zero head and a zero LOGID, and comes before the
+first anchor. When something is wrong, the
 broker logs why ([section 14](#14-when-something-does-not-work)).
 
 A restart of the broker ends all grants, and denies the requests that
@@ -1935,7 +1946,9 @@ Things to know:
 The broker writes each request and each decision to the audit log,
 `/var/lib/nodkey/audit.jsonl`. Each entry holds the hash of the entry
 before it, and the broker writes the hash of each entry to the journal:
-`audit anchor SEQ:HASH`
+`audit anchor SEQ:HASH LOGID`. When it opens the log, it writes
+`audit open SEQ:HASH LOGID`, the last entry that it found. LOGID is the
+SHA-256 of line 1 of the log
 ([DESIGN.md section 9](../DESIGN.md#9-audit-log)). Check the log with
 every anchor since the log began, as root:
 
@@ -1948,19 +1961,37 @@ A good log gives:
 ```text
 ok: 1234 entries (torn lines: 0)
 anchors: 1234 checked, all match; the newest is entry 1234
+log ID: 5c2e0b8f4a1d7e3396b0c1f2a8d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6
+open lines: 12 checked, all match the anchor before them; new log starts: 1
 last entry: 1234:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 ```
 
 It exits with 0 when the log passed, and with 65 when it found a
 problem. Then it prints the line number, never the text of the line. A
 changed entry shows as an anchor that does not match. A log that someone
-cut shows as an anchor whose entry is missing.
+cut shows as an anchor whose entry is missing. An entry that someone
+added, removed or changed while the broker was stopped shows as an open
+line that does not match the last anchor before it.
 
 - Entries after the newest anchor are not proven.
-- If you moved the log away, the broker starts a new log at entry 1.
-  Check the new log only with the anchors since then, such as
-  `journalctl -u nodkey -o cat --since "2026-10-20 10:00"`, and keep
-  the old file.
+- An open line that does not match can also come from a crash: the
+  entry was on disk, but the power went before its anchor reached the
+  journal. `nodkey audit verify` cannot tell. Look at the log around that
+  entry and at the time of the crash.
+- If journald removed its oldest lines (`SystemMaxUse=` or its age
+  limits), the first line of the log in the journal can be an `audit
+  open` line with no anchor before it, and the check fails. Keep the
+  journal for as long as the log, or copy it to another machine.
+- Anchor lines without a log ID come from an earlier version. They count
+  as anchors of the log you check. If the journal has such lines of more
+  than one log, check each log with only the lines since it began, with
+  `--since`.
+- If the journal holds lines of another log, `nodkey audit verify` prints
+  `other log in the journal: ID …, up to entry N; if no person moved it
+  away, it was deleted or replaced`. If you moved the log away, this is
+  expected: the broker started a new log at entry 1. If you did not,
+  someone deleted or replaced the log. Keep the old file. It does not
+  fail the check.
 - `jq` shows the entries in short, for example the last ten:
 
   ```sh

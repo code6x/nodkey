@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -117,8 +118,8 @@ func TestVerifyAcceptsGoodLogs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
-			want := Result{Entries: tt.entries, TornLines: tt.torn, Last: tt.c.last}
-			if res != want {
+			want := Result{Entries: tt.entries, TornLines: tt.torn, Last: tt.c.last, LogID: sha256.Sum256(tt.c.lines[0])}
+			if !reflect.DeepEqual(res, want) {
 				t.Errorf("Verify = %+v, want %+v", res, want)
 			}
 			// Every entry can be an anchor, and all of them together too.

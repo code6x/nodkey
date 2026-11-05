@@ -92,6 +92,27 @@ func TestAuditVerify(t *testing.T) {
 	}
 
 	ok := "ok: 3 entries (torn lines: 0)\n"
+	id := hashes[0] // the log ID: the hash of line 1
+	idLines := func(opens, starts int) string {
+		return "log ID: " + id + "\n" + fmt.Sprintf("open lines: %d checked, all match the anchor before them; "+
+			"new log starts: %d\n", opens, starts)
+	}
+	// The journal of the log with log IDs: the broker opened a new log,
+	// wrote entries 1 and 2, stopped, opened the log again, and wrote 3.
+	withIDs := "audit open 0:" + zeros + " " + zeros + "\n" +
+		"audit anchor 1:" + hashes[0] + " " + id + "\naudit anchor 2:" + hashes[1] + " " + id + "\n" +
+		"audit open 2:" + hashes[1] + " " + id + "\naudit anchor 3:" + hashes[2] + " " + id + "\n"
+	// Someone added entry 3 while the broker was stopped. At the next
+	// start, the broker opened the log at entry 3.
+	addedWhileStopped := "audit anchor 1:" + hashes[0] + " " + id + "\naudit anchor 2:" + hashes[1] + " " + id + "\n" +
+		"audit open 3:" + hashes[2] + " " + id + "\n"
+	// An earlier log (run1) was deleted, or moved away, and the broker
+	// started the log of path at entry 1.
+	otherID := h1[0]
+	afterOther := "audit open 0:" + zeros + " " + zeros + "\n" +
+		"audit anchor 1:" + h1[0] + " " + otherID + "\naudit anchor 2:" + h1[1] + " " + otherID + "\n" +
+		"audit open 0:" + zeros + " " + zeros + "\n" +
+		"audit anchor 1:" + hashes[0] + " " + id + "\naudit anchor 2:" + hashes[1] + " " + id + "\n"
 	last := "last entry: 3:" + hashes[2] + "\n"
 	tests := []struct {
 		name       string
@@ -112,12 +133,22 @@ func TestAuditVerify(t *testing.T) {
 		{name: "one anchor twice", args: []string{"audit", "verify", path, "--anchor", "2:" + hashes[1], "--anchor", "2:" + hashes[1]},
 			wantCode: exitOK, wantStdout: ok + "anchors: 1 checked, all match; the newest is entry 2\n" + last},
 		{name: "anchors from a file", args: []string{"audit", "verify", path, "--anchors", anchorsFile}, wantCode: exitOK,
-			wantStdout: ok + "anchors: 3 checked, all match; the newest is entry 3\n" + last},
+			wantStdout: ok + "anchors: 3 checked, all match; the newest is entry 3\n" + idLines(0, 0) + last},
 		{name: "anchors from stdin", args: []string{"audit", "verify", "--anchors", "-", path}, stdin: journalText, wantCode: exitOK,
-			wantStdout: ok + "anchors: 3 checked, all match; the newest is entry 3\n" + last},
+			wantStdout: ok + "anchors: 3 checked, all match; the newest is entry 3\n" + idLines(0, 0) + last},
 		{name: "anchors from stdin and an anchor", stdin: journal(1, hashes[0]), wantCode: exitOK,
 			args:       []string{"audit", "verify", path, "--anchors=-", "--anchor", "3:" + hashes[2]},
-			wantStdout: ok + "anchors: 2 checked, all match; the newest is entry 3\n" + last},
+			wantStdout: ok + "anchors: 2 checked, all match; the newest is entry 3\n" + idLines(0, 0) + last},
+		{name: "journal with log IDs", args: []string{"audit", "verify", path, "--anchors", "-"}, stdin: withIDs,
+			wantCode: exitOK, wantStdout: ok + "anchors: 3 checked, all match; the newest is entry 3\n" + idLines(1, 1) + last},
+		{name: "entry added while the broker was stopped", args: []string{"audit", "verify", path, "--anchors", "-"},
+			stdin: addedWhileStopped, wantCode: exitDataErr,
+			wantStderr: "journal line 3: the broker opened the log at entry 3, but the last anchor of this log before it is " +
+				"entry 2: entries were added or removed while the broker was stopped"},
+		{name: "a deleted or moved log is shown, not a cut", args: []string{"audit", "verify", path, "--anchors", "-"},
+			stdin: afterOther, wantCode: exitOK, wantStdout: ok + "anchors: 2 checked, all match; the newest is entry 2\n" +
+				idLines(0, 2) + "other log in the journal: ID " + otherID + ", up to entry 2; " +
+				"if no person moved it away, it was deleted or replaced\n" + last},
 		{name: "wrong anchor", args: []string{"audit", "verify", path, "--anchor", "2:" + hashes[2]}, wantCode: exitDataErr,
 			wantStderr: "nodkey: audit log " + strconv.Quote(path) + ": line 2: is entry 2, and its hash is not the hash in the anchor\n"},
 		{name: "two anchors for one entry", args: []string{"audit", "verify", path, "--anchor", "2:" + hashes[1], "--anchor", "2:" + hashes[2]},
@@ -140,7 +171,7 @@ func TestAuditVerify(t *testing.T) {
 		{name: "missing anchors file", args: []string{"audit", "verify", path, "--anchors", anchorsFile + ".missing"},
 			wantCode: exitNoInput, wantStderr: "nodkey: audit verify: --anchors \""},
 		{name: "anchors file without an anchor line", args: []string{"audit", "verify", path, "--anchors", noAnchors},
-			wantCode: exitUsage, wantStderr: `no line is exactly "audit anchor " and an anchor; use journalctl -o cat`},
+			wantCode: exitUsage, wantStderr: `no line is exactly "audit anchor " or "audit open " and an anchor; use journalctl -o cat`},
 		{name: "empty stdin for anchors", args: []string{"audit", "verify", path, "--anchors", "-"}, wantCode: exitUsage,
 			wantStderr: `--anchors "-": no line is exactly`},
 		{name: "anchors twice", args: []string{"audit", "verify", path, "--anchors", anchorsFile, "--anchors", "-"},
