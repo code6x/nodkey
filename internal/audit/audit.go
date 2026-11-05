@@ -12,7 +12,13 @@
 // disk. Append returns an error if that fails, and then every later Append
 // fails too, so the broker denies every request until it starts again.
 // The number and hash of each entry also go to a journal writer (stderr in
-// the broker), as an anchor that Verify can check later.
+// the broker), as an anchor that Verify can check later, with the log ID:
+// the SHA-256 of line 1, which tells two logs apart. At each start, Open
+// writes one more journal line: the last entry that it found, and the log
+// ID. VerifyJournal checks that this entry is the last anchor of the log
+// before it, so an entry that was added or changed while the broker was
+// stopped is found. A log that starts again at entry 1, such as after a
+// delete, has a new log ID, and VerifyJournal names the old one.
 package audit
 
 import (
@@ -67,9 +73,11 @@ type Recovery struct {
 
 // Options are what Open needs from the broker. Both fields are required.
 type Options struct {
-	// Journal gets one line for each entry: JournalPrefix and the entry's
-	// anchor. It never gets the content of an entry. In the broker it is
-	// stderr, which systemd keeps in the journal.
+	// Journal gets one line from Open: JournalOpenPrefix, the last entry
+	// that Open found, and the log ID. Then it gets one line for each
+	// entry: JournalPrefix, the entry's anchor, and the log ID. It never
+	// gets the content of an entry. In the broker it is stderr, which
+	// systemd keeps in the journal.
 	Journal io.Writer
 	// Alert is called when Open found a torn last line and added a
 	// log_recovered entry for it, before Open returns. The broker sends an
@@ -113,6 +121,7 @@ type Logger struct {
 	journal io.Writer
 	now     func() time.Time
 	last    Anchor // the last entry; seq 0 and a zero hash when there is none
+	id      LogID  // the SHA-256 of line 1; zero while the log has no newline
 	err     error  // set after a failed write, sync or journal write
 	// found is the log_recovered entry that Open found as the last entry
 	// of the log, if any (see LastRecovery). It never changes after Open.
@@ -138,13 +147,17 @@ type Logger struct {
 //   - It takes an exclusive flock on the open file, without waiting. If
 //     another process holds it, such as a second broker, Open fails.
 //   - It reads the end of the file, not the whole file, to find the last
-//     entry. The last complete line must be a valid entry.
+//     entry. The last complete line must be a valid entry. It reads line
+//     1 too, for the log ID. Line 1 and the last complete line must not be
+//     longer than MaxLineSize.
+//   - It writes JournalOpenPrefix, the last entry and the log ID to
+//     opts.Journal. If that write fails, Open fails.
 //   - A new or empty file: Open syncs its directory, so the new name is on
 //     disk too.
 //
 // A torn last line: if the file does not end in a newline, the bytes after
 // the last newline are a torn line, such as from a power cut during a
-// write. Open then writes, with one write call, a newline and a
+// write. After the open line, Open writes, with one write call, a newline and a
 // log_recovered entry. That entry holds the length and SHA-256 of the
 // torn bytes. Its prev is the hash of the last complete line, so the torn
 // line stays outside the chain, but the entry still pins its bytes. Then
@@ -222,6 +235,7 @@ func (l *Logger) start(path string, self uint32, h hooks) (Recovery, bool, error
 			return Recovery{}, false, fmt.Errorf("audit log %s: syncing its directory: %w", path, err)
 		}
 	}
+	l.id = t.first
 	if t.hasLast {
 		e, bad := parseEntry(t.last)
 		if bad != "" {
@@ -233,10 +247,19 @@ func (l *Logger) start(path string, self uint32, h hooks) (Recovery, bool, error
 			l.found = &Recovery{Seq: e.seq, TornLength: e.tornLength, TornSHA256: e.tornHash}
 		}
 	}
+	// The open line goes to the journal before any entry of this start,
+	// so it holds the last entry that this start found.
+	if _, err := io.WriteString(l.journal, JournalOpenPrefix+l.last.String()+" "+l.id.String()+"\n"); err != nil {
+		return Recovery{}, false, fmt.Errorf("audit log: journal: %w", err)
+	}
 	if t.torn == nil {
 		return Recovery{}, false, nil
 	}
 	sum := sha256.Sum256(t.torn)
+	if l.id.IsZero() {
+		// The log is one torn line: after the recovery, it is line 1.
+		l.id = sum
+	}
 	a, err := l.append(logRecovered{TornLength: len(t.torn), TornSHA256: hex.EncodeToString(sum[:])}, true)
 	if err != nil {
 		return Recovery{}, false, err
@@ -286,9 +309,9 @@ func checkOpenFile(fi fs.FileInfo, self uint32) error {
 	return nil
 }
 
-// readTailOf opens the log at path again, read only, to read its end. The
-// file that opens must be the one that is locked, fi. It returns the size
-// of the log and its end.
+// readTailOf opens the log at path again, read only, to read its end and
+// its line 1. The file that opens must be the one that is locked, fi. It
+// returns the size of the log and its end, with the log ID.
 func readTailOf(path string, fi fs.FileInfo) (int64, tail, error) {
 	r, err := os.OpenFile(path, readFlags, 0) //nolint:gosec // G304: the same path as the open log; the file must be the same file.
 	if err != nil {
@@ -303,7 +326,37 @@ func readTailOf(path string, fi fs.FileInfo) (int64, tail, error) {
 		return 0, tail{}, errors.New("the file changed while it was opened")
 	}
 	t, err := readTail(r, rfi.Size())
-	return rfi.Size(), t, err
+	if err != nil {
+		return 0, tail{}, err
+	}
+	if t.first, err = readFirstLine(r, rfi.Size()); err != nil {
+		return 0, tail{}, err
+	}
+	return rfi.Size(), t, nil
+}
+
+// readFirstLine returns the log ID of a log of size bytes: the SHA-256 of
+// its line 1, without the newline. It reads at most MaxLineSize+1 bytes.
+// A log with no newline, empty or one torn line, has a zero log ID.
+func readFirstLine(r io.ReaderAt, size int64) (LogID, error) {
+	n := min(size, MaxLineSize+1)
+	if n == 0 {
+		return LogID{}, nil
+	}
+	buf := make([]byte, n)
+	if _, err := r.ReadAt(buf, 0); err != nil {
+		return LogID{}, err
+	}
+	i := bytes.IndexByte(buf, '\n')
+	switch {
+	case i >= 0:
+		return sha256.Sum256(buf[:i]), nil
+	case n > MaxLineSize:
+		return LogID{}, fmt.Errorf("its first line is longer than %d bytes; "+
+			"check the log with nodkey audit verify", MaxLineSize)
+	default:
+		return LogID{}, nil // no newline: readTail found one torn line
+	}
 }
 
 // tail is the end of the log.
@@ -311,6 +364,7 @@ type tail struct {
 	last    []byte // the last complete line, without its newline
 	hasLast bool   // the log has a complete line
 	torn    []byte // the bytes after the last newline; nil if the log ends in a newline
+	first   LogID  // the log ID; set by readTailOf, not by readTail
 }
 
 // readTail reads the end of a log of size bytes. It reads at most
@@ -446,8 +500,12 @@ func (l *Logger) append(ev Event, afterTorn bool) (Anchor, error) {
 		return Anchor{}, l.fail(fmt.Errorf("audit log: sync: %w", err))
 	}
 	l.last = a
+	if l.id.IsZero() {
+		// The log was empty, so this entry is line 1.
+		l.id = a.Hash
+	}
 	// The anchor goes to the journal only when the entry is on disk.
-	if _, err := io.WriteString(l.journal, JournalPrefix+a.String()+"\n"); err != nil {
+	if _, err := io.WriteString(l.journal, JournalPrefix+a.String()+" "+l.id.String()+"\n"); err != nil {
 		return Anchor{}, l.fail(fmt.Errorf("audit log: journal: %w", err))
 	}
 	return a, nil

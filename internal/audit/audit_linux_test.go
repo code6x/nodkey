@@ -119,14 +119,23 @@ func mustVerify(t *testing.T, path string, anchors ...Anchor) Result {
 	return res
 }
 
-// journalOf returns the journal lines for anchors.
-func journalOf(anchors ...Anchor) string {
+// journalOf returns the journal lines for anchors of the log id.
+func journalOf(id LogID, anchors ...Anchor) string {
 	var b strings.Builder
 	for _, a := range anchors {
-		b.WriteString(JournalPrefix + a.String() + "\n")
+		b.WriteString(JournalPrefix + a.String() + " " + id.String() + "\n")
 	}
 	return b.String()
 }
+
+// openLine returns the journal line that Open writes for a log with the
+// last entry head and the log ID id.
+func openLine(head Anchor, id LogID) string {
+	return JournalOpenPrefix + head.String() + " " + id.String() + "\n"
+}
+
+// newOpenLine is the open line of a log with no line 1.
+var newOpenLine = JournalOpenPrefix + "0:" + zeros + " " + zeros + "\n"
 
 func TestAppendWritesTheChain(t *testing.T) {
 	path := logPath(t)
@@ -148,8 +157,9 @@ func TestAppendWritesTheChain(t *testing.T) {
 	if res.Entries != uint64(len(anchors)) || res.Last != anchors[len(anchors)-1] {
 		t.Errorf("Verify = %+v; want %d entries, the last %v", res, len(anchors), anchors[len(anchors)-1])
 	}
-	// The journal gets the anchors and nothing else.
-	if got, want := l.journal.String(), journalOf(anchors...); got != want {
+	// The journal gets the open line and the anchors, and nothing else.
+	// The log ID is the hash of line 1.
+	if got, want := l.journal.String(), newOpenLine+journalOf(anchors[0].Hash, anchors...); got != want {
 		t.Errorf("journal:\n%s\nwant:\n%s", got, want)
 	}
 	fi, err := os.Stat(path)
@@ -240,8 +250,16 @@ func TestOpenRecoversATornLine(t *testing.T) {
 			if len(l.alerts) != 1 || l.alerts[0] != wantAlert {
 				t.Errorf("alerts = %+v, want one: %+v", l.alerts, wantAlert)
 			}
-			if got := l.journal.String(); got != journalOf(rec) {
-				t.Errorf("journal = %q, want %q", got, journalOf(rec))
+			// The open line holds the head before the log_recovered
+			// entry. The log ID is the hash of line 1, which is the torn
+			// line if the log was only that.
+			id := LogID(sha256.Sum256(want.lines[0]))
+			wantJournal := openLine(tt.base.last, id) + journalOf(id, rec)
+			if len(tt.base.lines) == 0 {
+				wantJournal = newOpenLine + journalOf(id, rec)
+			}
+			if got := l.journal.String(); got != wantJournal {
+				t.Errorf("journal = %q, want %q", got, wantJournal)
 			}
 			if res := mustVerify(t, path, rec); res.TornLines != 1 || res.Last != rec {
 				t.Errorf("Verify = %+v; want 1 torn line, the last entry %v", res, rec)
@@ -425,7 +443,7 @@ func TestAppendFailsClosed(t *testing.T) {
 					t.Errorf("Append after the failure: %v; want ErrBroken and %v", err, cause)
 				}
 			}
-			if got := l.journal.String(); got != journalOf(first) {
+			if got := l.journal.String(); got != newOpenLine+journalOf(first.Hash, first) {
 				t.Errorf("journal = %q; want only the first entry", got)
 			}
 			if err := l.Close(); err != nil {
@@ -449,16 +467,55 @@ func TestAppendFailsClosed(t *testing.T) {
 	}
 }
 
-// failingWriter fails every write.
-type failingWriter struct{}
+// failingWriter fails every write after the first ok writes.
+type failingWriter struct{ ok int }
 
-func (failingWriter) Write([]byte) (int, error) { return 0, errIO }
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if w.ok > 0 {
+		w.ok--
+		return len(p), nil
+	}
+	return 0, errIO
+}
+
+// TestOpenFailsWhenTheJournalFails: the open line must reach the journal.
+// If it does not, Open fails, and it writes nothing to the log: not even
+// the log_recovered entry of a torn line.
+func TestOpenFailsWhenTheJournalFails(t *testing.T) {
+	base := newChain(t)
+	base.add(BrokerStarted{Version: "dev"})
+	for _, tt := range []struct {
+		name string
+		log  []byte
+	}{
+		{"a new log", nil},
+		{"a log with an entry", base.bytes()},
+		{"a torn line", append(base.bytes(), half(base.lines[0])...)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := logPath(t)
+			writeLog(t, path, tt.log, 0o600)
+			alerts := 0
+			l, err := open(path, Options{Journal: &failingWriter{}, Alert: func(Recovery) { alerts++ }}, testHooks())
+			if err == nil {
+				_ = l.Close()
+				t.Fatal("Open: no error; want a journal error")
+			}
+			if !errors.Is(err, errIO) || !strings.Contains(err.Error(), "journal") {
+				t.Errorf("Open: %v; want a journal error", err)
+			}
+			if got := readLog(t, path); !bytes.Equal(got, tt.log) || alerts != 0 {
+				t.Errorf("log after the failed Open = %q, %d alerts; want it unchanged, no alert", got, alerts)
+			}
+		})
+	}
+}
 
 // TestAppendFailsWhenTheJournalFails: the anchor must reach the journal.
 // If it does not, Append fails, and every later Append too.
 func TestAppendFailsWhenTheJournalFails(t *testing.T) {
 	path := logPath(t)
-	l, err := open(path, Options{Journal: failingWriter{}, Alert: func(Recovery) {}}, testHooks())
+	l, err := open(path, Options{Journal: &failingWriter{ok: 1}, Alert: func(Recovery) {}}, testHooks())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,8 +807,8 @@ func TestAppendRefusesAnEvent(t *testing.T) {
 	if res := mustVerify(t, path, a); res.Entries != 1 {
 		t.Errorf("Verify = %+v; want 1 entry", res)
 	}
-	if got := l.journal.String(); got != journalOf(a) {
-		t.Errorf("journal = %q, want %q", got, journalOf(a))
+	if got, want := l.journal.String(), newOpenLine+journalOf(a.Hash, a); got != want {
+		t.Errorf("journal = %q, want %q", got, want)
 	}
 }
 
@@ -846,8 +903,8 @@ func TestAppendFromManyGoroutines(t *testing.T) {
 	if res.Entries != goroutines*each {
 		t.Errorf("Verify = %+v; want %d entries", res, goroutines*each)
 	}
-	if lines := strings.Count(l.journal.String(), "\n"); lines != goroutines*each {
-		t.Errorf("journal has %d lines, want %d", lines, goroutines*each)
+	if lines := strings.Count(l.journal.String(), "\n"); lines != 1+goroutines*each {
+		t.Errorf("journal has %d lines, want %d: the open line and the anchors", lines, 1+goroutines*each)
 	}
 }
 
