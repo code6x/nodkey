@@ -575,9 +575,15 @@ func (e *env) verifyAudit(t *testing.T) {
 	p := verify("nodkey audit verify", e.auditPath)
 	p.mustExit(t, 0)
 	last := sha256.Sum256([]byte(lines[n-1]))
+	logID := sha256.Sum256([]byte(lines[0])) // the log ID is the hash of line 1
+	if !strings.Contains("\n"+journal, "\naudit open ") {
+		t.Error("the journal has no audit open line")
+	}
 	checkLines(t, "the output of nodkey audit verify", strings.TrimSuffix(p.stdout.text(), "\n"),
 		lit("ok: "+strconv.Itoa(n)+" entries (torn lines: 0)"),
 		lit("anchors: "+strconv.Itoa(n)+" checked, all match; the newest is entry "+strconv.Itoa(n)),
+		lit("log ID: "+hex.EncodeToString(logID[:])),
+		"^open lines: [0-9]+ checked, all match the anchor before them; new log starts: [1-9][0-9]*$",
 		lit("last entry: "+strconv.Itoa(n)+":"+hex.EncodeToString(last[:])))
 
 	// A copy with one changed field: the client of the first request.
