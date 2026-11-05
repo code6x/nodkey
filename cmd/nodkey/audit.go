@@ -1,14 +1,12 @@
 package main
 
 import (
-	"cmp"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"slices"
 
 	"github.com/code6x/nodkey/internal/audit"
 )
@@ -23,16 +21,21 @@ const (
 const auditUsageText = `Usage: nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
 
 Check the hash chain of an audit log, and that each anchor matches its
-entry. The broker writes "audit anchor SEQ:HASH" to the journal for each
-entry. Check with every anchor since the log began, not only the newest:
+entry. The broker writes "audit anchor SEQ:HASH LOGID" to the journal for
+each entry, and "audit open SEQ:HASH LOGID" each time it opens the log.
+LOGID is the SHA-256 of line 1 of the log. Check with every anchor since the log began, not only the newest:
 the newest anchor proves only the entries up to it, and only since it was
 written. For example:
 
   journalctl -u nodkey -o cat | nodkey audit verify FILE --anchors -
 
   --anchor SEQ:HASH  check that entry SEQ has the hash HASH; may repeat
-  --anchors FILE     read the anchors from FILE, or from stdin for "-":
-                     every line that is exactly "audit anchor SEQ:HASH"
+  --anchors FILE     read the journal lines from FILE, or from stdin for
+                     "-": every line that is exactly "audit anchor
+                     SEQ:HASH LOGID" or "audit open SEQ:HASH LOGID". Each
+                     open line must match the last anchor of its log
+                     before it. Lines of other logs (another LOGID) are
+                     shown, not checked.
 
 Exit codes: 0 the log passed, 64 wrong usage, 65 the log failed the
 check, 66 a file cannot be opened or read, 1 the result cannot be
@@ -86,12 +89,13 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	if fs.NArg() > 0 {
 		return usageFail(stderr, "audit verify", "give one FILE only")
 	}
+	var journal []audit.JournalLine
 	if anchorsFile.set {
-		read, code := readAnchorsFile(anchorsFile.value, stdin, stderr)
+		read, code := readJournalFile(anchorsFile.value, stdin, stderr)
 		if code != exitOK {
 			return code
 		}
-		anchors = append(anchors, read...)
+		journal = read
 	}
 
 	f, err := os.Open(path) //nolint:gosec // G304: the person names the log to check; nodkey only reads it.
@@ -102,7 +106,12 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, err)
 		return exitNoInput
 	}
-	res, err := audit.Verify(f, anchors...)
+	var res audit.Result
+	if anchorsFile.set {
+		res, err = audit.VerifyJournal(f, journal, anchors...)
+	} else {
+		res, err = audit.Verify(f, anchors...)
+	}
 	_ = f.Close() // read only; a close error changes nothing
 	if ve := (*audit.VerifyError)(nil); errors.As(err, &ve) {
 		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, ve)
@@ -117,8 +126,17 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	if res.Anchors == 0 {
 		out += "anchors: none checked\n"
 	} else {
-		newest := slices.MaxFunc(anchors, func(a, b audit.Anchor) int { return cmp.Compare(a.Seq, b.Seq) })
-		out += fmt.Sprintf("anchors: %d checked, all match; the newest is entry %d\n", res.Anchors, newest.Seq)
+		out += fmt.Sprintf("anchors: %d checked, all match; the newest is entry %d\n", res.Anchors,
+			newestAnchor(res.LogID, anchors, journal))
+	}
+	if anchorsFile.set {
+		out += fmt.Sprintf("log ID: %s\n", res.LogID)
+		out += fmt.Sprintf("open lines: %d checked, all match the anchor before them; new log starts: %d\n",
+			res.Opens, res.NewStarts)
+		for _, o := range res.OtherLogs {
+			out += fmt.Sprintf("other log in the journal: ID %s, up to entry %d; "+
+				"if no person moved it away, it was deleted or replaced\n", o.LogID, o.Newest)
+		}
 	}
 	// The last line is the last entry. Entries after the newest anchor are
 	// not proven.
@@ -129,10 +147,27 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	return exitOK
 }
 
-// readAnchorsFile reads the anchors of --anchors: from stdin for "-",
-// else from the file at path. A file with no anchor is wrong usage: the
-// person meant to check anchors, and none would be checked.
-func readAnchorsFile(path string, stdin io.Reader, stderr io.Writer) ([]audit.Anchor, int) {
+// newestAnchor returns the highest seq of the anchors that were checked
+// against the log with the ID id: the --anchor flags, the journal anchors
+// of that log, and the journal anchors without a log ID.
+func newestAnchor(id audit.LogID, flags []audit.Anchor, journal []audit.JournalLine) uint64 {
+	var newest uint64
+	for _, a := range flags {
+		newest = max(newest, a.Seq)
+	}
+	for _, j := range journal {
+		if j.Kind == audit.JournalOldAnchor || (j.Kind == audit.JournalAnchor && j.LogID == id) {
+			newest = max(newest, j.Anchor.Seq)
+		}
+	}
+	return newest
+}
+
+// readJournalFile reads the journal lines of --anchors: from stdin for
+// "-", else from the file at path. A file with no anchor or open line is
+// wrong usage: the person meant to check anchors, and none would be
+// checked.
+func readJournalFile(path string, stdin io.Reader, stderr io.Writer) ([]audit.JournalLine, int) {
 	r := stdin
 	if path != "-" {
 		f, err := os.Open(path) //nolint:gosec // G304: the person names the file with the anchors; nodkey only reads it.
@@ -147,16 +182,16 @@ func readAnchorsFile(path string, stdin io.Reader, stderr io.Writer) ([]audit.An
 		defer func() { _ = f.Close() }() // read only; a close error changes nothing
 		r = f
 	}
-	anchors, err := audit.ReadAnchors(r)
+	lines, err := audit.ReadJournal(r)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "nodkey: audit verify: --anchors %.64q: %v\n", path, err)
 		return nil, exitNoInput
 	}
-	if len(anchors) == 0 {
-		return nil, usageFail(stderr, "audit verify", fmt.Sprintf("--anchors %.64q: no line is exactly %q and an anchor; "+
-			"use journalctl -o cat", path, audit.JournalPrefix))
+	if len(lines) == 0 {
+		return nil, usageFail(stderr, "audit verify", fmt.Sprintf("--anchors %.64q: no line is exactly %q or %q "+
+			"and an anchor; use journalctl -o cat", path, audit.JournalPrefix, audit.JournalOpenPrefix))
 	}
-	return anchors, exitOK
+	return lines, exitOK
 }
 
 // anchorList is the --anchor flag. It may repeat.
