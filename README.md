@@ -3,8 +3,28 @@
 nodkey lets an AI coding agent use a secret or an SSH key only after a
 person approves that one request on a phone.
 
-**Status:** on 2026-10-15, the code of version 1 is on `main`, and the
-test with a real Telegram bot
+> [!WARNING]
+> **nodkey is work in progress.** It is new, it has had no outside
+> security audit, and it may have bugs that leak a secret. Do not use it
+> as the only thing that keeps a secret safe.
+>
+> **nodkey does not protect you from a malicious agent once you
+> approve.** It makes the agent ask before each use, and it keeps the
+> keys off the agent's machine. But once you approve a request, the agent
+> can read or keep that secret, or use that SSH login for other things.
+> A tap helps only if you read the request well, and even then the
+> command and the reason are only what the agent claims. Some ways to
+> reach a secret skip nodkey: root on the broker host, a login to the
+> secret store on the agent machine, or your Telegram account logged in
+> there. The full list of limits is in
+> [THREAT-MODEL.md section 5](THREAT-MODEL.md#5-what-nodkey-does-not-promise).
+>
+> nodkey comes with **no warranty**, as the [license](LICENSE) says. You
+> use it at your own risk. We are not responsible for a secret that leaks
+> or is lost, or for what an agent does with it.
+
+**Status:** work in progress. On 2026-10-15, the code of version 1 is
+on `main`, and the test with a real Telegram bot
 ([#17](https://github.com/code6x/nodkey/issues/17)) is done. The latest
 release is on the
 [release page](https://github.com/code6x/nodkey/releases/latest).
@@ -22,7 +42,7 @@ Try it on a test setup first. See the
 - When the agent needs a secret, it runs
   `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
   The value goes only into that one command's environment. nodkey never
-  prints it.
+  prints it, but the command itself can (see the warning above).
 - When `ssh`, `git` or Ansible need a signature, `nodkey ssh-agent` sends
   the request to the broker. The key stays on the broker.
 - When a request needs approval, you get a Telegram message with
