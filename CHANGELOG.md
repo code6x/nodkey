@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.4.0](https://github.com/code6x/nodkey/compare/v0.3.0...v0.4.0) (2026-11-06)
+
+
+### Features
+
+* --from is optional for a scheduled grant (default: now) ([#140](https://github.com/code6x/nodkey/issues/140)) ([1c6291e](https://github.com/code6x/nodkey/commit/1c6291e15e0f2fd46d6ce0dd564a466a09bed6ba))
+* 1Password as a store (a read-only service account) ([#145](https://github.com/code6x/nodkey/issues/145)) ([ec4b728](https://github.com/code6x/nodkey/commit/ec4b728dc4c97a54ba0b9d71d2b32790cb1b20ac))
+* allow lower-case letters in variable names ([#155](https://github.com/code6x/nodkey/issues/155)) ([737a599](https://github.com/code6x/nodkey/commit/737a599fcbc34cffcaef6d58df17b559bb60020a))
+* approval through ntfy ([#147](https://github.com/code6x/nodkey/issues/147)) ([de53e2d](https://github.com/code6x/nodkey/commit/de53e2df995d86f219e30054407c3c83d36cde86))
+* audit open line and log ID in the journal ([#157](https://github.com/code6x/nodkey/issues/157)) ([35ae28a](https://github.com/code6x/nodkey/commit/35ae28ade333bbd692df141c7b5f856c6a85e03b))
+* every error says what is wrong, where, and how to fix it ([#133](https://github.com/code6x/nodkey/issues/133)) ([22e083c](https://github.com/code6x/nodkey/commit/22e083cb8a55114c66e94f00566b88f160050463))
+* Infisical as a store (a read-only machine identity) ([#148](https://github.com/code6x/nodkey/issues/148)) ([5c230fd](https://github.com/code6x/nodkey/commit/5c230fd9f4747876b220a4c5768018285badec97))
+* nodkey doctor, a read-only check of the setup ([#136](https://github.com/code6x/nodkey/issues/136)) ([d256524](https://github.com/code6x/nodkey/commit/d256524a1b7cfc7739f2c9cbef535f6bdd375e03))
+* nodkey try, a trial on one machine (stage 1 of [#125](https://github.com/code6x/nodkey/issues/125)) ([#143](https://github.com/code6x/nodkey/issues/143)) ([371cd6d](https://github.com/code6x/nodkey/commit/371cd6d6b66e67a93e63924583826ebd86e4ebf0))
+* **ssh-agent:** pin the peer process with a pidfd before reading /proc ([#156](https://github.com/code6x/nodkey/issues/156)) ([e59592e](https://github.com/code6x/nodkey/commit/e59592ed10777429ebb8821498997c61db61038a))
+
+
+### Bug Fixes
+
+* after a standing grant, nodkey preapprove names the window and the uses in each window ([#141](https://github.com/code6x/nodkey/issues/141)) ([9b79688](https://github.com/code6x/nodkey/commit/9b796883f4ab3ee723a8b770f84e83a02c57e5d4))
+* low points of the installer and nodkey update ([#154](https://github.com/code6x/nodkey/issues/154)) ([2c73d5d](https://github.com/code6x/nodkey/commit/2c73d5d6b3217dc71fc1babf9970d03ffb3be65e))
+* nodkey changes says when there is no security fix ([#142](https://github.com/code6x/nodkey/issues/142)) ([d25e11c](https://github.com/code6x/nodkey/commit/d25e11c6d62d613f8b3f001d83d2e00cc4ac9555))
+* report a late answer of a timed-out lookup as a time-out ([#151](https://github.com/code6x/nodkey/issues/151)) ([4cb4ea7](https://github.com/code6x/nodkey/commit/4cb4ea74d2fb2c9c42d19860fdb6fef0b76ba3c8))
+* say why ssh-grant is refused by a rule ([#153](https://github.com/code6x/nodkey/issues/153)) ([aa29cd6](https://github.com/code6x/nodkey/commit/aa29cd653554436f878a1be800a1b8779f49b610))
+* stop the broker in order when stderr breaks, not by SIGPIPE ([#152](https://github.com/code6x/nodkey/issues/152)) ([73b4bb4](https://github.com/code6x/nodkey/commit/73b4bb422f11551e55ed452a383276b1f0d47d61))
+
+
+### Documentation
+
+* warn that nodkey is work in progress and gives no guarantee ([#160](https://github.com/code6x/nodkey/issues/160)) ([ecc1e60](https://github.com/code6x/nodkey/commit/ecc1e60cddcbd15a8901867ba20b2fefd08588bf))
+
 ## [0.3.0](https://github.com/code6x/nodkey/compare/v0.2.0...v0.3.0) (2026-10-30)
 
 
