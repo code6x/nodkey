@@ -40,7 +40,7 @@ golangci-lint run --build-tags e2e
 ```
 
 The end-to-end test runs `sshd` in a container. It needs Docker, `ssh`
-and `git` ([DESIGN.md section 17](DESIGN.md)):
+and `git` ([DESIGN.md section 17](DESIGN.md#17-testing)):
 
 ```sh
 go test -race -tags e2e ./test/e2e/...
