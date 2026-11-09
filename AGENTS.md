@@ -62,6 +62,9 @@ Planned. Each v1 issue adds its part.
     server, on Android and on an iPhone (issue #24), with a table for
     the results.
   - `docs/releasing.md` - how releases are made and checked.
+  - `docs_test.go` (at the root of the module) checks that no shell
+    block in `README.md`, `AGENTS.md` or `docs/` ends a command line
+    with a `#` comment: zsh does not treat it as a comment (#92).
 - `test/e2e/` - the end-to-end test with `sshd` in a container (DESIGN.md
   section 17). Build tag `e2e`. The image of the container is
   `test/e2e/testdata/sshd`.
@@ -73,8 +76,10 @@ Planned. Each v1 issue adds its part.
 ```sh
 go test -race ./...
 go vet ./...
-golangci-lint run --build-tags e2e       # the tag adds the files of test/e2e
-go test -race -tags e2e ./test/e2e/...   # needs Docker, ssh and git
+# the tag adds the files of test/e2e
+golangci-lint run --build-tags e2e
+# needs Docker, ssh and git
+go test -race -tags e2e ./test/e2e/...
 ```
 
 The last one is the end-to-end test (DESIGN.md section 17). It builds

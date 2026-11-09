@@ -150,7 +150,8 @@ root on the broker host on the agent machine
    useradd --system --home-dir /var/lib/nodkey --shell /usr/sbin/nologin nodkey
    install -d -m 0755 /etc/nodkey
    install -d -m 0700 /etc/nodkey/credentials /run/nodkey-setup
-   nodkey keygen --out /run/nodkey-setup/broker-tls-key    # prints the pin of the broker
+   # prints the pin of the broker
+   nodkey keygen --out /run/nodkey-setup/broker-tls-key
    systemd-creds encrypt --with-key=host+tpm2 --name=broker-tls-key \
      /run/nodkey-setup/broker-tls-key /etc/nodkey/credentials/broker-tls-key.cred
    rm /run/nodkey-setup/broker-tls-key
@@ -158,14 +159,16 @@ root on the broker host on the agent machine
      systemd-creds encrypt --with-key=host+tpm2 --name=telegram-token - /etc/nodkey/credentials/telegram-token.cred
    systemd-ask-password -n "bws access token:" |
      systemd-creds encrypt --with-key=host+tpm2 --name=bws-token - /etc/nodkey/credentials/bws-token.cred
-   install -m 0644 /dev/null /etc/nodkey/known_hosts       # empty: no SSH keys yet
+   # empty: no SSH keys yet
+   install -m 0644 /dev/null /etc/nodkey/known_hosts
    ```
 
 4. **On the agent machine**, make the TLS key of the client:
 
    ```sh
    install -d -m 0700 ~/.config/nodkey
-   nodkey keygen --out ~/.config/nodkey/client.key         # prints the pin of the client
+   # prints the pin of the client
+   nodkey keygen --out ~/.config/nodkey/client.key
    ```
 
    Then write `~/.config/nodkey/client.toml`, with mode `0600`:

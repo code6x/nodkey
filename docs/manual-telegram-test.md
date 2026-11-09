@@ -59,10 +59,12 @@ In terminal 3:
 ```sh
 T=~/.config/nodkey-test
 install -d -m 0700 "$T"
-read -rs TOKEN    # paste the token, then press Enter; it is not shown
+# paste the token, then press Enter; it is not shown
+read -rs TOKEN
 (umask 077; printf '%s\n' "$TOKEN" > "$T/telegram-token")
 unset TOKEN
-ls -l "$T/telegram-token"    # must show -rw-------
+# must show -rw-------
+ls -l "$T/telegram-token"
 ```
 
 ### 3. A helper for the Bot API
@@ -93,7 +95,8 @@ tg getUpdates '{"allowed_updates":["message"]}' | jq '.result[].message.from.id'
 Keep the number in a variable:
 
 ```sh
-CHAT=123456789    # your user ID; the private chat with the bot has the same ID
+# your user ID; the private chat with the bot has the same ID
+CHAT=123456789
 ```
 
 From now on, never call `getUpdates` while the broker runs, except in
@@ -104,7 +107,8 @@ From now on, never call `getUpdates` while the broker runs, except in
 In terminal 3, in the nodkey source:
 
 ```sh
-git rev-parse HEAD    # write this commit into the results
+# write this commit into the results
+git rev-parse HEAD
 go build -o "$T/nodkey" ./cmd/nodkey
 install -d -m 0700 "$T/bin" "$T/state" "$T/home" "$T/home/.config" "$T/home/.config/nodkey"
 "$T/nodkey" keygen --out "$T/broker.key"
@@ -389,7 +393,8 @@ seconds were too short for it. So first give each request 3 minutes.
 
    ```sh
    sed -i 's/^timeout = "60s"$/timeout = "180s"/' "$T/broker.toml"
-   grep '^timeout' "$T/broker.toml"    # must show: timeout = "180s"
+   # must show: timeout = "180s"
+   grep '^timeout' "$T/broker.toml"
    ```
 
 2. Restart the broker, so that it reads the new timeout. First stop it
