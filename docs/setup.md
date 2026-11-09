@@ -1003,10 +1003,18 @@ of an agent machine: the agent can change that file.
 
    ```sh
    ssh-keyscan -t ed25519,ecdsa,rsa web-1.example.com 2>/dev/null |
-     awk '{print "web-1", $2, $3}' >> /run/nodkey-setup/known_hosts
+     awk '$1 !~ /^#/ {print "web-1", $2, $3}' >> /run/nodkey-setup/known_hosts
    ssh-keyscan -t ed25519,ecdsa,rsa -p 2222 web-2.example.com 2>/dev/null |
-     awk '{print "web-2", $2, $3}' >> /run/nodkey-setup/known_hosts
+     awk '$1 !~ /^#/ {print "web-2", $2, $3}' >> /run/nodkey-setup/known_hosts
    ```
+
+   `ssh-keyscan` also prints a comment line for each host, such as
+   `# web-1.example.com:22 SSH-2.0-OpenSSH_9.8`. Since OpenSSH 9.8 it
+   prints these lines on stdout, not on stderr
+   ([commit 1e84d0c](https://github.com/openssh/openssh-portable/commit/1e84d0cf40e94ae3a77d6a7ca8c036d8e3d55a40)),
+   so `2>/dev/null` does not remove them. The `awk` drops every line
+   that starts with `#`, so the file gets only key lines with each
+   version.
 
 3. Show the fingerprints of the fetched keys, and compare them with the
    list from step 1. Each one must be the same. If one differs, stop:
@@ -1014,6 +1022,23 @@ of an agent machine: the agent can change that file.
 
    ```sh
    ssh-keygen -lf /run/nodkey-setup/known_hosts
+   ```
+
+   `ssh-keygen -lf` skips a line that is not a key, and says nothing.
+   So also check that the file has one line for each fingerprint. The
+   two numbers must be the same:
+
+   ```sh
+   wc -l < /run/nodkey-setup/known_hosts
+   ssh-keygen -lf /run/nodkey-setup/known_hosts | wc -l
+   ```
+
+   If the first number is bigger, a line is not a key. This command
+   shows each such line with its number. Remove them, and run the check
+   again:
+
+   ```sh
+   awk '$2 !~ /^(ssh-|ecdsa-)/ {print NR ": " $0}' /run/nodkey-setup/known_hosts
    ```
 
 4. Install the file:
