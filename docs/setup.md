@@ -1012,7 +1012,8 @@ of an agent machine: the agent can change that file.
    `# web-1.example.com:22 SSH-2.0-OpenSSH_9.8`. Since OpenSSH 9.8 it
    prints these lines on stdout, not on stderr
    ([commit 1e84d0c](https://github.com/openssh/openssh-portable/commit/1e84d0cf40e94ae3a77d6a7ca8c036d8e3d55a40)),
-   so `2>/dev/null` does not remove them. The `awk` drops every line
+   so `2>/dev/null` does not remove them. (The message of that commit
+   says the opposite, but its code moves the lines to stdout.) The `awk` drops every line
    that starts with `#`, so the file gets only key lines with each
    version.
 
@@ -1038,7 +1039,7 @@ of an agent machine: the agent can change that file.
    again:
 
    ```sh
-   awk '$2 !~ /^(ssh-|ecdsa-)/ {print NR ": " $0}' /run/nodkey-setup/known_hosts
+   awk '$2 !~ /^(ssh-|ecdsa-|sk-)/ {print NR ": " $0}' /run/nodkey-setup/known_hosts
    ```
 
 4. Install the file:
