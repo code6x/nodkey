@@ -11,13 +11,21 @@ import (
 // docs (issue #92). Interactive zsh does not treat "#" as the start of a
 // comment unless the option interactivecomments is on, and it is off by
 // default. A reader who pastes "cmd   # note" into zsh passes "#" and the
-// words after it to cmd. So a note goes on its own line above the command.
+// words after it to cmd. So a note goes on its own line above the
+// command. zsh may print "command not found: #" for such a line, but no
+// command gets extra words.
 func TestDocsShellLinesHaveNoTrailingComment(t *testing.T) {
-	files, err := filepath.Glob("docs/*.md")
-	if err != nil {
-		t.Fatal(err)
+	var files []string
+	for _, pattern := range []string{"*.md", "docs/*.md"} {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, found...)
 	}
-	files = append(files, "README.md", "AGENTS.md")
+	if len(files) < 3 {
+		t.Fatalf("found only %d Markdown files: run the test from the root of the module", len(files))
+	}
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {

@@ -63,7 +63,7 @@ Planned. Each v1 issue adds its part.
     the results.
   - `docs/releasing.md` - how releases are made and checked.
   - `docs_test.go` (at the root of the module) checks that no shell
-    block in `README.md`, `AGENTS.md` or `docs/` ends a command line
+    block in a Markdown file at the root or in `docs/` ends a command line
     with a `#` comment: zsh does not treat it as a comment (#92).
 - `test/e2e/` - the end-to-end test with `sshd` in a container (DESIGN.md
   section 17). Build tag `e2e`. The image of the container is
