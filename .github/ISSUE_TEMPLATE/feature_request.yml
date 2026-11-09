@@ -1,0 +1,32 @@
+name: Feature request
+description: An idea to make nodkey better.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This repository is public.** Do not paste tokens, keys, host names
+        or addresses.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard or not possible today, and when does it happen?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: How could nodkey solve it? Say what it changes in DESIGN.md or THREAT-MODEL.md, if you know.
+    validations:
+      required: true
+  - type: textarea
+    id: done-when
+    attributes:
+      label: Done when
+      description: The checks that show the work is done. The issue closes when every box has evidence.
+      value: |
+        - [ ] 
+    validations:
+      required: true
