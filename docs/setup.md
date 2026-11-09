@@ -254,7 +254,11 @@ install -d -o root -g root -m 0700 /etc/nodkey/credentials /run/nodkey-setup
   the disk, unless the machine moves them to swap. So before you make
   any key, make sure that the machine has no swap, or only encrypted
   swap ([section 9](#swap-and-hibernation)). The directory is gone after
-  a reboot; then make it again with the same command.
+  a reboot; then make it again with the same command. Use it only for
+  secrets: `/run` is small (on Debian, 10 % of the RAM by default), so
+  large files that hold no secret, such as the downloads of `bws` and
+  `bw` in [section 5](#where-bws-and-bw-come-from), go to a directory
+  on disk.
 - `/var/lib/nodkey` is the state directory: the audit log, and a home
   directory for each store. systemd makes it at the first start
   (`StateDirectory=` in the unit). For some store steps, you make it
@@ -564,16 +568,21 @@ program: see [1password](#1password-a-vault-only-for-nodkey). Nor does an
 
 An example with bws 2.1.0 on x86-64 (take the newest release, and
 `aarch64` instead of `x86_64` on 64-bit ARM). The checksum file of the
-release lists the SHA-256 of each file:
+release lists the SHA-256 of each file. The downloads hold no secret,
+so they do not need `/run/nodkey-setup`, and they may not fit there:
+the standalone `bw` zip is about 46 MB, and the unpacked `bw` about
+140 MB. So unpack them in a private directory on disk, and remove it
+after the install:
 
 ```sh
-cd /run/nodkey-setup
+install -d -o root -g root -m 0700 /root/bw-setup
+cd /root/bw-setup
 curl -fLO https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-gnu-2.1.0.zip
 curl -fLO https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-sha256-checksums-2.1.0.txt
 sha256sum -c --ignore-missing bws-sha256-checksums-2.1.0.txt
 unzip bws-x86_64-unknown-linux-gnu-2.1.0.zip bws
 install -o root -g root -m 0755 bws /usr/local/bin/bws
-rm bws bws-x86_64-unknown-linux-gnu-2.1.0.zip bws-sha256-checksums-2.1.0.txt
+cd / && rm -r /root/bw-setup
 ```
 
 `sha256sum` must print `OK` for the zip file. An example with the
@@ -582,12 +591,13 @@ has no checksum file, so compare the SHA-256 with the `sha256:` value
 that GitHub shows next to the file on the release page:
 
 ```sh
-cd /run/nodkey-setup
+install -d -o root -g root -m 0700 /root/bw-setup
+cd /root/bw-setup
 curl -fLO https://github.com/bitwarden/clients/releases/download/cli-v2026.9.1/bw-linux-2026.9.1.zip
 sha256sum bw-linux-2026.9.1.zip
 unzip bw-linux-2026.9.1.zip bw
 install -o root -g root -m 0755 bw /usr/local/bin/bw
-rm bw bw-linux-2026.9.1.zip
+cd / && rm -r /root/bw-setup
 ```
 
 With [gh](https://cli.github.com/), this prints the value from the
