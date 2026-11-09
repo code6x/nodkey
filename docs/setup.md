@@ -571,8 +571,8 @@ An example with bws 2.1.0 on x86-64 (take the newest release, and
 release lists the SHA-256 of each file. The downloads hold no secret,
 so they do not need `/run/nodkey-setup`, and they may not fit there:
 the standalone `bw` zip is about 46 MB, and the unpacked `bw` about
-140 MB. So unpack them in a
-private directory on disk, and remove it after the install:
+140 MB. So unpack them in a private directory on disk, and remove it
+after the install:
 
 ```sh
 install -d -o root -g root -m 0700 /root/bw-setup
