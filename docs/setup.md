@@ -202,7 +202,8 @@ without it, such as for 0.1.0. Then take the file `nodkey` out of the
 tarball:
 
 ```sh
-VERSION=0.2.0   # the version you downloaded
+# the version you downloaded
+VERSION=0.2.0
 tar -xzf "nodkey_${VERSION}_linux_amd64.tar.gz" nodkey
 ```
 
@@ -400,7 +401,8 @@ of your own. Only your taps count.
    the broker:
 
    ```sh
-   read -rs TOKEN    # paste the token, then press Enter; it is not shown
+   # paste the token, then press Enter; it is not shown
+   read -rs TOKEN
    printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' "$TOKEN" |
      curl -sS --config - -H 'Content-Type: application/json' \
        -d '{"allowed_updates":["message","my_chat_member"]}'
@@ -469,7 +471,8 @@ the broker reads.
    ([access control](https://docs.ntfy.sh/config/#access-control)):
 
    ```sh
-   ntfy user add nodkey-broker     # asks for a password
+   # asks for a password
+   ntfy user add nodkey-broker
    ntfy user add phone
    ntfy access nodkey-broker nodkey-requests write-only
    ntfy access nodkey-broker nodkey-answers read-only
@@ -904,7 +907,8 @@ access to it: such an account could read them too.
    bws. For the store `vault`:
 
    ```sh
-   umask 077  # new files private; run `umask 022` before you copy the unit (section 8)
+   # new files private; run `umask 022` before you copy the unit (section 8)
+   umask 077
    install -d -o nodkey -g nodkey -m 0700 /var/lib/nodkey /var/lib/nodkey/stores /var/lib/nodkey/stores/vault
    # Only for Bitwarden's EU cloud or your own server:
    sudo -u nodkey env -i -C /var/lib/nodkey/stores/vault HOME=/var/lib/nodkey/stores/vault \
@@ -1721,8 +1725,10 @@ export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/nodkey/agent.sock"
 Check it:
 
 ```sh
-ssh-add -l                # the keys that this client may use, with their names
-ssh deploy@web-1 true     # a message comes for the login
+# the keys that this client may use, with their names
+ssh-add -l
+# a message comes for the login
+ssh deploy@web-1 true
 ```
 
 `ssh`, `git` and Ansible work through it with no changes. Some things to

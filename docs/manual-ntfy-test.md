@@ -60,7 +60,8 @@ on the iPhone.
 On the ntfy server:
 
 ```sh
-ntfy user add nodkey-test-broker    # asks for a password
+# asks for a password
+ntfy user add nodkey-test-broker
 ntfy user add nodkey-test-phone
 ntfy access nodkey-test-broker nodkey-test-requests write-only
 ntfy access nodkey-test-broker nodkey-test-answers read-only
@@ -78,10 +79,12 @@ In terminal 3:
 ```sh
 T=~/.config/nodkey-test
 install -d -m 0700 "$T"
-read -rs TOKEN    # paste the token, then press Enter; it is not shown
+# paste the token, then press Enter; it is not shown
+read -rs TOKEN
 (umask 077; printf '%s\n' "$TOKEN" > "$T/ntfy-token")
 unset TOKEN
-ls -l "$T/ntfy-token"    # must show -rw-------
+# must show -rw-------
+ls -l "$T/ntfy-token"
 ```
 
 Check the access rules, without a token:
