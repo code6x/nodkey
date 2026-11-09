@@ -570,7 +570,8 @@ An example with bws 2.1.0 on x86-64 (take the newest release, and
 `aarch64` instead of `x86_64` on 64-bit ARM). The checksum file of the
 release lists the SHA-256 of each file. The downloads hold no secret,
 so they do not need `/run/nodkey-setup`, and they may not fit there:
-the standalone `bw` zip alone is about 46 MB. So unpack them in a
+the standalone `bw` zip is about 46 MB, and the unpacked `bw` about
+140 MB. So unpack them in a
 private directory on disk, and remove it after the install:
 
 ```sh
