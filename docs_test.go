@@ -27,7 +27,7 @@ func TestDocsShellLinesHaveNoTrailingComment(t *testing.T) {
 		t.Fatalf("found only %d Markdown files: run the test from the root of the module", len(files))
 	}
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := os.ReadFile(f) //nolint:gosec // G304: a Markdown file of the repository, from a fixed glob.
 		if err != nil {
 			t.Fatal(err)
 		}
