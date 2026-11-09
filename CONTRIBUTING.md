@@ -17,8 +17,9 @@ Everyone who takes part follows the
 ## Report a bug or ask for a feature
 
 Open an [issue](https://github.com/code6x/nodkey/issues/new/choose) and
-choose a form. Every issue has a **"Done when"** list: the checks that
-show the work is done. The issue closes when every box has evidence.
+choose a form. Before work starts, an issue gets a **"Done when"** list:
+the checks that show the work is done. The issue closes when every box
+has evidence.
 
 Before you paste a log or a config, remove every token, key, host name
 and address from it.
@@ -60,9 +61,9 @@ go test -race -tags e2e ./test/e2e/...
   message shows, what the broker checks, or where a value goes, update
   DESIGN.md and THREAT-MODEL.md. If it changes the config, a command or a
   line that a guide in `docs/` shows, update that guide too.
-- **Dependencies:** only the standard library, `golang.org/x/crypto` and
-  `github.com/BurntSushi/toml`. Anything else needs a reason in the pull
-  request ([AGENTS.md](AGENTS.md#rules)).
+- **Dependencies** are few, and the list is in
+  [AGENTS.md](AGENTS.md#rules). Anything else needs a reason in the pull
+  request.
 - **No private data.** This repository is public. Never add a real host
   name, domain name, IP address, MAC address, token, key, serial number,
   or private name. Use `laptop`, `web-1`, `example.com` and addresses

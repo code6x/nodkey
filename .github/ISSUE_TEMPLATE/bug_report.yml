@@ -55,6 +55,8 @@ body:
     attributes:
       label: Log lines
       description: |
-        The error, and the broker's lines from `journalctl -u nodkey` if you have
-        them. Remove tokens, keys, host names and addresses first.
+        The error, and the journal lines if you have them: on the broker,
+        `journalctl -u nodkey`; for `nodkey ssh-agent`,
+        `journalctl --user -u nodkey-ssh-agent`. Remove tokens, keys, host
+        names and addresses first.
       render: text
