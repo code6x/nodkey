@@ -284,6 +284,7 @@ What to do:
   need.
 - Better: use a Telegram account that is logged in only on the phone.
 - Turn on Telegram's two-step verification and a passcode on the app.
+
 Risk that remains: real. nodkey cannot see which device pressed a button.
 A passkey page is a possible later step.
 
@@ -814,6 +815,7 @@ handshake.
   clients, so other peers cannot crowd out the lines about the clients
   (DESIGN.md section 10). So a peer cannot flood the journal, or write a
   line into it that looks like an audit anchor.
+
 Risk that remains: there is no limit on the number of connections. Any
 peer that can reach the broker port, even without a key, can hold a
 connection for up to 10 seconds, and makes the broker do a key exchange
@@ -1159,6 +1161,7 @@ rule (DESIGN.md section 12, decision 3 B) again, but smaller.
   as for `nodkey ssh-grant`, DESIGN.md section 13). The client says so,
   and the ID is in the `grant_id` of the audit entries of the request. The grant is bounded by its
   limits, and the person can cancel it.
+
 Risk that remains: for the time of a grant, anything on the client can
 use up to N uses of what it names. After a use, the secret stays on the
 agent machine (section 5, item 1). Choose short spans, few uses and
