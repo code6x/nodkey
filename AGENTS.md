@@ -70,6 +70,13 @@ Planned. Each v1 issue adds its part.
   `test/e2e/testdata/sshd`.
 - `.claude/agents/security-reviewer.md` - the security review every change
   gets.
+- `CONTRIBUTING.md` - the guide for contributors. It points to this file,
+  `SECURITY.md` and `docs/releasing.md`; it does not copy them.
+- `CODE_OF_CONDUCT.md` - the Contributor Covenant 2.1, with the contact
+  for a report.
+- `.github/ISSUE_TEMPLATE/` - the issue forms (bug report, feature request)
+  and `config.yml`, with the link to the private security report.
+- `.github/pull_request_template.md` - the checklist of a pull request.
 
 ## Commands
 
