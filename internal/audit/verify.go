@@ -248,7 +248,10 @@ func checkOpens(res *Result, journal []JournalLine, accept []Anchor) error {
 			p = problem(0, "journal line %d: the broker opened the log at entry %d, and its hash is not the hash "+
 				"in the anchor before it: entries were changed while the broker was stopped", jl.Line, jl.Anchor.Seq)
 		}
-		if p != nil {
+		if p != nil && noAnchor && i > 0 {
+			// It cannot be accepted (below).
+			p.Problem += "; check this log with the journal lines since it began (journalctl --since)"
+		} else if p != nil {
 			p.Gap = true
 		}
 		// The next open line is checked against this one, if no anchor

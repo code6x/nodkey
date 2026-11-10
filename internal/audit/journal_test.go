@@ -102,7 +102,8 @@ func TestVerifyJournal(t *testing.T) {
 		{name: "a first open line after a line of another log cannot be accepted",
 			journal: []JournalLine{old(a1), old(bad), of(open(bad), other), open(a3)}, accept: []Anchor{a3},
 			problem: "journal line 0: the journal has no anchor of this log before the broker opened it at entry 3",
-			more:    "--accept-open for entry 3: no open line"},
+			more: "the log was replaced, or the journal lost its older lines; check this log with the journal lines " +
+				"since it began (journalctl --since)\n--accept-open for entry 3: no open line"},
 		{name: "an accepted head is an anchor, so it must match the log", journal: gaps, accept: []Anchor{a2, bad},
 			problem: "two anchors for entry 3 have different hashes"},
 		{name: "an accept for an open line that passes is refused",

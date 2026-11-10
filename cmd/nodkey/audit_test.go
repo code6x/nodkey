@@ -155,6 +155,11 @@ func TestAuditVerify(t *testing.T) {
 		{name: "a gap gets a hint", args: []string{"audit", "verify", path, "--anchors", "-"},
 			stdin: addedWhileStopped, wantCode: exitDataErr,
 			wantStderr: "\nnodkey: audit verify: find out why each open line does not match (docs/setup.md section 12)"},
+		{name: "a replaced log gets no accept hint", args: []string{"audit", "verify", path, "--anchors", "-"},
+			stdin:    "audit anchor 1:" + h1[0] + " " + otherID + "\naudit open 3:" + hashes[2] + " " + id + "\n",
+			wantCode: exitDataErr, wantStderr: "journal line 2: the journal has no anchor of this log before the broker " +
+				"opened it at entry 3: the log was replaced, or the journal lost its older lines; check this log with " +
+				"the journal lines since it began (journalctl --since)\n"},
 		{name: "an accepted gap", args: []string{"audit", "verify", path, "--anchors", "-", "--accept-open", "3:" + hashes[2]},
 			stdin: addedWhileStopped, wantCode: exitOK,
 			wantStdout: ok + "anchors: 2 checked, all match; the newest is entry 2\n" + idLines(0, 0) +
