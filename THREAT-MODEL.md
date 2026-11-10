@@ -535,11 +535,12 @@ Risk that remains:
   stopped stays hidden at that open line. Entry SEQ must still have hash
   HASH, but the head is not counted as a proven anchor, and only that one
   head is accepted. An open line with no anchor of the log before it can
-  be accepted only as the first line of the journal copy: with a line of
+  be accepted only as the first `audit` line in the journal copy: with a line of
   another log before it, old anchors of this log could have gone to that
   log ID, and accepting it would turn off their check. Every other failing open line still fails the check. The result
   shows `accepted gaps`, so a script or a reviewer can see them. An
-  `--accept-open` that matches no failing open line is an error.
+  `--accept-open` that matches no open line that can be accepted is an
+  error.
 - A log that was removed or moved away looks like a new log. Its lines in
   the journal have another log ID. `audit verify` shows the old log as
   "other log in the journal" and does not fail, because a log that a

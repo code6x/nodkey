@@ -2057,10 +2057,12 @@ the first one.
   example a power cut. You vouch for the gap: it is not proven, and it does
   not count in `anchors: N checked`. Entry 41 must still have that hash.
   An open line with no anchor before it can be accepted only when it is
-  the first line of the journal copy. The result then has the line `accepted gaps: 1
+  the first `audit` line in the journal copy. The result then has the line `accepted gaps: 1
   open lines that do not match, accepted with --accept-open`. If no
   failing open line has that head, `--accept-open` is an error (exit 65);
-  remove it.
+  remove it. The same error comes when that open line has no anchor before
+  it and is not the first `audit` line: then check with the journal since
+  the log began (`--since`).
 - `jq` shows the entries in short, for example the last ten:
 
   ```sh

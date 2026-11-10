@@ -2065,7 +2065,7 @@ not count as a proven anchor: it is not in `anchors: N checked` or in the
 newest anchor. An `--accept-open` that matches no failing open line of
 the log is an error: there is no gap to accept. An open line with no
 anchor of the log before it can be accepted only when it is the first
-line of the journal copy (a journal that lost its oldest lines). With any
+`audit` line in the journal copy (a journal that lost its oldest lines). With any
 line before it, the log was replaced, or old anchors of this log went to
 another log ID; then check with the lines since the log began
 (`--since`). Accepted gaps are not proven. The person vouches for them,
@@ -3640,8 +3640,8 @@ takes `FILE` before or after the options.
   accepts, on the person's word, the open line of the checked log whose
   head is `SEQ:HASH` and that does not match. Entry SEQ must have hash
   HASH, but the head is not counted as a proven anchor. An open line with
-  no anchor of the log before it can be accepted only as the first line
-  of the journal copy. An `--accept-open` that no failing open line can
+  no anchor of the log before it can be accepted only as the first `audit`
+  line in the journal copy. An `--accept-open` that no failing open line can
   use is an error (65): `--accept-open for entry N: no open line of this
   log with that head can be accepted: none fails the check, or a line of
   another log comes before it (then check with the journal since the log
