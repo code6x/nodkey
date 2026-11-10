@@ -72,11 +72,13 @@ access to another machine and asks a person before each use.
 Read this part carefully. These are real limits.
 
 1. **After approval, the secret is on the agent machine.** It is in the
-   environment of the command. A hostile agent with root can read it from
-   that process. It can also ask for it with a command that prints it. The
-   message shows the command, but the command is claimed and a script can
-   hide what it does. nodkey limits *when* and *which* secret; it does not
-   stop a hostile agent from keeping a secret it was given.
+   environment of the command. The command runs as the agent's user, so a
+   hostile agent can read it from that process while it runs (for example
+   from `/proc/PID/environ`); it needs no root. It can also ask for it with
+   a command that prints it. The message shows the command, but the
+   command is claimed and a script can hide what it does. nodkey limits
+   *when* and *which* secret; it does not stop a hostile agent from
+   keeping a secret it was given.
 2. **After an approved SSH login, the agent has a shell on that host.** It
    can do anything that user can do there. It can keep the connection open
    and reuse it without new taps (`ControlMaster`, `ControlPersist`). It can

@@ -1,7 +1,28 @@
 # nodkey
 
-nodkey lets an AI coding agent use a secret or an SSH key only after a
-person approves that one request on a phone.
+**An AI agent asks. You approve on your phone. The secret goes to one
+command, not to the agent.**
+
+- The agent writes a command, for example
+  `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
+- You see the request on Telegram and tap **Approve**.
+- nodkey puts the value only into the environment of that command. It
+  never puts it into the agent's chat. The agent sees the command's
+  output and nodkey's own status lines, never the value from nodkey.
+- SSH keys stay on the broker. The client gets only signatures.
+- **The limits:** the agent chooses the command. A bad agent can write
+  one that prints or sends the secret, and an approved SSH login is a
+  shell. So read the command before you tap. And the command runs as the
+  agent's own user, so while it runs, a bad agent can also read the
+  value from the command's environment (`/proc/PID/environ`). So approve
+  only a secret that you accept this agent may get, and prefer short-lived
+  or narrow secrets.
+
+![The agent writes the command. The nodkey client asks the broker. The
+broker asks you on your phone. After you approve, the broker sends the
+value only into the command's environment. nodkey gives the agent only
+the command's output. For SSH, the broker sends only a signature; the key
+stays on the broker.](docs/diagrams/who-sees-the-secret.svg)
 
 > [!WARNING]
 > **nodkey is work in progress.** It is new, it has had no outside
@@ -10,8 +31,10 @@ person approves that one request on a phone.
 >
 > **nodkey does not protect you from a malicious agent once you
 > approve.** It makes the agent ask before each use, and it keeps the
-> keys off the agent's machine. But once you approve a request, the agent
-> can read or keep that secret, or use that SSH login for other things.
+> keys off the agent's machine. But the agent writes the command, so once
+> you approve a request, it can make that command print, save or send
+> the secret, or read it while the command runs (see the limits above),
+> or use that SSH login for other things (it is a shell).
 > A tap helps only if you read the request well, and even then the
 > command and the reason are only what the agent claims. Some ways to
 > reach a secret skip nodkey: root on the broker host, a login to the
@@ -37,19 +60,24 @@ Try it on a test setup first. See the
   SSH keys and the access to your secret stores (Bitwarden Secrets Manager
   through `bws`, the Bitwarden Password Manager through `bw`, a vault of
   1Password, or a project of Infisical).
-- The agent's machine gets only the `nodkey` client. It holds no SSH key
-  and no store token. Its own TLS key lets it ask, not approve.
-- When the agent needs a secret, it runs
-  `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
+- The agent's machine gets only the `nodkey` client. The agent never
+  gets an SSH key or a store token. The client's own TLS key lets it
+  ask, not approve.
+- The agent writes this command, and nodkey runs it with the secret
+  added: `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
   The value goes only into that one command's environment. nodkey never
-  prints it, but the command itself can (see the warning above).
+  shows the value to the agent; the agent sees the command's output. nodkey never prints the value, but the
+  command itself can: the agent chose the command, so check it before
+  you tap.
 - When `ssh`, `git` or Ansible need a signature, `nodkey ssh-agent` sends
-  the request to the broker. The key stays on the broker.
+  the request to the broker. The key stays on the broker; the client
+  gets only the signature.
 - When a request needs approval, you get a Telegram message with
   **Approve once** and **Deny**, and for some secrets and keys also
-  **Approve N min**. It shows which machine asks, for which secret or key,
-  and for SSH the real target host, checked by the broker. No answer
-  means no.
+  **Approve N min**. The broker checks which machine asks, for which
+  secret or key, and for SSH the real target host; the message shows
+  these as verified. The command and the reason in the message are only
+  what the agent claims. No answer means no.
   In place of Telegram, the broker can use an ntfy server that you run
   yourself ([docs/setup.md](docs/setup.md#ntfy-in-place-of-the-telegram-bot)).
 - Every request and decision goes into a hash-chained audit log.
@@ -73,10 +101,24 @@ In a second terminal, run the command that it prints:
 nodkey try run --secret DEMO_TOKEN=demo-token -- sh -c 'echo "got ${#DEMO_TOKEN} characters"'
 ```
 
-The request shows up in the first terminal. Type `1` (Approve once), `2`
-(Approve 5 min) or `3` (Deny), then Enter. Or wait 2 minutes: the
-request expires and is denied. Press Ctrl-C to end the trial; it removes
-its files.
+The second terminal plays the agent's screen. The request shows up in
+the first terminal. Type `1` (Approve once), `2` (Approve 5 min) or `3`
+(Deny), then Enter. Or wait 2 minutes: the request expires and is
+denied. While the request waits, the second terminal shows its short
+code. After you approve, it shows `got N characters`, never the value.
+
+Now see the limit. Run a command that prints the value:
+
+```sh
+nodkey try run --secret DEMO_TOKEN=demo-token -- sh -c 'echo "$DEMO_TOKEN"'
+```
+
+Approve it, and the fake value shows up in the second terminal. This is
+the limit: the command can print the secret, and the agent writes the
+command. So you read the command before you tap.
+
+Press Ctrl-C in the first terminal to end the trial; it removes its
+files.
 
 Try mode is not a setup. The agent could type the answer in that
 terminal, so the trial has only fake values (they start with `TRY-`) and
@@ -238,7 +280,8 @@ root on the broker host on the agent machine
 
    A Telegram message comes, with the same short code that the client
    prints. Tap **Approve once**. The command gets the secret in
-   `GH_TOKEN`, and prints only its length.
+   `GH_TOKEN`, and prints only its length, so the agent's screen shows
+   only that length.
 
 Before real use, read
 [docs/setup.md](docs/setup.md): above all the safety of your Telegram

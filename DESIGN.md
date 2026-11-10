@@ -3,10 +3,17 @@
 Status: accepted for version 1 on 2026-10-12.
 
 nodkey lets an AI coding agent use a secret or an SSH key only after a
-person approves that one request on a phone.
+person approves that one request on a phone. The secret goes to the one
+command that the agent runs, not to the agent.
 
 The keys and the access to the secret stores live on a trusted machine. The
-agent never holds them. When the agent needs one, it asks. The person gets a
+agent never holds them. A secret value goes only into the environment of
+one approved command, and nodkey never puts it into the agent's chat. The
+agent writes that command, so a bad command can still print or send the
+value, and the agent can read it from the command's environment while it
+runs ([THREAT-MODEL.md section 5](THREAT-MODEL.md#5-what-nodkey-does-not-promise)).
+
+When the agent needs a secret or a key, it asks. The person gets a
 Telegram message with buttons. Nothing happens until the person taps
 **Approve**. No answer means **no**.
 
@@ -31,9 +38,9 @@ what it protects against, and what it does not.
 
 ## 2. Goals
 
-1. The agent can use a secret or an SSH key only when the approver tapped
-   **Approve** for that request, or a grant or a rule the approver wrote
-   allows it.
+1. A command the agent runs gets a secret, and the agent gets an SSH
+   signature, only when the approver tapped **Approve** for that request,
+   or a grant or a rule the approver wrote allows it.
 2. An SSH private key never leaves the broker. The broker signs; the client
    only forwards.
 3. nodkey never prints a secret value. A value goes only into the
