@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"errors"
 	"reflect"
@@ -51,6 +52,7 @@ func TestVerifyJournal(t *testing.T) {
 		want    Result // Entries, TornLines, Last and LogID are set below
 		problem string // the start of the problem; "" for a pass
 		more    string // more text that the problem must have
+		newest  uint64 // Result.NewestAnchor; 0 means 3
 	}{
 		{name: "a new log, then a restart",
 			journal: []JournalLine{newOpen, anchor(a1), anchor(a2), open(a2), anchor(a3)},
@@ -94,11 +96,18 @@ func TestVerifyJournal(t *testing.T) {
 		{name: "an accepted gap passes, and only that gap", journal: gaps, accept: []Anchor{a2}, problem: gap7},
 		{name: "two accepted gaps", journal: gaps, accept: []Anchor{a3, a2},
 			want: Result{Anchors: 3, AcceptedOpens: 2}},
+		{name: "an accepted head is not a proven anchor",
+			journal: []JournalLine{anchor(a1), anchor(a2), open(a3)}, accept: []Anchor{a3},
+			want: Result{Anchors: 2, AcceptedOpens: 1}, newest: 2},
+		{name: "a first open line after a line of another log cannot be accepted",
+			journal: []JournalLine{old(a1), old(bad), of(open(bad), other), open(a3)}, accept: []Anchor{a3},
+			problem: "journal line 0: the journal has no anchor of this log before the broker opened it at entry 3",
+			more:    "--accept-open for entry 3: no open line"},
 		{name: "an accepted head is an anchor, so it must match the log", journal: gaps, accept: []Anchor{a2, bad},
 			problem: "two anchors for entry 3 have different hashes"},
 		{name: "an accept for an open line that passes is refused",
 			journal: []JournalLine{anchor(a1), anchor(a2), open(a2), anchor(a3)}, accept: []Anchor{a2},
-			problem: "--accept-open for entry 2: no open line of this log with that head fails the check"},
+			problem: "--accept-open for entry 2: no open line of this log with that head can be accepted"},
 		{name: "after a gap, the next open line is checked against it",
 			journal: []JournalLine{anchor(a1), at(open(a2), 3), at(open(a3), 4)}, accept: []Anchor{a2},
 			problem: "journal line 4: the broker opened the log at entry 3, but the last anchor of this log before it is entry 2"},
@@ -107,7 +116,7 @@ func TestVerifyJournal(t *testing.T) {
 			want:    Result{Anchors: 3, Opens: 2}},
 		{name: "a journal that lost its oldest lines, with the gap accepted",
 			journal: []JournalLine{open(a2), anchor(a3)}, accept: []Anchor{a2},
-			want: Result{Anchors: 2, AcceptedOpens: 1}},
+			want: Result{Anchors: 1, AcceptedOpens: 1}},
 		{name: "old-form anchors of two logs, then a moved log", journal: twoOldLogs,
 			want: Result{Anchors: 3, NewStarts: 1, OtherLogs: []OtherLog{{LogID: other, Newest: 5}}}},
 		{name: "an old-form anchor takes the log ID of the next open line with one",
@@ -134,7 +143,7 @@ func TestVerifyJournal(t *testing.T) {
 				t.Fatalf("VerifyJournal: %v", err)
 			}
 			want := tt.want
-			want.Entries, want.Last, want.LogID, want.NewestAnchor = 3, a3, id, 3
+			want.Entries, want.Last, want.LogID, want.NewestAnchor = 3, a3, id, cmp.Or(tt.newest, 3)
 			if !reflect.DeepEqual(res, want) {
 				t.Errorf("VerifyJournal = %+v, want %+v", res, want)
 			}

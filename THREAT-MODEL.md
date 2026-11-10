@@ -532,9 +532,12 @@ Risk that remains:
 - An accepted gap is not proven. With `--accept-open SEQ:HASH`, a person
   accepts, on their word, an open line that does not match. If they accept
   without a check, an entry that was added or changed while the broker was
-  stopped stays hidden at that open line. The accepted head still counts as
-  an anchor, so entry SEQ must have hash HASH, and only that one head is
-  accepted. Every other failing open line still fails the check. The result
+  stopped stays hidden at that open line. Entry SEQ must still have hash
+  HASH, but the head is not counted as a proven anchor, and only that one
+  head is accepted. An open line with no anchor of the log before it can
+  be accepted only as the first line of the journal copy: with a line of
+  another log before it, old anchors of this log could have gone to that
+  log ID, and accepting it would turn off their check. Every other failing open line still fails the check. The result
   shows `accepted gaps`, so a script or a reviewer can see them. An
   `--accept-open` that matches no failing open line is an error.
 - A log that was removed or moved away looks like a new log. Its lines in

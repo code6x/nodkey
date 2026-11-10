@@ -2033,8 +2033,10 @@ the first one.
   takes the log ID of the first `audit open` line with a log ID after it,
   so old anchors of earlier logs do not fail the check of a newer log. You
   do not need `--since` for that. Only if old anchors of two logs come
-  before the same open line, the check can fail with "two anchors for
-  entry N have different hashes". Then check the log with only the lines
+  before the same open line, the check of that log can fail: with "two
+  anchors for entry N have different hashes", with an anchor whose hash
+  does not match its entry, or with an anchor whose entry is not in the
+  log. Then check the log with only the lines
   since it began, with `--since`.
 - If the journal holds lines of another log, `nodkey audit verify` prints
   `other log in the journal: ID …, up to entry N; if no person moved it
@@ -2052,8 +2054,10 @@ the first one.
   ```
 
   Use it only after you found out why the open line does not match, for
-  example a power cut. You vouch for the gap: it is not proven. Entry 41
-  must still have that hash. The result then has the line `accepted gaps: 1
+  example a power cut. You vouch for the gap: it is not proven, and it does
+  not count in `anchors: N checked`. Entry 41 must still have that hash.
+  An open line with no anchor before it can be accepted only when it is
+  the first line of the journal copy. The result then has the line `accepted gaps: 1
   open lines that do not match, accepted with --accept-open`. If no
   failing open line has that head, `--accept-open` is an error (exit 65);
   remove it.

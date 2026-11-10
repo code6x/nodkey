@@ -141,7 +141,10 @@ func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
 //     was replaced, or the journal lost its older lines. Every open line
 //     that fails is reported, in one error. An open line whose head is in
 //     accept passes, and is counted in Result.AcceptedOpens; an accept
-//     that no failing open line of the log has is an error.
+//     that no failing open line of the log has is an error. An open line
+//     with no anchor of the log before it can be accepted only if it is
+//     the first line of the journal. Accepted heads are checked against
+//     the log, but they are not in Result.Anchors or NewestAnchor.
 //   - The journal must have a line of this log: an anchor or an open line.
 //
 // Open lines with a zero log ID are counted in Result.NewStarts, and the
@@ -151,18 +154,28 @@ func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
 func VerifyJournal(r io.Reader, journal []JournalLine, extra, accept []Anchor) (Result, error) {
 	journal = withOldLogIDs(journal)
 	var id LogID
+	proven := make(map[uint64]bool) // the seqs of the anchors that are not accepted heads
 	res, err := verify(r, func(first LogID) []Anchor {
 		id = first
-		anchors := slices.Concat(extra, accept)
+		anchors := slices.Clone(extra)
 		for _, jl := range journal {
 			if jl.Kind == JournalOldAnchor || (jl.Kind == JournalAnchor && jl.LogID == id) {
 				anchors = append(anchors, jl.Anchor)
 			}
 		}
-		return anchors
+		for _, a := range anchors {
+			proven[a.Seq] = true
+		}
+		return append(anchors, accept...)
 	})
 	if err != nil {
 		return Result{}, err
+	}
+	// An accepted head is only on the person's word: it does not count as
+	// a proven anchor. Every anchor matched, so the proven ones are these.
+	res.Anchors, res.NewestAnchor = uint64(len(proven)), 0
+	for seq := range proven {
+		res.NewestAnchor = max(res.NewestAnchor, seq)
 	}
 	if err := checkOpens(&res, journal, accept); err != nil {
 		return Result{}, err
@@ -197,7 +210,7 @@ func checkOpens(res *Result, journal []JournalLine, accept []Anchor) error {
 	used := make(map[Anchor]bool, len(accept))
 	var problems []error
 	others := make(map[LogID]int) // the index in res.OtherLogs
-	for _, jl := range journal {
+	for i, jl := range journal {
 		id := jl.LogID
 		if jl.Kind == JournalOldAnchor {
 			id = res.LogID
@@ -222,8 +235,9 @@ func checkOpens(res *Result, journal []JournalLine, accept []Anchor) error {
 			continue
 		}
 		var p *VerifyError
+		noAnchor := !known
 		switch {
-		case !known:
+		case noAnchor:
 			p = problem(0, "journal line %d: the journal has no anchor of this log before the broker opened it at "+
 				"entry %d: the log was replaced, or the journal lost its older lines", jl.Line, jl.Anchor.Seq)
 		case last.Seq != jl.Anchor.Seq:
@@ -243,7 +257,12 @@ func checkOpens(res *Result, journal []JournalLine, accept []Anchor) error {
 		switch {
 		case p == nil:
 			res.Opens++
-		case slices.Contains(accept, jl.Anchor):
+		// An open line with no anchor of the log before it may be
+		// accepted only as the first line of the journal: the journal
+		// lost its older lines. With a line of another log, or an
+		// old-form anchor that went to another log, before it, the log
+		// was replaced, and the anchors of that line could be of this log.
+		case slices.Contains(accept, jl.Anchor) && (!noAnchor || i == 0):
 			used[jl.Anchor] = true
 			res.AcceptedOpens++
 		default:
@@ -257,7 +276,8 @@ func checkOpens(res *Result, journal []JournalLine, accept []Anchor) error {
 	for _, a := range accept {
 		if !used[a] {
 			problems = append(problems, problem(0, "--accept-open for entry %d: no open line of this log with "+
-				"that head fails the check, so there is no gap to accept; remove it", a.Seq))
+				"that head can be accepted: none fails the check, or a line of another log comes before it "+
+				"(then check with the journal since the log began, with journalctl --since); remove it", a.Seq))
 			used[a] = true // report it once
 		}
 	}

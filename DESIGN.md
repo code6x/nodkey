@@ -2060,12 +2060,16 @@ log start".
 cut. When the person has found out why an open line does not match, they
 give `--accept-open SEQ:HASH` with the head of that `audit open` line. It
 may repeat. The check then accepts that one open line, on the person's
-word. The accepted head also counts as an anchor, so entry SEQ must still
-have the hash HASH. An `--accept-open` that matches no failing open line
-of the log is an error: there is no gap to accept. This includes a
-journal that has no anchor of this log before the broker opened it (a
-journal that lost its oldest lines). Accepted gaps are not proven. The
-person vouches for them, and the result shows them as `accepted gaps`.
+word. Entry SEQ must still have the hash HASH, but the accepted head does
+not count as a proven anchor: it is not in `anchors: N checked` or in the
+newest anchor. An `--accept-open` that matches no failing open line of
+the log is an error: there is no gap to accept. An open line with no
+anchor of the log before it can be accepted only when it is the first
+line of the journal copy (a journal that lost its oldest lines). With any
+line before it, the log was replaced, or old anchors of this log went to
+another log ID; then check with the lines since the log began
+(`--since`). Accepted gaps are not proven. The person vouches for them,
+and the result shows them as `accepted gaps`.
 
 **Other logs.** The journal can hold lines of other logs, such as after a
 person moved the log away and the broker started a new one. `audit verify`
@@ -2134,7 +2138,9 @@ the broker start a new log. `audit verify` checks the new log with the
 whole journal; the old log shows as another log (above). This needs a
 journal with log IDs or with old anchors that an open line of the new
 log follows. If old anchors of two logs come before the same open line,
-check the new log only with the lines since it began, such as
+the check of that log fails: "two anchors for entry N have different
+hashes", an anchor that does not match its entry, or an anchor whose
+entry is not in the log. Then check the log only with the lines since it began, such as
 `journalctl -u nodkey -o cat --since TIME`.
 
 **What `nodkey audit verify` checks.** It reads the file line by line, so
@@ -3632,12 +3638,14 @@ takes `FILE` before or after the options.
 - Two anchors for one entry must not differ.
 - `--accept-open SEQ:HASH` may repeat, and needs `--anchors` (else 64). It
   accepts, on the person's word, the open line of the checked log whose
-  head is `SEQ:HASH` and that does not match. The head also counts as an
-  anchor: entry SEQ must have hash HASH. An `--accept-open` that matches
-  no failing open line is an error (65): `--accept-open for entry N: no
-  open line of this log with that head fails the check, so there is no gap
-  to accept; remove it`. This also holds when the journal has no anchor of
-  this log before the broker opened it.
+  head is `SEQ:HASH` and that does not match. Entry SEQ must have hash
+  HASH, but the head is not counted as a proven anchor. An open line with
+  no anchor of the log before it can be accepted only as the first line
+  of the journal copy. An `--accept-open` that no failing open line can
+  use is an error (65): `--accept-open for entry N: no open line of this
+  log with that head can be accepted: none fails the check, or a line of
+  another log comes before it (then check with the journal since the log
+  began, with journalctl --since); remove it`.
 
 Check with every anchor since the log began (section 9). When the log
 passes, it prints to stdout:
