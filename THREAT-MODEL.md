@@ -473,7 +473,10 @@ entry and a cut log are found, also when the broker wrote more entries
 after the cut. The open line closes the gap of a stop: `audit verify`
 checks that each open line equals the last anchor of the same log before
 it, so an entry added, removed or changed while the broker was stopped is
-found. A torn line from a power cut is not part of the chain, but
+found. `audit verify` checks every open line and reports each one that
+fails. An anchor line from an earlier version has no log ID; it takes the
+log ID of the first open line with a non-zero log ID after it, so old
+anchors of earlier logs do not fail the check of a newer log. A torn line from a power cut is not part of the chain, but
 its `log_recovered` entry holds the torn line's length and hash, so a
 change to it or its removal is found too. The broker locks the log, so a
 second broker cannot write to it. `nodkey audit verify` never prints the
@@ -506,7 +509,8 @@ Risk that remains:
   entry, and `audit verify --anchors` reports a gap. A failed sync or a
   power cut that loses journal lines does the same. This fails closed,
   but a person must then check the log by hand and check the rest of the
-  journal with `--since` after that start. A broken stderr does not kill
+  journal with `--since` after that start, or accept the gap with
+  `--accept-open` (see the accepted gap below). A broken stderr does not kill
   the broker by SIGPIPE in the middle of its stop.
 - `chattr +a` does not stop the broker user from appending entries that
   look right. An entry appended while the broker is stopped, with the
@@ -525,6 +529,14 @@ Risk that remains:
   open line differ from the last anchor. `audit verify` fails. This fails
   closed, but it looks like an attack. The person checks the log and the
   time of the crash.
+- An accepted gap is not proven. With `--accept-open SEQ:HASH`, a person
+  accepts, on their word, an open line that does not match. If they accept
+  without a check, an entry that was added or changed while the broker was
+  stopped stays hidden at that open line. The accepted head still counts as
+  an anchor, so entry SEQ must have hash HASH, and only that one head is
+  accepted. Every other failing open line still fails the check. The result
+  shows `accepted gaps`, so a script or a reviewer can see them. An
+  `--accept-open` that matches no failing open line is an error.
 - A log that was removed or moved away looks like a new log. Its lines in
   the journal have another log ID. `audit verify` shows the old log as
   "other log in the journal" and does not fail, because a log that a

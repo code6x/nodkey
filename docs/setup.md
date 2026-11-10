@@ -2013,27 +2013,50 @@ problem. Then it prints the line number, never the text of the line. A
 changed entry shows as an anchor that does not match. A log that someone
 cut shows as an anchor whose entry is missing. An entry that someone
 added, removed or changed while the broker was stopped shows as an open
-line that does not match the last anchor before it.
+line that does not match the last anchor before it. The check lists every
+open line that does not match, each on its own line. It does not stop at
+the first one.
 
 - Entries after the newest anchor are not proven.
 - An open line that does not match can also come from a crash: the
   entry was on disk, but the power went before its anchor reached the
   journal. `nodkey audit verify` cannot tell. Look at the log around that
-  entry and at the time of the crash.
+  entry and at the time of the crash. If you know that the gap is
+  harmless, accept it with the head of that `audit open` line (see
+  below).
 - If journald removed its oldest lines (`SystemMaxUse=` or its age
   limits), the first line of the log in the journal can be an `audit
   open` line with no anchor before it, and the check fails. Keep the
-  journal for as long as the log, or copy it to another machine.
-- Anchor lines without a log ID come from an earlier version. They count
-  as anchors of the log you check. If the journal has such lines of more
-  than one log, check each log with only the lines since it began, with
-  `--since`.
+  journal for as long as the log, or copy it to another machine. If you
+  know why the lines are gone, you can accept that open line (see below).
+- Anchor lines without a log ID come from an earlier version. Each one
+  takes the log ID of the first `audit open` line with a log ID after it,
+  so old anchors of earlier logs do not fail the check of a newer log. You
+  do not need `--since` for that. Only if old anchors of two logs come
+  before the same open line, the check can fail with "two anchors for
+  entry N have different hashes". Then check the log with only the lines
+  since it began, with `--since`.
 - If the journal holds lines of another log, `nodkey audit verify` prints
   `other log in the journal: ID …, up to entry N; if no person moved it
   away, it was deleted or replaced`. If you moved the log away, this is
   expected: the broker started a new log at entry 1. If you did not,
   someone deleted or replaced the log. Keep the old file. It does not
-  fail the check.
+  fail the check, and its exit code is still 0. A moved log is normal.
+  A script can look for the line `other log in the journal`.
+- To accept a gap, give the head of the `audit open` line that does not
+  match, as `SEQ:HASH`. You can repeat the flag. For example:
+
+  ```sh
+  journalctl -u nodkey -o cat | nodkey audit verify /var/lib/nodkey/audit.jsonl \
+    --anchors - --accept-open 41:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+  ```
+
+  Use it only after you found out why the open line does not match, for
+  example a power cut. You vouch for the gap: it is not proven. Entry 41
+  must still have that hash. The result then has the line `accepted gaps: 1
+  open lines that do not match, accepted with --accept-open`. If no
+  failing open line has that head, `--accept-open` is an error (exit 65);
+  remove it.
 - `jq` shows the entries in short, for example the last ten:
 
   ```sh
