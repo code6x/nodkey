@@ -2042,10 +2042,34 @@ the stop. At the next start, the open line is the head that the broker
 finds. So `audit verify` checks each open line of this log against the
 last anchor of this log before it. If someone added, removed or changed
 an entry while the broker was stopped, the two differ, and the check
-fails. Only anchors and open lines with the log ID of the checked log are
-used. Anchor lines from earlier versions have no log ID; they count as
-anchors of the checked log. An open line of a new log (zero log ID) is
-not checked, and is counted as a "new log start".
+fails. The check does not stop at the first open line that fails. It
+checks every open line and reports each failing one. After an open line,
+matching or not, the next open line is checked against it, if no anchor
+of the log comes between them. Only anchors and open lines with the log ID
+of the checked log are used. Anchor lines from earlier versions have no
+log ID. Such a line takes the log ID of the first open line with a
+non-zero log ID after it in the journal. Only an old anchor with no such
+open line after it counts as an anchor of the checked log. So old anchors
+of earlier logs do not fail the check of a newer log. (Old anchors of two
+different logs before the same open line both go to that log; then two
+anchors for one entry can differ. Check that log with `--since`.) An open
+line of a new log (zero log ID) is not checked, and is counted as a "new
+log start".
+
+**Accepted gaps.** Some gaps are harmless, such as the one after a power
+cut. When the person has found out why an open line does not match, they
+give `--accept-open SEQ:HASH` with the head of that `audit open` line. It
+may repeat. The check then accepts that one open line, on the person's
+word. Entry SEQ must still have the hash HASH, but the accepted head does
+not count as a proven anchor: it is not in `anchors: N checked` or in the
+newest anchor. An `--accept-open` that matches no failing open line of
+the log is an error: there is no gap to accept. An open line with no
+anchor of the log before it can be accepted only when it is the first
+`audit` line in the journal copy (a journal that lost its oldest lines). With any
+line before it, the log was replaced, or old anchors of this log went to
+another log ID; then check with the lines since the log began
+(`--since`). Accepted gaps are not proven. The person vouches for them,
+and the result shows them as `accepted gaps`.
 
 **Other logs.** The journal can hold lines of other logs, such as after a
 person moved the log away and the broker started a new one. `audit verify`
@@ -2053,7 +2077,9 @@ does not check them. It prints each one: `other log in the journal: ID …,
 up to entry N; if no person moved it away, it was deleted or replaced`.
 A deleted log and a log moved away on purpose look the same in the
 journal, so the person decides. They can check the old log with the same
-journal.
+journal. This line has no exit code of its own: a log that moved
+(rotation) is normal, and a non-zero code would fail a good check. A
+script can look for the line `other log in the journal`.
 
 What the anchors do not find:
 
@@ -2068,7 +2094,8 @@ What the anchors do not find:
   open line then does not match the last anchor. `audit verify` fails.
   This fails closed: the person checks the log and the time of the
   crash, and then knows it was not an attack. It cannot tell the two
-  apart by itself.
+  apart by itself. When the person knows the gap is harmless, they
+  accept that open line with `--accept-open` (above).
 - On Linux, `chattr +a` on the file stops anyone except root from changing
   old lines. It does not stop the broker user from appending. For example,
   it can append a `log_recovered` entry that names the last real entry as
@@ -2109,9 +2136,12 @@ write itself can also leave the file like this. Then run
 `nodkey audit verify` to see where. Keep the file, move it away, and let
 the broker start a new log. `audit verify` checks the new log with the
 whole journal; the old log shows as another log (above). This needs a
-journal with log IDs: if the journal still has anchor lines without a
-log ID (from an earlier version), check the new log only with the lines
-since it began, such as `journalctl -u nodkey -o cat --since TIME`.
+journal with log IDs or with old anchors that an open line of the new
+log follows. If old anchors of two logs come before the same open line,
+the check of that log fails: "two anchors for entry N have different
+hashes", an anchor that does not match its entry, or an anchor whose
+entry is not in the log. Then check the log only with the lines since it began, such as
+`journalctl -u nodkey -o cat --since TIME`.
 
 **What `nodkey audit verify` checks.** It reads the file line by line, so
 the file can be large.
@@ -3589,7 +3619,7 @@ on them.
 check is `FAIL` or `skip`, or when it cannot write to stdout, and with 64
 on wrong usage.
 
-`nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]`
+`nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-] [--accept-open SEQ:HASH]...`
 takes `FILE` before or after the options.
 
 - `--anchor SEQ:HASH` may repeat.
@@ -3597,13 +3627,25 @@ takes `FILE` before or after the options.
   uses every line that is exactly `audit anchor SEQ:HASH LOGID` or
   `audit open SEQ:HASH LOGID`, and skips the other lines, so it takes the
   output of `journalctl -u nodkey -o cat`. A line `audit anchor SEQ:HASH`
-  without a log ID (from an earlier version) counts as an anchor of the
-  checked log. Lines with another log ID are not checked, and are shown.
+  without a log ID (from an earlier version) takes the log ID of the first
+  open line with a non-zero log ID after it; only if no such open line
+  follows, it counts as an anchor of the checked log. Lines with another
+  log ID are not checked, and are shown.
   Each open line of the checked log must equal the last anchor of that log
-  before it.
+  before it. Verify checks every open line and reports each one that fails.
   If no line is an anchor, that is wrong usage (64, with the one line of a
   usage error): a check with no anchor must not pass by mistake.
 - Two anchors for one entry must not differ.
+- `--accept-open SEQ:HASH` may repeat, and needs `--anchors` (else 64). It
+  accepts, on the person's word, the open line of the checked log whose
+  head is `SEQ:HASH` and that does not match. Entry SEQ must have hash
+  HASH, but the head is not counted as a proven anchor. An open line with
+  no anchor of the log before it can be accepted only as the first `audit`
+  line in the journal copy. An `--accept-open` that no failing open line can
+  use is an error (65): `--accept-open for entry N: no open line of this
+  log with that head can be accepted: none fails the check, or a line of
+  another log comes before it (then check with the journal since the log
+  began, with journalctl --since); remove it`.
 
 Check with every anchor since the log began (section 9). When the log
 passes, it prints to stdout:
@@ -3617,21 +3659,30 @@ other log in the journal: ID 0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899
 last entry: 1234:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 ```
 
+When any gap was accepted, a line follows the `open lines` line:
+`accepted gaps: 1 open lines that do not match, accepted with --accept-open`.
+Accepted gaps are not proven.
+
 The `log ID`, `open lines` and `other log` lines appear only with
 `--anchors`. There is one `other log` line for each other log ID in the
 journal, and none if there is no other log. Without anchors, the
 `anchors` line is `anchors: none checked`. Entries after
 the newest anchor are not proven. When the log fails, it prints the first
 problem to stderr, with the line number, for example
-`nodkey: audit log FILE: line 57: has seq 58, want 57`. It never prints the
-text of a line. It exits with:
+`nodkey: audit log FILE: line 57: has seq 58, want 57`. When open lines
+fail, it prints each on its own line, for example
+`nodkey: audit log "FILE": journal line 90: ...`, and then one hint line:
+`nodkey: audit verify: find out why each open line does not match
+(docs/setup.md section 12); if you know that a gap is harmless, such as
+after a power cut, give --accept-open SEQ:HASH with the head of that "audit
+open" line`. It never prints the text of a line. It exits with:
 
 | code | meaning |
 |---|---|
 | 0 | the log passed |
 | 1 | the result cannot be printed |
-| 64 | wrong usage, such as an anchor that is not `SEQ:HASH`, or an anchors file without an anchor |
-| 65 | the log failed: a broken link, a line that is not a valid entry, a torn line without its `log_recovered` entry, an anchor that does not match or whose entry is not in the log, two anchors for one entry that differ, or an open line that does not match the last anchor before it |
+| 64 | wrong usage, such as an anchor that is not `SEQ:HASH`, an anchors file without an anchor, or `--accept-open` without `--anchors` |
+| 65 | the log failed: a broken link, a line that is not a valid entry, a torn line without its `log_recovered` entry, an anchor that does not match or whose entry is not in the log, two anchors for one entry that differ, an open line that does not match the last anchor before it, or an `--accept-open` that matches no failing open line |
 | 66 | the log or the anchors file cannot be opened or read |
 
 `nodkey update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]` installs a

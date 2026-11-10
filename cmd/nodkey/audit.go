@@ -19,6 +19,7 @@ const (
 )
 
 const auditUsageText = `Usage: nodkey audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
+                          [--accept-open SEQ:HASH]...
 
 Check the hash chain of an audit log, and that each anchor matches its
 entry. The broker writes "audit anchor SEQ:HASH LOGID" to the journal for
@@ -35,7 +36,14 @@ written. For example:
                      SEQ:HASH LOGID" or "audit open SEQ:HASH LOGID". Each
                      open line must match the last anchor of its log
                      before it. Lines of other logs (another LOGID) are
-                     shown, not checked.
+                     shown, not checked. An "audit anchor SEQ:HASH" line
+                     without LOGID is of the log of the next open line
+                     with a LOGID.
+  --accept-open SEQ:HASH
+                     accept the open line "audit open SEQ:HASH LOGID"
+                     that does not match, on your word: only after you
+                     know why, such as a power cut. Entry SEQ must still
+                     have the hash HASH. Needs --anchors; may repeat
 
 Exit codes: 0 the log passed, 64 wrong usage, 65 the log failed the
 check, 66 a file cannot be opened or read, 1 the result cannot be
@@ -69,6 +77,8 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	fs.Var(&anchors, "anchor", "check that entry SEQ has the hash HASH (`SEQ:HASH`); may repeat")
 	var anchorsFile onceString
 	fs.Var(&anchorsFile, "anchors", "read the anchors from `FILE`, or from stdin for -")
+	var accepts anchorList
+	fs.Var(&accepts, "accept-open", "accept the open line with the head `SEQ:HASH` as a known gap; may repeat")
 	// FILE may come before or after the flags.
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -89,6 +99,9 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	if fs.NArg() > 0 {
 		return usageFail(stderr, "audit verify", "give one FILE only")
 	}
+	if len(accepts) > 0 && !anchorsFile.set {
+		return usageFail(stderr, "audit verify", "--accept-open needs --anchors with the journal")
+	}
 	var journal []audit.JournalLine
 	if anchorsFile.set {
 		read, code := readJournalFile(anchorsFile.value, stdin, stderr)
@@ -108,13 +121,13 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	}
 	var res audit.Result
 	if anchorsFile.set {
-		res, err = audit.VerifyJournal(f, journal, anchors...)
+		res, err = audit.VerifyJournal(f, journal, anchors, accepts)
 	} else {
 		res, err = audit.Verify(f, anchors...)
 	}
 	_ = f.Close() // read only; a close error changes nothing
 	if ve := (*audit.VerifyError)(nil); errors.As(err, &ve) {
-		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, ve)
+		printVerifyErrors(stderr, path, err)
 		return exitDataErr
 	}
 	if err != nil {
@@ -127,12 +140,16 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 		out += "anchors: none checked\n"
 	} else {
 		out += fmt.Sprintf("anchors: %d checked, all match; the newest is entry %d\n", res.Anchors,
-			newestAnchor(res.LogID, anchors, journal))
+			res.NewestAnchor)
 	}
 	if anchorsFile.set {
 		out += fmt.Sprintf("log ID: %s\n", res.LogID)
 		out += fmt.Sprintf("open lines: %d checked, all match the anchor before them; new log starts: %d\n",
 			res.Opens, res.NewStarts)
+		if res.AcceptedOpens > 0 {
+			out += fmt.Sprintf("accepted gaps: %d open lines that do not match, accepted with --accept-open\n",
+				res.AcceptedOpens)
+		}
 		for _, o := range res.OtherLogs {
 			out += fmt.Sprintf("other log in the journal: ID %s, up to entry %d; "+
 				"if no person moved it away, it was deleted or replaced\n", o.LogID, o.Newest)
@@ -147,20 +164,26 @@ func runAuditVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	return exitOK
 }
 
-// newestAnchor returns the highest seq of the anchors that were checked
-// against the log with the ID id: the --anchor flags, the journal anchors
-// of that log, and the journal anchors without a log ID.
-func newestAnchor(id audit.LogID, flags []audit.Anchor, journal []audit.JournalLine) uint64 {
-	var newest uint64
-	for _, a := range flags {
-		newest = max(newest, a.Seq)
+// printVerifyErrors writes each problem of err, a *audit.VerifyError or
+// several joined, on its own line. If one is a gap at an open line, a last
+// line says how to find out why, and how to accept it then.
+func printVerifyErrors(stderr io.Writer, path string, err error) {
+	errs := []error{err}
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		errs = j.Unwrap()
 	}
-	for _, j := range journal {
-		if j.Kind == audit.JournalOldAnchor || (j.Kind == audit.JournalAnchor && j.LogID == id) {
-			newest = max(newest, j.Anchor.Seq)
+	gap := false
+	for _, e := range errs {
+		_, _ = fmt.Fprintf(stderr, "nodkey: audit log %q: %v\n", path, e)
+		if ve := (*audit.VerifyError)(nil); errors.As(e, &ve) && ve.Gap {
+			gap = true
 		}
 	}
-	return newest
+	if gap {
+		_, _ = io.WriteString(stderr, "nodkey: audit verify: find out why each open line does not match "+
+			"(docs/setup.md section 12); if you know that a gap is harmless, such as after a power cut, "+
+			"give --accept-open SEQ:HASH with the head of that \"audit open\" line\n")
+	}
 }
 
 // readJournalFile reads the journal lines of --anchors: from stdin for
