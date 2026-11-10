@@ -7,8 +7,8 @@ command, not to the agent.**
   `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
 - You see the request on Telegram and tap **Approve**.
 - nodkey puts the value only into the environment of that command. It
-  never puts it into the agent's chat. nodkey shows the agent only the
-  command's output.
+  never puts it into the agent's chat. The agent sees the command's
+  output and nodkey's own status lines, never the value from nodkey.
 - SSH keys stay on the broker. The client gets only signatures.
 - **The limits:** the agent chooses the command. A bad agent can write
   one that prints or sends the secret, and an approved SSH login is a
@@ -20,8 +20,8 @@ command, not to the agent.**
 
 ![The agent writes the command. The nodkey client asks the broker. The
 broker asks you on your phone. After you approve, the broker sends the
-value only into the command's environment. The agent gets only the
-command's output. For SSH, the broker sends only a signature; the key
+value only into the command's environment. nodkey gives the agent only
+the command's output. For SSH, the broker sends only a signature; the key
 stays on the broker.](docs/diagrams/who-sees-the-secret.svg)
 
 > [!WARNING]
@@ -65,8 +65,8 @@ Try it on a test setup first. See the
   ask, not approve.
 - The agent writes this command, and nodkey runs it with the secret
   added: `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
-  The value goes only into that one command's environment. nodkey shows
-  the agent only the command's output. nodkey never prints the value, but the
+  The value goes only into that one command's environment. nodkey never
+  shows the value to the agent; the agent sees the command's output. nodkey never prints the value, but the
   command itself can: the agent chose the command, so check it before
   you tap.
 - When `ssh`, `git` or Ansible need a signature, `nodkey ssh-agent` sends
@@ -104,8 +104,8 @@ nodkey try run --secret DEMO_TOKEN=demo-token -- sh -c 'echo "got ${#DEMO_TOKEN}
 The second terminal plays the agent's screen. The request shows up in
 the first terminal. Type `1` (Approve once), `2` (Approve 5 min) or `3`
 (Deny), then Enter. Or wait 2 minutes: the request expires and is
-denied. After you approve, the second terminal shows the short code
-and `got N characters`, never the value.
+denied. While the request waits, the second terminal shows its short
+code. After you approve, it shows `got N characters`, never the value.
 
 Now see the limit. Run a command that prints the value:
 
