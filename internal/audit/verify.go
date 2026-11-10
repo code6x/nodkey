@@ -30,11 +30,16 @@ type Result struct {
 	// Anchors is the number of different anchors that Verify checked.
 	// Each one matched its entry.
 	Anchors uint64
+	// NewestAnchor is the highest entry of those anchors, or 0.
+	NewestAnchor uint64
 	// LogID is the log ID of the log: the SHA-256 of its line 1.
 	LogID LogID
 	// Opens is the number of open lines of this log that VerifyJournal
 	// checked. Each one matched the last anchor before it.
 	Opens uint64
+	// AcceptedOpens is the number of open lines of this log that did not
+	// match, and that the person accepted as known gaps.
+	AcceptedOpens uint64
 	// NewStarts is the number of open lines with a zero log ID: each is
 	// a start on a log with no line 1 yet, such as a new log. VerifyJournal
 	// does not check them.
@@ -64,6 +69,10 @@ type VerifyError struct {
 	Line uint64
 	// Problem says what is wrong.
 	Problem string
+	// Gap is true for an open line that does not match the anchor before
+	// it: a gap that a person may accept with --accept-open, once they
+	// know why it is there.
+	Gap bool
 }
 
 func (e *VerifyError) Error() string {
@@ -114,28 +123,37 @@ func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
 // VerifyJournal checks a log from r, like Verify, with the lines of its
 // journal from ReadJournal, in the order of the journal. extra are more
 // anchors, such as from --anchor flags; they count like old-form anchors.
-// The log ID of the log is the SHA-256 of its line 1. The checks after
-// those of Verify:
+// accept are the heads of open lines that the person accepts as known
+// gaps, such as from --accept-open flags. The log ID of the log is the
+// SHA-256 of its line 1. The checks after those of Verify:
 //
-//   - The anchors that Verify checks are extra, the old-form anchors, and
-//     the anchors with the log ID. Anchors of other log IDs are of other
-//     logs, so they are not checked against this log.
+//   - An old-form anchor (no log ID) gets the log ID of the first open
+//     line with a log ID after it in the journal: the broker that wrote
+//     that open line read that log. An old-form anchor with no such open
+//     line after it counts as an anchor of this log.
+//   - The anchors that Verify checks are extra, accept, and the anchors
+//     with the log ID. Anchors of other log IDs are of other logs, so they
+//     are not checked against this log.
 //   - Each open line with the log ID must hold the last anchor of the log
-//     before it in the journal (old-form anchors count as anchors of the
-//     log). If it does not, entries were added or changed while the
+//     before it in the journal, or the open line before it if that is
+//     later. If it does not, entries were added or changed while the
 //     broker was stopped. If no anchor of the log comes before it, the log
-//     was replaced, or the journal lost its older lines.
+//     was replaced, or the journal lost its older lines. Every open line
+//     that fails is reported, in one error. An open line whose head is in
+//     accept passes, and is counted in Result.AcceptedOpens; an accept
+//     that no failing open line of the log has is an error.
 //   - The journal must have a line of this log: an anchor or an open line.
 //
 // Open lines with a zero log ID are counted in Result.NewStarts, and the
 // other log IDs are listed in Result.OtherLogs: a log that was deleted and
 // started again at entry 1 shows up there, and so does a log that a
 // person moved away. Check that log with the same journal.
-func VerifyJournal(r io.Reader, journal []JournalLine, extra ...Anchor) (Result, error) {
+func VerifyJournal(r io.Reader, journal []JournalLine, extra, accept []Anchor) (Result, error) {
+	journal = withOldLogIDs(journal)
 	var id LogID
 	res, err := verify(r, func(first LogID) []Anchor {
 		id = first
-		anchors := slices.Clone(extra)
+		anchors := slices.Concat(extra, accept)
 		for _, jl := range journal {
 			if jl.Kind == JournalOldAnchor || (jl.Kind == JournalAnchor && jl.LogID == id) {
 				anchors = append(anchors, jl.Anchor)
@@ -146,18 +164,39 @@ func VerifyJournal(r io.Reader, journal []JournalLine, extra ...Anchor) (Result,
 	if err != nil {
 		return Result{}, err
 	}
-	if err := checkOpens(&res, journal); err != nil {
+	if err := checkOpens(&res, journal, accept); err != nil {
 		return Result{}, err
 	}
 	return res, nil
 }
 
+// withOldLogIDs returns a copy of journal in which each old-form anchor
+// has the log ID of the first open line with a log ID after it, as a
+// JournalAnchor. Old-form anchors with no such open line stay as they are.
+func withOldLogIDs(journal []JournalLine) []JournalLine {
+	out := slices.Clone(journal)
+	var next LogID // the log ID of the next open line with one
+	for i := len(out) - 1; i >= 0; i-- {
+		switch jl := &out[i]; {
+		case jl.Kind == JournalOpen && !jl.LogID.IsZero():
+			next = jl.LogID
+		case jl.Kind == JournalOldAnchor && !next.IsZero():
+			jl.Kind, jl.LogID = JournalAnchor, next
+		}
+	}
+	return out
+}
+
 // checkOpens makes the checks of the open lines for the log res.LogID,
-// and adds what it found to res.
-func checkOpens(res *Result, journal []JournalLine) error {
-	last := make(map[LogID]Anchor)
+// and adds what it found to res. It reports every open line that fails,
+// in one error, with the problems in the order of the journal.
+func checkOpens(res *Result, journal []JournalLine, accept []Anchor) error {
+	var last Anchor // the last anchor or open line of this log
+	known := false  // last is set
+	seen := false   // the journal has a line of this log
+	used := make(map[Anchor]bool, len(accept))
+	var problems []error
 	others := make(map[LogID]int) // the index in res.OtherLogs
-	seen := false                 // the journal has a line of this log
 	for _, jl := range journal {
 		id := jl.LogID
 		if jl.Kind == JournalOldAnchor {
@@ -179,29 +218,50 @@ func checkOpens(res *Result, journal []JournalLine) error {
 		}
 		seen = true
 		if jl.Kind != JournalOpen {
-			last[id] = jl.Anchor
+			last, known = jl.Anchor, true
 			continue
 		}
-		prev, ok := last[id]
+		var p *VerifyError
 		switch {
-		case !ok:
-			return problem(0, "journal line %d: the journal has no anchor of this log before the broker opened it at "+
+		case !known:
+			p = problem(0, "journal line %d: the journal has no anchor of this log before the broker opened it at "+
 				"entry %d: the log was replaced, or the journal lost its older lines", jl.Line, jl.Anchor.Seq)
-		case prev.Seq != jl.Anchor.Seq:
-			return problem(0, "journal line %d: the broker opened the log at entry %d, but the last anchor of this log "+
+		case last.Seq != jl.Anchor.Seq:
+			p = problem(0, "journal line %d: the broker opened the log at entry %d, but the last anchor of this log "+
 				"before it is entry %d: entries were added or removed while the broker was stopped",
-				jl.Line, jl.Anchor.Seq, prev.Seq)
-		case prev.Hash != jl.Anchor.Hash:
-			return problem(0, "journal line %d: the broker opened the log at entry %d, and its hash is not the hash "+
+				jl.Line, jl.Anchor.Seq, last.Seq)
+		case last.Hash != jl.Anchor.Hash:
+			p = problem(0, "journal line %d: the broker opened the log at entry %d, and its hash is not the hash "+
 				"in the anchor before it: entries were changed while the broker was stopped", jl.Line, jl.Anchor.Seq)
 		}
-		res.Opens++
+		if p != nil {
+			p.Gap = true
+		}
+		// The next open line is checked against this one, if no anchor
+		// comes between them.
+		last, known = jl.Anchor, true
+		switch {
+		case p == nil:
+			res.Opens++
+		case slices.Contains(accept, jl.Anchor):
+			used[jl.Anchor] = true
+			res.AcceptedOpens++
+		default:
+			problems = append(problems, p)
+		}
 	}
 	if !seen {
 		return problem(0, "the journal has no anchor and no open line of this log; check that the journal "+
 			"is of this broker, and that it still has the lines since the log began")
 	}
-	return nil
+	for _, a := range accept {
+		if !used[a] {
+			problems = append(problems, problem(0, "--accept-open for entry %d: no open line of this log with "+
+				"that head fails the check, so there is no gap to accept; remove it", a.Seq))
+			used[a] = true // report it once
+		}
+	}
+	return errors.Join(problems...)
 }
 
 // verify is Verify. anchors gets the log ID, once line 1 is read, and
@@ -291,6 +351,9 @@ func verify(r io.Reader, anchors func(LogID) []Anchor) (Result, error) {
 		}
 	}
 	v.res.Anchors = uint64(len(v.found))
+	for seq := range v.found {
+		v.res.NewestAnchor = max(v.res.NewestAnchor, seq)
+	}
 	return v.res, nil
 }
 

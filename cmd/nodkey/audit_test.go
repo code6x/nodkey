@@ -145,6 +145,25 @@ func TestAuditVerify(t *testing.T) {
 			stdin: addedWhileStopped, wantCode: exitDataErr,
 			wantStderr: "journal line 3: the broker opened the log at entry 3, but the last anchor of this log before it is " +
 				"entry 2: entries were added or removed while the broker was stopped"},
+		{name: "two gaps are both reported, with how to accept one", args: []string{"audit", "verify", path, "--anchors", "-"},
+			stdin: addedWhileStopped + "audit anchor 3:" + hashes[2] + " " + id + "\naudit open 2:" + hashes[1] + " " + id + "\n",
+			wantCode: exitDataErr,
+			wantStderr: "journal line 3: the broker opened the log at entry 3, but the last anchor of this log before it is " +
+				"entry 2: entries were added or removed while the broker was stopped\n" +
+				"nodkey: audit log " + strconv.Quote(path) + ": journal line 5: the broker opened the log at entry 2, " +
+				"but the last anchor of this log before it is entry 3"},
+		{name: "a gap gets a hint", args: []string{"audit", "verify", path, "--anchors", "-"},
+			stdin: addedWhileStopped, wantCode: exitDataErr,
+			wantStderr: "\nnodkey: audit verify: find out why each open line does not match (docs/setup.md section 12)"},
+		{name: "an accepted gap", args: []string{"audit", "verify", path, "--anchors", "-", "--accept-open", "3:" + hashes[2]},
+			stdin: addedWhileStopped, wantCode: exitOK,
+			wantStdout: ok + "anchors: 3 checked, all match; the newest is entry 3\n" + idLines(0, 0) +
+				"accepted gaps: 1 open lines that do not match, accepted with --accept-open\n" + last},
+		{name: "an accept with no gap", args: []string{"audit", "verify", path, "--anchors", "-", "--accept-open", "2:" + hashes[1]},
+			stdin: withIDs, wantCode: exitDataErr,
+			wantStderr: "--accept-open for entry 2: no open line of this log with that head fails the check"},
+		{name: "accept-open without anchors", args: []string{"audit", "verify", path, "--accept-open", "3:" + hashes[2]},
+			wantCode: exitUsage, wantStderr: "--accept-open needs --anchors with the journal"},
 		{name: "a deleted or moved log is shown, not a cut", args: []string{"audit", "verify", path, "--anchors", "-"},
 			stdin: afterOther, wantCode: exitOK, wantStdout: ok + "anchors: 2 checked, all match; the newest is entry 2\n" +
 				idLines(0, 2) + "other log in the journal: ID " + otherID + ", up to entry 2; " +

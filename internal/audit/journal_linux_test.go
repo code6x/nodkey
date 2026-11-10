@@ -23,7 +23,7 @@ func verifyJournal(t *testing.T, path, journal string, extra ...Anchor) (Result,
 	if err != nil {
 		t.Fatalf("ReadJournal: %v", err)
 	}
-	return VerifyJournal(bytes.NewReader(readLog(t, path)), lines, extra...)
+	return VerifyJournal(bytes.NewReader(readLog(t, path)), lines, extra, nil)
 }
 
 func mustVerifyJournal(t *testing.T, path, journal string, extra ...Anchor) Result {
@@ -69,7 +69,7 @@ func TestVerifyJournalPassesGoodRuns(t *testing.T) {
 	run2 := restart(t, path, testHooks())
 	run3 := restart(t, path, testHooks())
 	res := mustVerifyJournal(t, path, journalCopy(run1, run2, run3))
-	want := Result{Entries: 6, Last: res.Last, Anchors: 6, LogID: logIDOf(t, path), Opens: 2, NewStarts: 1}
+	want := Result{Entries: 6, Last: res.Last, Anchors: 6, NewestAnchor: 6, LogID: logIDOf(t, path), Opens: 2, NewStarts: 1}
 	if !reflect.DeepEqual(res, want) {
 		t.Errorf("VerifyJournal = %+v, want %+v", res, want)
 	}
@@ -145,7 +145,7 @@ func TestVerifyJournalShowsADeletedLog(t *testing.T) {
 		t.Error("Verify with every anchor of both logs: no error")
 	}
 	res := mustVerifyJournal(t, path, journal)
-	want := Result{Entries: 2, Last: res.Last, Anchors: 2, LogID: logIDOf(t, path), Opens: 1, NewStarts: 2,
+	want := Result{Entries: 2, Last: res.Last, Anchors: 2, NewestAnchor: 2, LogID: logIDOf(t, path), Opens: 1, NewStarts: 2,
 		OtherLogs: []OtherLog{{LogID: oldID, Newest: 4}}}
 	if !reflect.DeepEqual(res, want) {
 		t.Errorf("VerifyJournal = %+v, want %+v", res, want)
