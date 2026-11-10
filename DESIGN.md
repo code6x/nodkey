@@ -10,7 +10,7 @@ The keys and the access to the secret stores live on a trusted machine. The
 agent never holds them. A secret value goes only into the environment of
 one approved command, and nodkey never puts it into the agent's chat. The
 agent writes that command, so a bad command can still print or send the
-value (section 2, goal 3). When the agent needs one, it asks. The person gets a
+value ([THREAT-MODEL.md section 5](THREAT-MODEL.md#5-what-nodkey-does-not-promise)). When the agent needs one, it asks. The person gets a
 Telegram message with buttons. Nothing happens until the person taps
 **Approve**. No answer means **no**.
 
