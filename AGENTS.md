@@ -1,7 +1,12 @@
 # Working on nodkey
 
-nodkey gives an AI coding agent a secret or an SSH signature only after a
-person approves that one request on a phone. Read [DESIGN.md](DESIGN.md)
+nodkey lets an AI coding agent use a secret or an SSH key only after a
+person approves that one request on a phone. nodkey never shows the
+secret to the agent: the value goes only into the environment of the one
+approved command, on the agent machine, and an SSH private key never
+leaves the broker (the client gets only a signature). The agent writes
+that command, so a bad command can still print or send the value
+(THREAT-MODEL.md section 5). Read [DESIGN.md](DESIGN.md)
 and [THREAT-MODEL.md](THREAT-MODEL.md) before you change code. They are the
 rules the code must follow.
 
