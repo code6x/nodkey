@@ -20,8 +20,8 @@ Anything that breaks a promise in
 protection described in
 [section 6](THREAT-MODEL.md#6-threats-and-answers), for example:
 
-- a command the agent runs gets a secret, or the agent gets an SSH
-  signature, without an approval;
+- the agent, or a command the agent runs, gets a secret, or the agent
+  gets an SSH signature, without an approval;
 - a secret value shows up in a log, an error, the audit log or a Telegram
   message;
 - a tap approves a different request than the one shown;

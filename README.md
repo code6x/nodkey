@@ -7,12 +7,16 @@ command, not to the agent.**
   `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
 - You see the request on Telegram and tap **Approve**.
 - nodkey puts the value only into the environment of that command. It
-  never puts it into the agent's chat. The agent sees the command's
-  output.
+  never puts it into the agent's chat. nodkey shows the agent only the
+  command's output.
 - SSH keys stay on the broker. The client gets only signatures.
-- **The limit:** the agent chooses the command. A bad agent can write
+- **The limits:** the agent chooses the command. A bad agent can write
   one that prints or sends the secret, and an approved SSH login is a
-  shell. So read the command before you tap.
+  shell. So read the command before you tap. And the command runs as the
+  agent's own user, so while it runs, a bad agent can also read the
+  value from the command's environment (`/proc/PID/environ`). So approve
+  only a secret that you accept this agent may get, and prefer short-lived
+  or narrow secrets.
 
 ![The agent writes the command. The nodkey client asks the broker. The
 broker asks you on your phone. After you approve, the broker sends the
@@ -29,8 +33,8 @@ stays on the broker.](docs/diagrams/who-sees-the-secret.svg)
 > approve.** It makes the agent ask before each use, and it keeps the
 > keys off the agent's machine. But the agent writes the command, so once
 > you approve a request, it can make that command print, save or send
-> the secret (see the limit above), or use that SSH login for other
-> things (it is a shell).
+> the secret, or read it while the command runs (see the limits above),
+> or use that SSH login for other things (it is a shell).
 > A tap helps only if you read the request well, and even then the
 > command and the reason are only what the agent claims. Some ways to
 > reach a secret skip nodkey: root on the broker host, a login to the
@@ -61,8 +65,8 @@ Try it on a test setup first. See the
   ask, not approve.
 - The agent writes this command, and nodkey runs it with the secret
   added: `nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`.
-  The value goes only into that one command's environment. The agent
-  sees only the command's output. nodkey never prints the value, but the
+  The value goes only into that one command's environment. nodkey shows
+  the agent only the command's output. nodkey never prints the value, but the
   command itself can: the agent chose the command, so check it before
   you tap.
 - When `ssh`, `git` or Ansible need a signature, `nodkey ssh-agent` sends
@@ -100,8 +104,8 @@ nodkey try run --secret DEMO_TOKEN=demo-token -- sh -c 'echo "got ${#DEMO_TOKEN}
 The second terminal plays the agent's screen. The request shows up in
 the first terminal. Type `1` (Approve once), `2` (Approve 5 min) or `3`
 (Deny), then Enter. Or wait 2 minutes: the request expires and is
-denied. After you approve, the second terminal shows only
-`got N characters`, never the value.
+denied. After you approve, the second terminal shows the short code
+and `got N characters`, never the value.
 
 Now see the limit. Run a command that prints the value:
 
