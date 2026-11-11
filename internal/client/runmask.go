@@ -49,7 +49,7 @@ func runMasked(path string, argv, envv []string, values [][]byte, stderr io.Writ
 func maskedCommand(path string, argv, envv []string, values [][]byte, stdout, stderr io.Writer) (int, syscall.Signal, error) {
 	sigs := make(chan os.Signal, 4)
 	var caught []os.Signal
-	for _, s := range []os.Signal{syscall.SIGTERM, syscall.SIGHUP, os.Interrupt, syscall.SIGQUIT, syscall.SIGPIPE} {
+	for _, s := range []os.Signal{syscall.SIGTERM, syscall.SIGHUP, os.Interrupt, syscall.SIGQUIT} {
 		if !signal.Ignored(s) {
 			caught = append(caught, s)
 		}
@@ -57,6 +57,13 @@ func maskedCommand(path string, argv, envv []string, values [][]byte, stdout, st
 	signal.Notify(sigs, caught...)
 	stopSignals := sync.OnceFunc(func() { signal.Stop(sigs) })
 	defer stopSignals()
+	// SIGPIPE stays caught until all of the output is written, also after
+	// the command ended.
+	pipes := make(chan os.Signal, 1)
+	if !signal.Ignored(syscall.SIGPIPE) {
+		signal.Notify(pipes, syscall.SIGPIPE)
+		defer signal.Stop(pipes)
+	}
 
 	outR, outW, err := os.Pipe()
 	if err != nil {
@@ -90,23 +97,45 @@ func maskedCommand(path string, argv, envv []string, values [][]byte, stdout, st
 	wg.Go(func() { outErr = copyMasked(outR, stdout, values) })
 	wg.Go(func() { errErr = copyMasked(errR, stderr, values) })
 
-	exited := make(chan struct{})
+	// late is a SIGTERM or SIGHUP that came when the command had just
+	// ended, so it could not be passed on. It then ends nodkey.
+	var late syscall.Signal
+	exited, forwarded := make(chan struct{}), make(chan struct{})
+	pass := func(s os.Signal) {
+		if s != syscall.SIGTERM && s != syscall.SIGHUP {
+			return
+		}
+		if err := cmd.Process.Signal(s); err != nil {
+			late = s.(syscall.Signal) //nolint:forcetypeassert // SIGTERM and SIGHUP are syscall.Signal.
+		}
+	}
 	go func() {
+		defer close(forwarded)
 		for {
 			select {
 			case s := <-sigs:
-				if s == syscall.SIGTERM || s == syscall.SIGHUP {
-					_ = cmd.Process.Signal(s)
-				}
+				pass(s)
 			case <-exited:
 				return
 			}
 		}
 	}()
 	waitErr := cmd.Wait() // the pipes are files: Wait does not wait for the output
-	close(exited)
 	stopSignals()
+	close(exited)
+	<-forwarded
+	for drained := false; !drained; {
+		select {
+		case s := <-sigs:
+			pass(s)
+		default:
+			drained = true
+		}
+	}
 	wg.Wait()
+	if late != 0 {
+		return 128 + int(late), late, nil
+	}
 	st := cmd.ProcessState
 	if st == nil {
 		return 0, 0, fmt.Errorf("cannot run %q: %w", path, waitErr)
