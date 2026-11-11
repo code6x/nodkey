@@ -1683,6 +1683,12 @@ Tell the agent about it, for example in its instructions for a project:
 names are refused, because programs print or run their values
 ([DESIGN.md section 5](../DESIGN.md#variable-names-that-the-broker-refuses)).
 
+The command itself may print a value, for example in a debug line. Add
+`--mask`, and nodkey replaces each value in the command's stdout and
+stderr with `***`. It masks a value only as it is, not in another form
+such as base64. With `--mask`, the command's stdout and stderr are pipes,
+not a terminal.
+
 `nodkey run` exits with the exit code of the command. When nodkey
 itself stops, its last line on stderr is
 `nodkey: <reason> (exit <code>)`: 77 when the request was denied or

@@ -85,6 +85,7 @@ func childRun(args []string) int {
 		environ:     os.Environ,
 		exec:        checkedExec,
 		notDumpable: notDumpable,
+		masked:      runMasked,
 	}
 	return r.main(args, os.Stderr) //nolint:forbidigo // the child is nodkey run, which writes to stderr.
 }

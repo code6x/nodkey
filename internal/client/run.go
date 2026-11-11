@@ -38,7 +38,7 @@ const (
 )
 
 // runUsage is the help of nodkey run.
-const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] -- COMMAND [ARGS...]
+const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask] -- COMMAND [ARGS...]
 
 Ask the broker for secrets, and wait until a person approves the request
 on the phone. Then run COMMAND, with the value of the secret NAME in the
@@ -56,6 +56,10 @@ environment variable VAR. nodkey never prints a value.
                      saved, COMMAND does not run (exit 77).
   --reason TEXT      why COMMAND needs the secrets. Without it, the reason
                      is the environment variable NODKEY_REASON.
+  --mask             replace each value in the stdout and stderr of COMMAND
+                     with ***. COMMAND then runs as a child of nodkey, and
+                     its stdout and stderr are pipes, not a terminal. This
+                     catches only a value as it is, not in another form.
 
 The client config is ~/.config/nodkey/client.toml. nodkey run exits with
 the exit code of COMMAND, or with 64 (wrong usage), 69 (the broker cannot
@@ -88,7 +92,7 @@ const reasonVar = "NODKEY_REASON"
 // any Go program.
 func Run(args []string, stderr io.Writer, version string) int {
 	r := runner{load: Load, configPath: ConfigPath, environ: os.Environ, exec: syscall.Exec,
-		notDumpable: notDumpable, version: version}
+		notDumpable: notDumpable, masked: runMasked, version: version}
 	return r.main(args, stderr)
 }
 
@@ -97,7 +101,7 @@ func Run(args []string, stderr io.Writer, version string) int {
 // never reads ~/.config/nodkey/client.toml.
 func RunWithConfig(args []string, stderr io.Writer, version, path string) int {
 	r := runner{load: Load, configPath: func() (string, error) { return path, nil }, environ: os.Environ,
-		exec: syscall.Exec, notDumpable: notDumpable, version: version}
+		exec: syscall.Exec, notDumpable: notDumpable, masked: runMasked, version: version}
 	return r.main(args, stderr)
 }
 
@@ -117,6 +121,9 @@ type runner struct {
 	// values: notDumpable. Tests in the test process replace it, so the
 	// test process stays as it is.
 	notDumpable func() error
+	// masked runs the command for --mask, with the values to mask, and
+	// returns the exit code: runMasked.
+	masked func(path string, argv, envv []string, values [][]byte, stderr io.Writer) int
 	// version is the version of nodkey (warnVersions); "" sends none.
 	version string
 }
@@ -216,6 +223,17 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 		return fail(stderr, exitUnavailable, err.Error())
 	}
 	envv, err := commandEnv(env, o.secrets, ans)
+	var values [][]byte
+	if err == nil && o.mask {
+		for _, s := range ans.Secrets {
+			values = append(values, bytes.Clone(s.Value))
+		}
+	}
+	defer func() {
+		for _, v := range values {
+			clear(v)
+		}
+	}()
 	ans.Clear() // best effort: envv holds the values as Go strings
 	if err != nil {
 		// The person approved, and the broker sent a wrong answer: as for
@@ -225,6 +243,9 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 	beforeExec()
 	if ctx.Err() != nil {
 		return cancelled(ctx, stderr)
+	}
+	if o.mask {
+		return r.masked(path, o.command, envv, values, stderr)
 	}
 	if err := r.exec(path, o.command, envv); err != nil {
 		return fail(stderr, exitCannotRun, fmt.Sprintf("cannot run %q: %v", path, err))
@@ -343,11 +364,13 @@ type runOptions struct {
 	reasonSet bool
 	// grantToken is the file of --grant-token ("" for none).
 	grantToken string
-	command    []string
+	// mask is --mask: the command's output is masked.
+	mask    bool
+	command []string
 }
 
 // parseArgs reads the arguments of nodkey run: the options, "--", and the
-// command. Options are --secret VAR=NAME, which may repeat, and --reason
+// command. Options are --secret VAR=NAME, which may repeat, --mask, and --reason
 // TEXT, each also with one dash and with "=" before the value, as the flag
 // package reads them. The command must come after "--", so that its own
 // options are never read as options of nodkey run.
@@ -375,6 +398,15 @@ func parseArgs(args []string) (*runOptions, error) {
 		name, value, hasValue := splitOption(arg)
 		switch name {
 		case "secret", "reason", "grant-token":
+		case "mask":
+			switch {
+			case hasValue:
+				return nil, errors.New("--mask takes no value")
+			case o.mask:
+				return nil, errors.New("--mask is given twice")
+			}
+			o.mask = true
+			continue
 		case "h", "help":
 			// With other arguments, help would exit with 0 and run
 			// nothing, which looks like a command that ran.
