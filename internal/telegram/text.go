@@ -624,6 +624,8 @@ func grantEndLines(p approval.Prompt, e approval.Ending) string {
 		end = "⛔ ended by a later Deny at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
 	case audit.EndRevoked:
 		end = "⛔ revoked by you at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
+	case audit.EndConfig:
+		end = "⛔ ended by a config change at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
 	default: // audit.EndStopped
 		end = "⛔ dropped: the broker stopped at " + at + ", with " + strconv.Itoa(e.UsesLeft) + " use(s) left"
 	}
@@ -650,6 +652,8 @@ func standingEndLine(cause audit.EndCause, at string) string {
 		return "🚨 ended by an alarm at " + at
 	case audit.EndRenewed:
 		return "🔁 renewed at " + at + "; a new grant replaced this one"
+	case audit.EndConfig:
+		return "⛔ ended by a config change at " + at
 	case audit.EndStopped:
 		return "⛔ dropped: the broker stopped at " + at
 	}

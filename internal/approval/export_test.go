@@ -37,9 +37,9 @@ func (c *Core) Live() (ids, codes, waiting int) {
 func (c *Core) Uses(client string, key bool, name string, at time.Time) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	rule := c.cfg.Secrets[name].Rule
+	rule := c.conf().Secrets[name].Rule
 	if key {
-		rule = c.cfg.Keys[name].Rule
+		rule = c.conf().Keys[name].Rule
 	}
 	return c.uses[useKey{client, ref{key: key, name: name}}].on(useDay(rule, at))
 }

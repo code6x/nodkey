@@ -96,7 +96,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	name, rest := fs.Arg(0), fs.Args()[1:]
 	switch name {
 	case "broker":
-		return runBroker(rest, stderr)
+		return runBroker(rest, stdout, stderr)
 	case "try":
 		return runTry(rest, stdin, stdout, stderr)
 	case "keygen":

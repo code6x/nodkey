@@ -1055,7 +1055,8 @@ of an agent machine: the agent can change that file.
 
 Keep all host keys of a host in the file: ssh may use any of them. When
 a host gets a new host key, check its fingerprint in the same way,
-change the file, and restart the broker.
+change the file, and reload the config: `nodkey broker reload`, as root
+([section 10](#change-the-config-without-a-restart)).
 
 ## 7. The config file
 
@@ -1597,12 +1598,45 @@ first anchor. When something is wrong, the
 broker logs why ([section 14](#14-when-something-does-not-work)).
 
 A restart of the broker ends all grants, and denies the requests that
-wait for a tap. The config is read only at the start, so restart the
-broker after each change of the config or of `known_hosts`:
+wait for a tap:
 
 ```sh
 systemctl restart nodkey
 ```
+
+### Change the config without a restart
+
+After most changes of the config or of `known_hosts`, a restart is not
+needed. Run this as root on the broker host:
+
+```sh
+nodkey broker reload
+```
+
+It asks the broker to load the config again (with `SIGHUP`), and waits
+for the result. The broker checks the new config as at a start.
+
+- When the new config is good, the broker uses it at once, and the
+  command exits with 0. Grants that the new config still allows stay,
+  with the same uses left and the same end. Grants of a client, secret or
+  key that you removed or changed end at once. A removed client, or a
+  client with a new pin, cannot go on with a connection that it opened
+  before.
+- When the new config is not good, the broker goes on with the old one.
+  The command prints why, and exits with 1. The journal says why too. Fix
+  the config, and run the command again.
+
+A reload can change `[client.*]`, `[secret.*]`, `[key.*]` and
+`known_hosts`. A change of `listen`, `tls_key`, `audit_log`,
+`[telegram]`, `[ntfy]`, `[updates]`, `[preapprove]`, `[standing]` or a
+`[store.*]` section needs a restart: the reload refuses it, and says so.
+A new key file in `${CREDENTIALS_DIRECTORY}` also needs a restart, because
+systemd loads the credentials only at the start.
+
+The broker writes the result of each reload to `reload-status.json`, next
+to the audit log (`/var/lib/nodkey/reload-status.json`). Each reload that
+the broker took has a `config_reloaded` entry in the audit log
+([DESIGN.md section 14](../DESIGN.md#reload)).
 
 Check the setup with `sudo nodkey doctor broker`
 ([section 14](#14-when-something-does-not-work)).
@@ -1621,8 +1655,9 @@ nodkey keygen --out ~/.config/nodkey/client.key
 
 `nodkey keygen` prints the pin of the new key. On the broker host, add a
 section for the client to `/etc/nodkey/broker.toml`, add its name to the
-`clients` lists of the secrets and keys that it may use, and restart the
-broker:
+`clients` lists of the secrets and keys that it may use, and reload the
+config with `nodkey broker reload`, as root
+([section 10](#change-the-config-without-a-restart)):
 
 ```toml
 [client.laptop]
@@ -1633,7 +1668,7 @@ The agent can copy this key. With it, someone can only ask, like the
 agent (THREAT-MODEL.md T11). They get what this client gets: what needs
 a tap still needs your tap, but a grant or a "never ask" rule of this
 client works for them too. To block a stolen key, remove its pin from
-the broker config, and restart the broker. Each machine needs its own
+the broker config, and run `nodkey broker reload` as root. Each machine needs its own
 key: the broker refuses two clients with the same pin.
 
 Write the client config, `~/.config/nodkey/client.toml`, with the
@@ -2222,14 +2257,17 @@ put the new pin into `broker_pin` on each client, and restart
 ### A new key for a client, or a client that must go
 
 To give a client a new key, make it with `nodkey keygen` in a new file,
-put its pin into the `[client.NAME]` section, restart the broker, and
+put its pin into the `[client.NAME]` section, run `nodkey broker reload`
+as root, and
 change `tls_key` in the client config. Remove the old key file. Restart
 `nodkey ssh-agent` too: it reads the config and the key only when it
 starts.
 
 To block a client, for example after a strange request, remove its
 `[client.NAME]` section, and its name from every `clients` list, and
-restart the broker. Its key no longer works.
+run `nodkey broker reload` as root. Its key no longer works, also on a
+connection that is open, and its grants end. The grants of the other
+clients stay.
 
 ### A new bot token
 

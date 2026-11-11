@@ -98,6 +98,9 @@ const (
 	EndRevoked   EndCause = "revoked"   // the person pressed Revoke
 	EndAlarm     EndCause = "alarm"     // a standing grant met an old token or too many uses (DESIGN.md section 8)
 	EndRenewed   EndCause = "renewed"   // a standing grant was replaced by its renewal
+	// EndConfig: a reload of the config took away what the grant allowed
+	// (DESIGN.md section 14, "Reload").
+	EndConfig EndCause = "config_changed"
 )
 
 // TapCause says why a button press did not count (DESIGN.md section 7).
@@ -201,6 +204,18 @@ type BrokerStarted struct {
 
 // BrokerStopped is the last entry of a broker run that ends cleanly.
 type BrokerStopped struct{}
+
+// ConfigReloaded records a reload of the broker config that the broker
+// took (DESIGN.md section 14, "Reload"). A refused reload has no entry:
+// nothing changed.
+type ConfigReloaded struct {
+	// ConfigSHA256 is the SHA-256 of the new config file, in hex.
+	ConfigSHA256 string `json:"config_sha256"`
+	// GrantsEnded is how many grants the reload ended, of every kind. The
+	// scheduled and standing ones among them also have a grant_ended
+	// entry each, with cause config_changed.
+	GrantsEnded int `json:"grants_ended"`
+}
 
 // Request records a new request, after the broker's checks.
 type Request struct {
@@ -340,6 +355,7 @@ type logRecovered struct {
 const (
 	eventBrokerStarted = "broker_started"
 	eventBrokerStopped = "broker_stopped"
+	eventConfigReload  = "config_reloaded"
 	eventRequest       = "request"
 	eventDecision      = "decision"
 	eventGrantUsed     = "grant_used"
@@ -353,19 +369,20 @@ const (
 	eventLogRecovered  = "log_recovered"
 )
 
-func (BrokerStarted) eventName() string { return eventBrokerStarted }
-func (BrokerStopped) eventName() string { return eventBrokerStopped }
-func (Request) eventName() string       { return eventRequest }
-func (Decision) eventName() string      { return eventDecision }
-func (GrantUsed) eventName() string     { return eventGrantUsed }
-func (GrantEnded) eventName() string    { return eventGrantEnded }
-func (GrantAlarm) eventName() string    { return eventGrantAlarm }
-func (SecretSent) eventName() string    { return eventSecretSent }
-func (Signed) eventName() string        { return eventSigned }
-func (Denied) eventName() string        { return eventDenied }
-func (ForeignTap) eventName() string    { return eventForeignTap }
-func (Failure) eventName() string       { return eventError }
-func (logRecovered) eventName() string  { return eventLogRecovered }
+func (BrokerStarted) eventName() string  { return eventBrokerStarted }
+func (BrokerStopped) eventName() string  { return eventBrokerStopped }
+func (ConfigReloaded) eventName() string { return eventConfigReload }
+func (Request) eventName() string        { return eventRequest }
+func (Decision) eventName() string       { return eventDecision }
+func (GrantUsed) eventName() string      { return eventGrantUsed }
+func (GrantEnded) eventName() string     { return eventGrantEnded }
+func (GrantAlarm) eventName() string     { return eventGrantAlarm }
+func (SecretSent) eventName() string     { return eventSecretSent }
+func (Signed) eventName() string         { return eventSigned }
+func (Denied) eventName() string         { return eventDenied }
+func (ForeignTap) eventName() string     { return eventForeignTap }
+func (Failure) eventName() string        { return eventError }
+func (logRecovered) eventName() string   { return eventLogRecovered }
 
 // Patterns for the checked fields.
 var (
@@ -488,6 +505,16 @@ func (e BrokerStarted) validate() error {
 
 func (BrokerStopped) validate() error { return nil }
 
+func (e ConfigReloaded) validate() error {
+	if !sha256Hex.MatchString(e.ConfigSHA256) || e.GrantsEnded < 0 {
+		return errors.New("it needs the SHA-256 of the config in hex and a number of grants that is not negative")
+	}
+	return nil
+}
+
+// sha256Hex is a SHA-256 in lower-case hex.
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 func (e Request) validate() error    { return e.Subject.validate(true) }
 func (e SecretSent) validate() error { return e.Subject.validate(true) }
 func (e Signed) validate() error     { return e.Subject.validate(true) }
@@ -579,7 +606,7 @@ func (e GrantEnded) validate() error {
 		return errors.New("it needs a preapprove request, a grant_id and a number of uses left")
 	}
 	switch e.Cause {
-	case EndUsedUp, EndEnded, EndCancelled, EndDenied, EndStopped, EndRevoked, EndAlarm, EndRenewed:
+	case EndUsedUp, EndEnded, EndCancelled, EndDenied, EndStopped, EndRevoked, EndAlarm, EndRenewed, EndConfig:
 		return nil
 	}
 	return errors.New("cause is not known")
@@ -635,7 +662,7 @@ func encodeEvent(ev Event) (string, []byte, error) {
 	// pointer has the methods as well, and a nil pointer would panic in
 	// them.
 	switch ev.(type) {
-	case BrokerStarted, BrokerStopped, Request, Decision, GrantUsed, GrantEnded, GrantAlarm, SecretSent, Signed, Denied, ForeignTap, Failure,
+	case BrokerStarted, BrokerStopped, ConfigReloaded, Request, Decision, GrantUsed, GrantEnded, GrantAlarm, SecretSent, Signed, Denied, ForeignTap, Failure,
 		logRecovered:
 	default:
 		return "", nil, errors.New("not an event of the audit package; pass an event such as audit.Signed{...} as a value")

@@ -34,8 +34,9 @@ var remoteUserPattern = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$`
 //   - fields of another kind of request, such as a host key in a secrets
 //     request.
 func (c *Core) check(r *Request, p *pending) bool {
+	p.cfg = c.conf() // one config for all the checks, also when a reload comes
 	ok := true
-	if _, known := c.cfg.Clients[r.Client]; known {
+	if _, known := p.cfg.Clients[r.Client]; known {
 		p.client = r.Client
 		p.subject.Client = r.Client
 	} else {
@@ -99,7 +100,7 @@ func (c *Core) checkSecrets(r *Request, p *pending) bool {
 			continue // two variables for one secret
 		}
 		seen[name] = true
-		s, known := c.cfg.Secrets[name]
+		s, known := p.cfg.Secrets[name]
 		if !known || p.client == "" || !slices.Contains(s.Clients, p.client) {
 			ok = false
 			continue
@@ -132,7 +133,7 @@ func (c *Core) checkLogin(r *Request, p *pending) bool {
 	}
 	p.hostKey = string(r.HostKey.Marshal())
 	p.subject.HostKey = ssh.FingerprintSHA256(r.HostKey)
-	host, known := c.cfg.KnownHosts.NameFor(r.HostKey)
+	host, known := p.cfg.KnownHosts.NameFor(r.HostKey)
 	if !known || !keyOK || (len(k.Hosts) > 0 && !slices.Contains(k.Hosts, host)) {
 		return false
 	}
@@ -201,7 +202,7 @@ func (c *Core) addGrantHosts(names []string, k config.Key, keyOK bool, p *pendin
 		return false, false
 	}
 	for _, h := range hosts {
-		keys := c.cfg.KnownHosts.KeysFor(h)
+		keys := p.cfg.KnownHosts.KeysFor(h)
 		if len(keys) == 0 || !keyOK || (len(k.Hosts) > 0 && !slices.Contains(k.Hosts, h)) {
 			ok = false
 			continue
@@ -222,7 +223,7 @@ func (c *Core) addGrantHosts(names []string, k config.Key, keyOK bool, p *pendin
 // rule cannot have. The number of uses and the span must be inside the
 // limits of [preapprove]; a limit that is not set (0) allows nothing.
 func (c *Core) checkPreapprove(r *Request, p *pending) bool {
-	lim := c.cfg.Preapprove
+	lim := p.cfg.Preapprove
 	ok := r.HostKey == nil && r.For == 0
 	allowed := func(rule config.Rule, clients []string) bool {
 		return rule.Preapprove && rule.Ask != config.AskNever && validRule(rule, clients)
@@ -237,7 +238,7 @@ func (c *Core) checkPreapprove(r *Request, p *pending) bool {
 				continue
 			}
 			seen[name] = true
-			s, known := c.cfg.Secrets[name]
+			s, known := p.cfg.Secrets[name]
 			if !known || p.client == "" || !slices.Contains(s.Clients, p.client) || !allowed(s.Rule, s.Clients) {
 				ok = false
 				continue
@@ -292,7 +293,7 @@ func (c *Core) checkPreapprove(r *Request, p *pending) bool {
 // checkKey checks that the key exists, that the client may use it and
 // that its rule is valid. It adds the key to p.
 func (c *Core) checkKey(name string, p *pending) (config.Key, bool) {
-	k, known := c.cfg.Keys[name]
+	k, known := p.cfg.Keys[name]
 	if !known || p.client == "" || !slices.Contains(k.Clients, p.client) || !validRule(k.Rule, k.Clients) {
 		return config.Key{}, false
 	}

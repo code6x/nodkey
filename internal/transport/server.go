@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/code6x/nodkey/internal/config"
@@ -66,6 +67,47 @@ type Server struct {
 	// cause, lines with the pin of a key that no client has, and lines
 	// about a request of a pinned client.
 	connLimit, pinLimit, keyLimit *logLimiter
+	// own is the pin of the broker's own key. byPin holds the client name
+	// of each pin; SetClients changes it.
+	own   config.Pin
+	byPin atomic.Pointer[map[config.Pin]string]
+}
+
+// SetClients makes clients the clients of the server, for a reload of the
+// config (DESIGN.md section 14, "Reload"). It checks them as NewServer
+// does, and on an error keeps the clients it has. A new connection is
+// checked against the new clients. A connection that is open already ends
+// at its next request when its client is gone or has a new pin: the
+// request gets 403, and the connection closes. A request in progress is
+// not stopped here; the broker checks it again before it hands out
+// anything.
+func (s *Server) SetClients(clients map[string]config.Client) error {
+	byPin, err := clientsByPin(clients, s.own)
+	if err != nil {
+		return err
+	}
+	s.byPin.Store(&byPin)
+	return nil
+}
+
+// clientPinKey is the context key of the pin of the client's key.
+type clientPinKey struct{}
+
+// ClientPin returns the pin of the key that the client of the request of
+// ctx used, as the server checked it. The broker compares it with the
+// config of now before it hands out anything, because a reload can give
+// the client a new pin while its request runs.
+func ClientPin(ctx context.Context) (config.Pin, bool) {
+	pin, ok := ctx.Value(clientPinKey{}).(config.Pin)
+	return pin, ok && pin != config.Pin{}
+}
+
+// pinOfRequest returns the pin of the client key of r, or the zero pin.
+func pinOfRequest(r *http.Request) config.Pin {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
+		return config.Pin{}
+	}
+	return PinOf(r.TLS.PeerCertificates[0])
 }
 
 // NewServer returns the broker's server.
@@ -103,11 +145,12 @@ func NewServer(key tls.Certificate, clients map[string]config.Client, handler ht
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{log: logger}
+	s := &Server{log: logger, own: own}
+	s.byPin.Store(&byPin)
 	s.connLimit = newLogLimiter(func(n int) { s.reportDropped("connections", n) })
 	s.pinLimit = newLogLimiter(func(n int) { s.reportDropped("unknown keys", n) })
 	s.keyLimit = newLogLimiter(func(n int) { s.reportDropped("requests of pinned clients", n) })
-	s.tls = s.tlsConfig(key, byPin)
+	s.tls = s.tlsConfig(key)
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
 	s.http = &http.Server{
@@ -171,7 +214,7 @@ func clientsByPin(clients map[string]config.Client, own config.Pin) (map[config.
 // handshake, and the peer is in that context (see NewServer). A handshake
 // without a peer fails. The returned config itself never accepts a client
 // on its own: its VerifyConnection always fails.
-func (s *Server) tlsConfig(key tls.Certificate, byPin map[config.Pin]string) *tls.Config {
+func (s *Server) tlsConfig(key tls.Certificate) *tls.Config {
 	conn := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		MaxVersion:   tls.VersionTLS13,
@@ -202,7 +245,7 @@ func (s *Server) tlsConfig(key tls.Certificate, byPin map[config.Pin]string) *tl
 		}
 		c := conn.Clone()
 		c.VerifyConnection = func(cs tls.ConnectionState) error {
-			name, pin, err := verifyClient(cs, byPin)
+			name, pin, err := verifyClient(cs, *s.byPin.Load())
 			if errors.Is(err, ErrUnknownClient) {
 				// The pin is the hash of the peer's public key, not text
 				// that the peer chose. It helps to add a new client.
@@ -306,13 +349,21 @@ func (s *Server) verified(next http.Handler) http.Handler {
 			}
 		}()
 		name, ok := verifiedClient(r)
+		if ok && (*s.byPin.Load())[pinOfRequest(r)] != name {
+			// A reload removed the client, or gave it a new pin: its open
+			// connection ends now (SetClients).
+			ok = false
+			w.Header().Set("Connection", "close")
+		}
 		if !ok {
 			s.logLine(s.keyLimit, slog.LevelError, "transport: refused a request without a verified client name",
 				"remote", remoteText(r.RemoteAddr))
 			WriteError(w, http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientKey{}, name)))
+		ctx := context.WithValue(r.Context(), clientKey{}, name)
+		ctx = context.WithValue(ctx, clientPinKey{}, pinOfRequest(r))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

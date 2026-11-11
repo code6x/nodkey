@@ -67,8 +67,14 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 	// The decision entry is on disk: the grants of an "Approve N min" tap
 	// may start, before anything is handed out.
 	res.StartGrants()
+	rq.decided = res.Config()
 	values, ok := rq.fetch(ctx, rc, names)
 	if !ok {
+		return
+	}
+	// A fetch can take long: a reload during it may have taken the access
+	// away. The values are in rq.values, so they are cleared.
+	if !rq.stillAllowed(rq.decided, names, "", nil) {
 		return
 	}
 	ans := api.SecretsAnswer{Secrets: make([]api.SecretValue, len(req.Secrets))}
@@ -121,7 +127,7 @@ func (s *Service) checkSecrets(client string, req *api.SecretsRequest) (names, p
 			ok = false
 		}
 		vars[ref.Var] = true
-		sec, known := s.cfg.Secrets[ref.Name]
+		sec, known := s.view().cfg.Secrets[ref.Name]
 		if !known || !slices.Contains(sec.Clients, client) {
 			ok = false
 			continue
@@ -170,6 +176,9 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 		rq.fail(audit.CodeStoreFailed)
 		return nil, false
 	}
+	if !rq.stillAllowed(rq.decided, names, "", nil) {
+		return nil, false
+	}
 	rq.failCode = audit.CodeStoreFailed
 	values := make(map[string]store.Value, len(names))
 	for _, name := range names {
@@ -181,7 +190,7 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 			rq.cancelled()
 			return nil, false
 		}
-		sec := rq.s.cfg.Secrets[name]
+		sec := rq.v.cfg.Secrets[name]
 		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 		ref := sec.ID
 		switch {

@@ -36,6 +36,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/code6x/nodkey/internal/audit"
@@ -95,7 +96,7 @@ type Options struct {
 // Core decides requests. Make it with New, and call Run. It is safe for
 // use by many goroutines.
 type Core struct {
-	cfg      *config.Broker
+	cfgp     atomic.Pointer[config.Broker] // the config; Reload changes it
 	approver Approver
 	clock    Clock
 	logger   *slog.Logger
@@ -154,7 +155,7 @@ func New(cfg *config.Broker, a Approver, opts Options) (*Core, error) {
 	}
 	stopCtx, stopRuns := context.WithCancel(context.Background())
 	c := &Core{
-		cfg:       cfg,
+
 		approver:  a,
 		clock:     opts.Clock,
 		logger:    opts.Logger,
@@ -168,6 +169,7 @@ func New(cfg *config.Broker, a Approver, opts Options) (*Core, error) {
 		grantWake: make(chan struct{}, 1),
 		uses:      make(map[useKey]dayUses),
 	}
+	c.cfgp.Store(cfg)
 	if c.clock == nil {
 		c.clock = realClock{}
 	}
@@ -216,6 +218,9 @@ func (c *Core) Run(ctx context.Context) error {
 	return ErrStopped
 }
 
+// conf returns the config that the core uses now. Reload changes it.
+func (c *Core) conf() *config.Broker { return c.cfgp.Load() }
+
 // start marks that Run has started. It reports false if Run ran before.
 func (c *Core) start() bool {
 	c.mu.Lock()
@@ -258,10 +263,10 @@ func (c *Core) callContext(ctx context.Context, d time.Duration) (context.Contex
 // of secrets.
 func (c *Core) timeout(k audit.Kind) time.Duration {
 	if k == audit.KindSSHLogin {
-		_, ssh := c.cfg.Timeouts()
+		_, ssh := c.conf().Timeouts()
 		return ssh
 	}
-	t, _ := c.cfg.Timeouts()
+	t, _ := c.conf().Timeouts()
 	return t
 }
 
@@ -269,17 +274,17 @@ func (c *Core) timeout(k audit.Kind) time.Duration {
 // that is the configured user ID. With [ntfy], the ntfy approver has
 // checked the value of the request already, and a has no user ID.
 func (c *Core) fromApprover(a Answer) bool {
-	if c.cfg.Ntfy != nil {
+	if c.conf().Ntfy != nil {
 		return a.UserID == 0
 	}
-	return a.UserID > 0 && a.UserID == c.cfg.Telegram.UserID
+	return a.UserID > 0 && a.UserID == c.conf().Telegram.UserID
 }
 
 // channel returns the entry text that says which channel an answer came
 // by, or "" for Telegram, where the user ID says it.
 func (c *Core) channel() string {
-	if c.cfg.Ntfy != nil {
-		return audit.ChannelNtfyPrefix + c.cfg.Ntfy.AnswerTopic
+	if c.conf().Ntfy != nil {
+		return audit.ChannelNtfyPrefix + c.conf().Ntfy.AnswerTopic
 	}
 	return ""
 }

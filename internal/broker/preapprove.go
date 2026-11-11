@@ -147,7 +147,7 @@ func (s *Service) checkStanding(client string, req *api.PreapproveRequest) (sub 
 			continue
 		}
 		seen[name] = true
-		sec, known := s.cfg.Secrets[name]
+		sec, known := s.view().cfg.Secrets[name]
 		if !known || !slices.Contains(sec.Clients, client) {
 			ok = false
 			continue
@@ -224,7 +224,7 @@ func (s *Service) checkPreapprove(client string, req *api.PreapproveRequest) (su
 				continue
 			}
 			seen[name] = true
-			sec, known := s.cfg.Secrets[name]
+			sec, known := s.view().cfg.Secrets[name]
 			if !known || !slices.Contains(sec.Clients, client) {
 				ok = false
 				continue
@@ -233,7 +233,7 @@ func (s *Service) checkPreapprove(client string, req *api.PreapproveRequest) (su
 		}
 		return sub, from, until, ok
 	}
-	k, known := s.cfg.Keys[req.Key]
+	k, known := s.view().cfg.Keys[req.Key]
 	if known && slices.Contains(k.Clients, client) {
 		sub.Key = k.Name
 	} else {

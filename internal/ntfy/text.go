@@ -372,6 +372,8 @@ func grantEndLine(p approval.Prompt, e approval.Ending) string {
 		return "🚨 ended by an alarm at " + at
 	case audit.EndRenewed:
 		return "🔁 renewed at " + at + "; a new grant replaced this one"
+	case audit.EndConfig:
+		return "⛔ ended by a config change at " + at + left
 	}
 	return "⛔ dropped: the broker stopped at " + at + left
 }
