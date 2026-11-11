@@ -12,8 +12,8 @@ import (
 )
 
 // runMasked runs the command for nodkey run when it masks the output
-// (the default), and returns the exit
-// code of nodkey run. The command is a child of nodkey, not a replacement:
+// (the default), and returns the exit code of nodkey run. The command is
+// a child of nodkey, not a replacement:
 // its stdout and stderr go through a maskWriter each, to nodkey's stdout
 // and stderr (DESIGN.md section 5). When the command dies of SIGINT,
 // SIGTERM, SIGHUP or SIGKILL, nodkey ends itself with the same signal, so
