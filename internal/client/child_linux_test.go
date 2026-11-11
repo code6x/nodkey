@@ -86,6 +86,7 @@ func childRun(args []string) int {
 		exec:        checkedExec,
 		notDumpable: notDumpable,
 		masked:      runMasked,
+		terminal:    onTerminal,
 	}
 	return r.main(args, os.Stderr) //nolint:forbidigo // the child is nodkey run, which writes to stderr.
 }
@@ -114,6 +115,8 @@ func dumpable() int {
 //     SHA-256 of its value in hex is SUM. It prints "env ok VAR", or "env
 //     wrong VAR", never the value.
 //   - "dumpable": print "dumpable N", the dumpable flag of the command.
+//   - "pid": print "pid N", the process ID of the command.
+//   - "print VAR": print "<value>" of VAR to stdout and to stderr.
 //   - "exit N": exit with N, when every step before passed.
 func helper(args []string) int {
 	stdout := os.Stdout //nolint:forbidigo // the helper is the command, which writes to stdout.
@@ -134,6 +137,13 @@ func helper(args []string) int {
 			}
 			_, _ = fmt.Fprintf(stdout, "env %s %s\n", result, name)
 			args = args[3:]
+		case args[0] == "pid":
+			_, _ = fmt.Fprintf(stdout, "pid %d\n", os.Getpid())
+			args = args[1:]
+		case args[0] == "print" && len(args) >= 2:
+			_, _ = fmt.Fprintf(stdout, "<%s>\n", os.Getenv(args[1]))
+			_, _ = fmt.Fprintf(os.Stderr, "<%s>\n", os.Getenv(args[1])) //nolint:forbidigo // the helper is the command.
+			args = args[2:]
 		case args[0] == "dumpable":
 			_, _ = fmt.Fprintf(stdout, "dumpable %d\n", dumpable())
 			args = args[1:]
@@ -214,8 +224,8 @@ func runChild(t *testing.T, cmd *exec.Cmd) (stdout, stderr string, code int) {
 	return out.String(), errOut.String(), code
 }
 
-// TestRunInAChild: the person approves, the command replaces nodkey run
-// with the value in its environment, in place of an old variable of the
+// TestRunInAChild: the person approves, the command runs (masked, by
+// default, as the output is a pipe) with the value in its environment, in place of an old variable of the
 // same name, and nodkey run exits with the command's exit code. nodkey
 // prints only the short code, and nothing after the command started. The
 // value never reaches nodkey's output.
@@ -254,7 +264,7 @@ func TestRunKeepsSIGPIPE(t *testing.T) {
 	cat := needProgram(t, "cat")
 	tb := newTestBroker(t)
 	tb.approver.Auto(audit.AnswerApproveOnce)
-	stdout, stderr, code := runChild(t, tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--", cat,
+	stdout, stderr, code := runChild(t, tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--no-mask", "--", cat,
 		"/proc/self/status"))
 	mustNotLeak(t, tb.values["github-token"], stdout, stderr)
 	if code != 0 {
@@ -317,7 +327,7 @@ func TestRunInheritedSIGPIPE(t *testing.T) {
 	}
 	tb := newTestBroker(t)
 	tb.approver.Auto(audit.AnswerApproveOnce)
-	inner := tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--", cat, "/proc/self/status")
+	inner := tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--no-mask", "--", cat, "/proc/self/status")
 	cmd := exec.CommandContext(t.Context(), sh, append([]string{"-c", `trap '' PIPE; exec "$0" "$@"`}, inner.Args...)...) //nolint:gosec // G204: the test runs its own binary again, through sh.
 	cmd.Env = inner.Env
 	stdout, stderr, code := runChild(t, cmd)
@@ -430,7 +440,7 @@ func TestRunCannotStart(t *testing.T) {
 	}
 	tb := newTestBroker(t)
 	tb.approver.Auto(audit.AnswerApproveOnce)
-	stdout, stderr, code := runChild(t, tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--", bad))
+	stdout, stderr, code := runChild(t, tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--no-mask", "--", bad))
 	mustNotLeak(t, tb.values["github-token"], stdout, stderr)
 	last := lastLine(stderr)
 	if code != exitCannotRun || !strings.HasPrefix(last, "nodkey: cannot run ") || !strings.HasSuffix(last, "(exit 126)") {
@@ -507,7 +517,8 @@ func TestRunNotDumpable(t *testing.T) {
 	tb := newTestBroker(t)
 	// The helper exits with 5: the race detector pauses for a second when
 	// a program exits with 0.
-	cmd := tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--", self(t), helperArg, "dumpable", "exit", "5")
+	cmd := tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--no-mask", "--", self(t), helperArg, "dumpable",
+		"exit", "5")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Start(); err != nil {
@@ -580,5 +591,75 @@ func TestRunProgramLinkChanges(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stdout.String()); got != "B" {
 		t.Errorf("the command printed %q; want B, from the new target of the link", got)
+	}
+}
+
+// TestRunMasksByDefault: without --mask or --no-mask, and with stdout and
+// stderr as pipes, the command runs as a child of nodkey run, and each
+// value in its stdout and stderr becomes ***. nodkey run exits with the
+// command's exit code.
+func TestRunMasksByDefault(t *testing.T) {
+	t.Parallel()
+	tb := newTestBroker(t)
+	tb.approver.Auto(audit.AnswerApproveOnce)
+	cmd := tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--", self(t), helperArg, "print", "GH_TOKEN",
+		"pid", "exit", "7")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 7 {
+		t.Fatalf("%v; stderr %q; want the exit code 7 of the command", err, safe(stderr.String()))
+	}
+	mustNotLeak(t, tb.values["github-token"], stdout.String(), stderr.String())
+	want := fmt.Sprintf("<***>\npid %d\n", cmd.Process.Pid)
+	if out := stdout.String(); !strings.HasPrefix(out, "<***>\npid ") || out == want {
+		t.Errorf("stdout %q; want the value masked, and the command in a child process", safe(out))
+	}
+	if !strings.HasSuffix(stderr.String(), "\n<***>\n") {
+		t.Errorf("stderr %q; want the value masked", safe(stderr.String()))
+	}
+}
+
+// TestRunNoMaskExecs: with --no-mask, the command replaces nodkey run
+// (execve): it has the same process ID, as before --mask existed.
+func TestRunNoMaskExecs(t *testing.T) {
+	t.Parallel()
+	tb := newTestBroker(t)
+	tb.approver.Auto(audit.AnswerApproveOnce)
+	value := tb.values["github-token"]
+	cmd := tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--no-mask", "--", self(t), helperArg,
+		"env", "GH_TOKEN", sha256Hex(value), "pid", "exit", "7")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 7 {
+		t.Fatalf("%v; stderr %q; want the exit code 7 of the command", err, safe(stderr.String()))
+	}
+	mustNotLeak(t, value, stdout.String(), stderr.String())
+	if want := fmt.Sprintf("env ok GH_TOKEN\npid %d\n", cmd.Process.Pid); stdout.String() != want {
+		t.Errorf("stdout %q, want %q: the command must replace nodkey run", safe(stdout.String()), want)
+	}
+}
+
+// TestRunMaskedSignal: by default (masked), when the command dies of
+// SIGTERM, nodkey run dies of SIGTERM too, so a shell sees it.
+func TestRunMaskedSignal(t *testing.T) {
+	t.Parallel()
+	sh := needProgram(t, "sh")
+	tb := newTestBroker(t)
+	tb.approver.Auto(audit.AnswerApproveOnce)
+	cmd := tb.child(t, nil, "--secret", "GH_TOKEN=github-token", "--", sh, "-c", "kill -TERM $$")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); !diedOf(err, syscall.SIGTERM) {
+		t.Errorf("%v; stderr %q; want nodkey run to die of SIGTERM", err, safe(stderr.String()))
 	}
 }

@@ -68,8 +68,10 @@ what it protects against, and what it does not.
   holds plain host keys, and the broker signs only with plain keys.
 - Keys in hardware (TPM or YubiKey) through an upstream agent.
 - Masking a value in another form in the command's output, such as in
-  base64 or split between stdout and stderr (`nodkey run --mask` masks it
-  only as it is, section 5).
+  base64 or split between stdout and stderr (`nodkey run` masks it only
+  as it is, section 5).
+- A pseudo-terminal for a masked command. On a terminal, `nodkey run`
+  does not mask by default (section 5).
 - More than one approver, and Telegram and ntfy on one broker at once.
 
 Each of these can become a GitHub issue later.
@@ -256,13 +258,29 @@ nodkey run --secret GH_TOKEN=github-token \
    in the order of the request and with the same names, each 1 byte to
    64 KiB and without a NUL byte. Otherwise the command does not run, and
    the client exits with 69. Then the client adds `GH_TOKEN=<value>` to
-   its own environment, in place of a variable of the same name, and
-   replaces itself with the command (`execve`): the path of step 1, with
-   the arguments as the agent gave them. So no nodkey process stays in
-   memory with the values. The command's exit code is the exit code of
-   `nodkey run`. The client never ignores `SIGPIPE`: an ignored signal
-   stays ignored after `execve`, so the command would run with it ignored.
-   With `--mask`, the client does not replace itself. It starts the
+   its own environment, in place of a variable of the same name, and runs
+   the command: the path of step 1, with the arguments as the agent gave
+   them. The command's exit code is the exit code of `nodkey run`. How it
+   runs the command depends on the options and on the output:
+   - By default, the client masks the output (below), unless its stdout
+     and stderr are both a terminal. An agent reads the output of a
+     command through a pipe or a file, so its output is masked. On a
+     terminal, a person reads the output, and an editor, `ssh`, a prompt
+     or colors need the command to own the terminal; so there the client
+     replaces itself, as with `--no-mask`. The client checks each with
+     the `TCGETS` ioctl, as `isatty` does; `/dev/null` is not a terminal.
+   - With `--no-mask`, the client replaces itself with the command
+     (`execve`), as before masking was the default. So no nodkey process
+     stays in memory with the values. The client never ignores
+     `SIGPIPE`: an ignored signal stays ignored after `execve`, so the
+     command would run with it ignored.
+   - With `--mask`, the client masks the output, also on a terminal.
+
+   Masking changes the bytes of normal output where a value appears. A
+   short value, such as `1` or `true`, can break JSON or other output
+   that a program reads; use `--no-mask` for such a value.
+
+   To mask, the client does not replace itself. It starts the
    command as its child, with the same environment and stdin, and the
    command's stdout and stderr are pipes to the client. The client writes
    all of the output to its own stdout and stderr, and replaces each
@@ -3102,7 +3120,7 @@ other users must not be able to change it.
 
 ```
 nodkey broker [--config FILE]
-nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask] -- COMMAND [ARGS...]
+nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
@@ -3306,7 +3324,8 @@ tries again. More cases:
   is not a program.
 
 `nodkey run` looks for the command before it asks anyone. So 126 and
-127 come without a request, unless `execve` itself fails.
+127 come without a request, unless `execve` itself fails, or the command
+cannot be started as a child (masked).
 
 `SIGINT` (Ctrl-C) or `SIGTERM` while nodkey waits: it closes the
 connection, so the broker cancels the request, and prints the last line
@@ -3315,11 +3334,16 @@ ends itself with the same signal, as a program that does not catch it.
 A shell then shows 130 or 143. A shell stops a loop or a script only when
 a command dies of `SIGINT`; with a plain exit code, one Ctrl-C would end
 only one `nodkey run`, and the next one would send its request to the
-phone. Once the command starts, the signals are the command's.
+phone. Once the command starts, the signals are the command's. When the
+output is masked, nodkey stays and passes some of them on (section 5,
+step 7).
 
-`--mask` (section 5, step 7): the command runs as a child of nodkey, and
-each fetched value in its stdout and stderr becomes `***`. `--mask` takes
-no value and may be given once. With it, 126 also covers a command that
+Masking (section 5, step 7): by default, unless stdout and stderr are
+both a terminal, the command runs as a child of nodkey, and each fetched
+value in its stdout and stderr becomes `***`. `--mask` masks also on a
+terminal. `--no-mask` never masks: the command replaces nodkey
+(`execve`). Each takes no value and may be given once; both together are
+wrong usage (64). When masked, 126 also covers a command that
 cannot be started as a child. A command that dies of `SIGINT`, `SIGTERM`,
 `SIGHUP` or `SIGKILL` ends nodkey with the same signal; another signal
 gives 128 and its number.
@@ -3819,8 +3843,8 @@ name would not work for the whole update. Use `HTTPS_PROXY`.
   sends its request, so it writes no core dump while it holds the values,
   also when the agent sets `GOTRACEBACK`, and other processes of the user
   cannot read its memory. `execve` makes the command dumpable again. It
-  does not change `RLIMIT_CORE`, which the command would inherit. With
-  `--mask`, nodkey stays not dumpable while the command runs, as it holds
+  does not change `RLIMIT_CORE`, which the command would inherit. When it
+  masks the output, nodkey stays not dumpable while the command runs, as it holds
   the values to mask.
 - Time limits use Go's monotonic clock, so setting the wall clock does not
   move them. The monotonic clock stops while the host sleeps (suspend), so

@@ -11,8 +11,9 @@ import (
 	"syscall"
 )
 
-// runMasked runs the command for nodkey run --mask, and returns the exit
-// code of nodkey run. The command is a child of nodkey, not a replacement:
+// runMasked runs the command for nodkey run when it masks the output
+// (the default), and returns the exit code of nodkey run. The command is
+// a child of nodkey, not a replacement:
 // its stdout and stderr go through a maskWriter each, to nodkey's stdout
 // and stderr (DESIGN.md section 5). When the command dies of SIGINT,
 // SIGTERM, SIGHUP or SIGKILL, nodkey ends itself with the same signal, so
@@ -180,4 +181,11 @@ func copyMasked(r *os.File, w io.Writer, values [][]byte) error {
 			return err
 		}
 	}
+}
+
+// onTerminal reports whether both stdout and stderr of nodkey are
+// terminals. Then nodkey run without --mask or --no-mask replaces itself
+// with the command, so the command owns the terminal (DESIGN.md section 5).
+func onTerminal() bool {
+	return isTerminal(1) && isTerminal(2)
 }

@@ -47,6 +47,12 @@ func TestRunUsage(t *testing.T) {
 		{"two reasons", []string{"--reason", "a", "--reason=b", "--secret", "A=b", "--", "gh"}, "--reason is given twice"},
 		{"a value for --mask", []string{"--secret", "A=b", "--mask=yes", "--", "gh"}, "--mask takes no value"},
 		{"two masks", []string{"--mask", "--secret", "A=b", "-mask", "--", "gh"}, "--mask is given twice"},
+		{"a value for --no-mask", []string{"--secret", "A=b", "--no-mask=1", "--", "gh"}, "--no-mask takes no value"},
+		{"two no-masks", []string{"--no-mask", "--secret", "A=b", "-no-mask", "--", "gh"}, "--no-mask is given twice"},
+		{"mask and no-mask", []string{"--mask", "--no-mask", "--secret", "A=b", "--", "gh"},
+			"give --mask or --no-mask, not both"},
+		{"no-mask and mask", []string{"--no-mask", "--secret", "A=b", "--mask", "--", "gh"},
+			"give --mask or --no-mask, not both"},
 		{"unknown option", []string{"--secret", "A=b", "--bogus", "--", "gh"}, `unknown option "--bogus"`},
 		{"one dash", []string{"-", "--", "gh"}, `unknown option "-"`},
 		{"a line break", []string{"--secret", "A\nB=c", "--", "gh"}, `the variable name "A\nB" must match`},
@@ -140,8 +146,11 @@ func TestParseArgs(t *testing.T) {
 		!slices.Equal(o.command, []string{"gh", "--secret", "--", "x"}) {
 		t.Errorf("parseArgs = %+v", o)
 	}
-	if o.mask {
-		t.Error("parseArgs without --mask: mask is on")
+	if o.mask || o.noMask {
+		t.Error("parseArgs without --mask or --no-mask: one is on")
+	}
+	if o, err := parseArgs([]string{"--secret", "A=a", "-no-mask", "--", "gh"}); err != nil || !o.noMask || o.mask {
+		t.Errorf("--no-mask: %+v, %v", o, err)
 	}
 	if o, err := parseArgs([]string{"--secret", "A=a", "-mask", "--", "gh", "--mask"}); err != nil || !o.mask ||
 		!slices.Equal(o.command, []string{"gh", "--mask"}) {

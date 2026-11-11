@@ -38,7 +38,7 @@ const (
 )
 
 // runUsage is the help of nodkey run.
-const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask] -- COMMAND [ARGS...]
+const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 
 Ask the broker for secrets, and wait until a person approves the request
 on the phone. Then run COMMAND, with the value of the secret NAME in the
@@ -56,10 +56,17 @@ environment variable VAR. nodkey never prints a value.
                      saved, COMMAND does not run (exit 77).
   --reason TEXT      why COMMAND needs the secrets. Without it, the reason
                      is the environment variable NODKEY_REASON.
-  --mask             replace each value in the stdout and stderr of COMMAND
-                     with ***. COMMAND then runs as a child of nodkey, and
-                     its stdout and stderr are pipes, not a terminal. This
-                     catches only a value as it is, not in another form.
+  --mask             mask the output also when stdout and stderr are both
+                     a terminal (see below).
+  --no-mask          do not mask: COMMAND replaces nodkey, and its output
+                     is not checked.
+
+By default, nodkey replaces each value in the stdout and stderr of COMMAND
+with ***. COMMAND then runs as a child of nodkey, and its stdout and stderr
+are pipes, not a terminal. This catches only a value as it is, not in
+another form. When stdout and stderr of nodkey are both a terminal,
+COMMAND replaces nodkey and owns the terminal, and its output is not
+masked: a person reads it there, not an agent.
 
 The client config is ~/.config/nodkey/client.toml. nodkey run exits with
 the exit code of COMMAND, or with 64 (wrong usage), 69 (the broker cannot
@@ -77,8 +84,11 @@ const reasonVar = "NODKEY_REASON"
 // Run runs nodkey run with args, the arguments after "run", and writes its
 // own messages to stderr. version is the version of nodkey: it goes to the
 // broker, and Run prints a warning when the broker runs another version.
-// When the person approves, the command replaces nodkey (execve), with the
-// values in its environment, and Run does not return. Otherwise Run
+// When the person approves, the command runs with the values in its
+// environment: by default as a child, with its output masked (runMasked),
+// and Run returns its exit code. With --no-mask, or when stdout and stderr
+// are both terminals and --mask is not given, the command replaces nodkey
+// (execve), and Run does not return. Otherwise Run
 // returns the exit code of DESIGN.md section 15, and the last line on
 // stderr is "nodkey: <reason> (exit <code>)".
 //
@@ -92,7 +102,7 @@ const reasonVar = "NODKEY_REASON"
 // any Go program.
 func Run(args []string, stderr io.Writer, version string) int {
 	r := runner{load: Load, configPath: ConfigPath, environ: os.Environ, exec: syscall.Exec,
-		notDumpable: notDumpable, masked: runMasked, version: version}
+		notDumpable: notDumpable, masked: runMasked, terminal: onTerminal, version: version}
 	return r.main(args, stderr)
 }
 
@@ -101,7 +111,8 @@ func Run(args []string, stderr io.Writer, version string) int {
 // never reads ~/.config/nodkey/client.toml.
 func RunWithConfig(args []string, stderr io.Writer, version, path string) int {
 	r := runner{load: Load, configPath: func() (string, error) { return path, nil }, environ: os.Environ,
-		exec: syscall.Exec, notDumpable: notDumpable, masked: runMasked, version: version}
+		exec: syscall.Exec, notDumpable: notDumpable, masked: runMasked, terminal: onTerminal,
+		version: version}
 	return r.main(args, stderr)
 }
 
@@ -121,9 +132,12 @@ type runner struct {
 	// values: notDumpable. Tests in the test process replace it, so the
 	// test process stays as it is.
 	notDumpable func() error
-	// masked runs the command for --mask, with the values to mask, and
-	// returns the exit code: runMasked.
+	// masked runs the command with its output masked, with the values to
+	// mask, and returns the exit code: runMasked.
 	masked func(path string, argv, envv []string, values [][]byte, stderr io.Writer) int
+	// terminal reports whether stdout and stderr are both terminals: then
+	// the default is exec, not masked. onTerminal.
+	terminal func() bool
 	// version is the version of nodkey (warnVersions); "" sends none.
 	version string
 }
@@ -223,8 +237,10 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 		return fail(stderr, exitUnavailable, err.Error())
 	}
 	envv, err := commandEnv(env, o.secrets, ans)
+	// The output is masked by default; on a terminal, the command owns it.
+	mask := o.mask || (!o.noMask && !r.terminal())
 	var values [][]byte
-	if err == nil && o.mask {
+	if err == nil && mask {
 		for _, s := range ans.Secrets {
 			values = append(values, bytes.Clone(s.Value))
 		}
@@ -244,7 +260,7 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 	if ctx.Err() != nil {
 		return cancelled(ctx, stderr)
 	}
-	if o.mask {
+	if mask {
 		return r.masked(path, o.command, envv, values, stderr)
 	}
 	if err := r.exec(path, o.command, envv); err != nil {
@@ -364,13 +380,15 @@ type runOptions struct {
 	reasonSet bool
 	// grantToken is the file of --grant-token ("" for none).
 	grantToken string
-	// mask is --mask: the command's output is masked.
-	mask    bool
+	// mask is --mask: the command's output is masked, also on a terminal.
+	mask bool
+	// noMask is --no-mask: the command replaces nodkey (execve).
+	noMask  bool
 	command []string
 }
 
 // parseArgs reads the arguments of nodkey run: the options, "--", and the
-// command. Options are --secret VAR=NAME, which may repeat, --mask, and --reason
+// command. Options are --secret VAR=NAME, which may repeat, --mask, --no-mask, and --reason
 // TEXT, each also with one dash and with "=" before the value, as the flag
 // package reads them. The command must come after "--", so that its own
 // options are never read as options of nodkey run.
@@ -404,8 +422,21 @@ func parseArgs(args []string) (*runOptions, error) {
 				return nil, errors.New("--mask takes no value")
 			case o.mask:
 				return nil, errors.New("--mask is given twice")
+			case o.noMask:
+				return nil, errors.New("give --mask or --no-mask, not both")
 			}
 			o.mask = true
+			continue
+		case "no-mask":
+			switch {
+			case hasValue:
+				return nil, errors.New("--no-mask takes no value")
+			case o.noMask:
+				return nil, errors.New("--no-mask is given twice")
+			case o.mask:
+				return nil, errors.New("give --mask or --no-mask, not both")
+			}
+			o.noMask = true
 			continue
 		case "h", "help":
 			// With other arguments, help would exit with 0 and run
