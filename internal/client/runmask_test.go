@@ -231,3 +231,19 @@ func TestRunMaskRule(t *testing.T) {
 		})
 	}
 }
+
+// TestRunMaskDenied: by default, with the output not on a terminal, a
+// denied request runs nothing: neither masked nor exec. (The masked stub
+// of testRunner panics.)
+func TestRunMaskDenied(t *testing.T) {
+	t.Parallel()
+	tb := newTestBroker(t)
+	tb.approver.Auto(audit.AnswerDeny)
+	fx := &fakeExec{}
+	r := testRunner(tb.client(t), []string{"PATH=/usr/bin"}, fx)
+	r.terminal = func() bool { return false }
+	code, stderr := runIn(t.Context(), r, "--secret", "GH_TOKEN=github-token", "--", self(t))
+	if code != exitDenied || len(fx.ran()) != 0 {
+		t.Errorf("exit code %d, exec %d times; want 77 and nothing run (stderr %q)", code, len(fx.ran()), safe(stderr))
+	}
+}

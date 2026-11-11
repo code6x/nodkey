@@ -478,6 +478,7 @@ func testRunner(b *Broker, env []string, fx *fakeExec) runner {
 			panic("this test must not run a masked command")
 		},
 		// As on a terminal: without --mask, the command replaces nodkey.
+		// TestRunMaskRule and TestRunMaskDenied test the masked default.
 		terminal: func() bool { return true },
 	}
 }

@@ -276,6 +276,10 @@ nodkey run --secret GH_TOKEN=github-token \
      command would run with it ignored.
    - With `--mask`, the client masks the output, also on a terminal.
 
+   Masking changes the bytes of normal output where a value appears. A
+   short value, such as `1` or `true`, can break JSON or other output
+   that a program reads; use `--no-mask` for such a value.
+
    To mask, the client does not replace itself. It starts the
    command as its child, with the same environment and stdin, and the
    command's stdout and stderr are pipes to the client. The client writes
@@ -3320,7 +3324,8 @@ tries again. More cases:
   is not a program.
 
 `nodkey run` looks for the command before it asks anyone. So 126 and
-127 come without a request, unless `execve` itself fails.
+127 come without a request, unless `execve` itself fails, or the command
+cannot be started as a child (masked).
 
 `SIGINT` (Ctrl-C) or `SIGTERM` while nodkey waits: it closes the
 connection, so the broker cancels the request, and prints the last line
@@ -3329,7 +3334,9 @@ ends itself with the same signal, as a program that does not catch it.
 A shell then shows 130 or 143. A shell stops a loop or a script only when
 a command dies of `SIGINT`; with a plain exit code, one Ctrl-C would end
 only one `nodkey run`, and the next one would send its request to the
-phone. Once the command starts, the signals are the command's.
+phone. Once the command starts, the signals are the command's. When the
+output is masked, nodkey stays and passes some of them on (section 5,
+step 7).
 
 Masking (section 5, step 7): by default, unless stdout and stderr are
 both a terminal, the command runs as a child of nodkey, and each fetched

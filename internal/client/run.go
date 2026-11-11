@@ -132,8 +132,8 @@ type runner struct {
 	// values: notDumpable. Tests in the test process replace it, so the
 	// test process stays as it is.
 	notDumpable func() error
-	// masked runs the command for --mask, with the values to mask, and
-	// returns the exit code: runMasked.
+	// masked runs the command with its output masked, with the values to
+	// mask, and returns the exit code: runMasked.
 	masked func(path string, argv, envv []string, values [][]byte, stderr io.Writer) int
 	// terminal reports whether stdout and stderr are both terminals: then
 	// the default is exec, not masked. onTerminal.

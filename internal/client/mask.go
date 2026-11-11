@@ -7,7 +7,7 @@ import (
 )
 
 // maskText replaces each fetched value in the output of the command
-// (nodkey run --mask, DESIGN.md section 5).
+// (nodkey run, DESIGN.md section 5).
 const maskText = "***"
 
 // maskWriter writes to w what is written to it, with each value replaced
