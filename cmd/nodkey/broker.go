@@ -106,6 +106,7 @@ var errPanicked = errors.New("it panicked; the panic value is not logged")
 
 const brokerUsage = `Usage: nodkey broker [--config FILE]
        nodkey broker reload [--config FILE] [--timeout DURATION]
+       nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
 
 Run the broker: the daemon that holds the SSH keys and the access to the
 secret stores. It asks the approver on Telegram before it hands out a
@@ -115,9 +116,11 @@ unit such as contrib/systemd/nodkey.service.
   --config FILE  the broker config (default /etc/nodkey/broker.toml)
 
 It logs to stderr, which systemd keeps in the journal, with the anchors
-of the audit log. SIGTERM or SIGINT stops it. SIGHUP reloads the config
-without a restart; see "nodkey broker reload --help". So does a failed write to
+of the audit log. SIGTERM or SIGINT stops it. So does a failed write to
 stderr, such as after its reader is gone: it stops with exit code 1.
+SIGHUP reloads the config without a restart; see "nodkey broker reload
+--help". To check a config without a start, see "nodkey broker check
+--help".
 
 Exit codes: 0 stopped by SIGTERM or SIGINT, 1 any other error, 64 wrong
 usage, 76 Telegram reports a polling conflict: the bot token may be
@@ -130,6 +133,9 @@ systemd must not start the broker again: only a person can fix them.
 func runBroker(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "reload" {
 		return runBrokerReload(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "check" {
+		return runBrokerCheck(args[1:], stdout, stderr)
 	}
 	// A broken stderr must not end the broker with SIGPIPE in the middle
 	// of a line: the write fails instead, and the broker stops in its
