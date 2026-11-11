@@ -387,9 +387,11 @@ item 2.
 Risk that remains: real; outside nodkey.
 
 **T14. The agent keeps a secret after approval.** See section 5, item 1.
-`nodkey run` itself keeps no value: it replaces itself with the command
-(`execve`), so the value is only in the environment of the command.
-Before it asks, it marks itself not dumpable, so it writes no core dump
+With `--no-mask` (and by default on a terminal), `nodkey run` itself
+keeps no value: it replaces itself with the command (`execve`), so the
+value is only in the environment of the command. When it masks the
+output (the default), it holds the values while the command runs, to
+mask them, and stays not dumpable. Before it asks, it marks itself not dumpable, so it writes no core dump
 while it holds the values, also when the agent sets `GOTRACEBACK`, and
 other processes of the user cannot read its memory then. The command
 itself is dumpable again. Use short-lived or narrow secrets, and rotate a
@@ -433,13 +435,17 @@ common forms only.
 A secret in another form is shown as it is, for example a plain word
 (`htpasswd -b users.txt dev SECRET`) or an option of a program the broker
 does not know. A hostile agent can always get a secret past masking. The
-claimed text stays a claim. The command itself may print a secret. With
-`nodkey run --mask`, nodkey replaces each fetched value in the command's
+claimed text stays a claim. The command itself may print a secret. By
+default, `nodkey run` replaces each fetched value in the command's
 stdout and stderr with `***`, also when the value comes in more than one
 read (DESIGN.md section 5). This stops a mistake, not a hostile agent or
 command: a value in another form, such as in base64, reversed, split
-between stdout and stderr, or written to a file, is not masked. Without
-`--mask`, the output is not filtered. The deny list of variable names
+between stdout and stderr, or written to a file, is not masked. The
+output is not filtered with `--no-mask`, nor by default when stdout and
+stderr of `nodkey run` are both a terminal: then a person reads it, and
+the command owns the terminal. An agent that runs its commands in a
+pseudo-terminal of its own gets the values unmasked there; `--mask`
+masks also on a terminal. The deny list of variable names
 covers common programs only: a setting of another program can still show
 its value, such as `UNZIP` for unzip. The agent also sets the rest
 of the command's environment, which the message does not show, so a

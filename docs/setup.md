@@ -1683,11 +1683,16 @@ Tell the agent about it, for example in its instructions for a project:
 names are refused, because programs print or run their values
 ([DESIGN.md section 5](../DESIGN.md#variable-names-that-the-broker-refuses)).
 
-The command itself may print a value, for example in a debug line. Add
-`--mask`, and nodkey replaces each value in the command's stdout and
-stderr with `***`. It masks a value only as it is, not in another form
-such as base64. With `--mask`, the command's stdout and stderr are pipes,
-not a terminal.
+The command itself may print a value, for example in a debug line. So,
+by default, nodkey replaces each value in the command's stdout and stderr
+with `***`. It masks a value only as it is, not in another form such as
+base64. The command's stdout and stderr are then pipes, not a terminal.
+
+When stdout and stderr of `nodkey run` are both a terminal, a person
+reads the output, so nodkey does not mask it: the command owns the
+terminal, and editors, `ssh` and prompts work. `--mask` masks also on a
+terminal. `--no-mask` turns masking off, for a value that is also a
+common word, for example: then normal output would show `***`.
 
 `nodkey run` exits with the exit code of the command. When nodkey
 itself stops, its last line on stderr is
