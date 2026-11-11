@@ -433,8 +433,13 @@ common forms only.
 A secret in another form is shown as it is, for example a plain word
 (`htpasswd -b users.txt dev SECRET`) or an option of a program the broker
 does not know. A hostile agent can always get a secret past masking. The
-claimed text stays a claim. The command itself may print a secret; version
-1 does not filter the command's output. The deny list of variable names
+claimed text stays a claim. The command itself may print a secret. With
+`nodkey run --mask`, nodkey replaces each fetched value in the command's
+stdout and stderr with `***`, also when the value comes in more than one
+read (DESIGN.md section 5). This stops a mistake, not a hostile agent or
+command: a value in another form, such as in base64, reversed, split
+between stdout and stderr, or written to a file, is not masked. Without
+`--mask`, the output is not filtered. The deny list of variable names
 covers common programs only: a setting of another program can still show
 its value, such as `UNZIP` for unzip. The agent also sets the rest
 of the command's environment, which the message does not show, so a

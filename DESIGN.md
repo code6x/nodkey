@@ -67,7 +67,9 @@ what it protects against, and what it does not.
 - SSH certificates, for hosts and for users. The broker's `known_hosts`
   holds plain host keys, and the broker signs only with plain keys.
 - Keys in hardware (TPM or YubiKey) through an upstream agent.
-- Filtering secrets out of the command's output.
+- Masking a value in another form in the command's output, such as in
+  base64 or split between stdout and stderr (`nodkey run --mask` masks it
+  only as it is, section 5).
 - More than one approver, and Telegram and ntfy on one broker at once.
 
 Each of these can become a GitHub issue later.
@@ -260,6 +262,26 @@ nodkey run --secret GH_TOKEN=github-token \
    memory with the values. The command's exit code is the exit code of
    `nodkey run`. The client never ignores `SIGPIPE`: an ignored signal
    stays ignored after `execve`, so the command would run with it ignored.
+   With `--mask`, the client does not replace itself. It starts the
+   command as its child, with the same environment and stdin, and the
+   command's stdout and stderr are pipes to the client. The client writes
+   all of the output to its own stdout and stderr, and replaces each
+   fetched value in it with `***`, also when a value comes in more than
+   one read. It holds back only the end of the output that may still be
+   the start of a value, and writes it when the next read shows that it is
+   not a value, or when the command ends. Where two values match at one
+   place, the longest wins. It masks a value only exactly as it is: not in
+   base64, not split between stdout and stderr, and not in another
+   encoding. It waits until the command has ended and the pipes are closed
+   (a process that the command left behind may keep them open), then exits
+   with the command's exit code. A command that exits with 0 when its
+   output cannot be written gives 1. When the command dies of a signal,
+   the client ends itself with the same signal. While the command runs,
+   the client stays not dumpable and holds the values. It passes `SIGTERM`
+   and `SIGHUP` on to the command, and catches `SIGINT` and `SIGQUIT`
+   without passing them on, because a terminal sends them to the command
+   too. The command sees pipes, not a terminal, so some programs print
+   without colors or buffer their output.
 8. On deny, timeout or error, the client prints one line to stderr, without
    any value, and exits: with 77 when the broker denies the request, and
    with 69 when it cannot reach the broker or gets another answer
@@ -3073,7 +3095,7 @@ other users must not be able to change it.
 
 ```
 nodkey broker [--config FILE]
-nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] -- COMMAND [ARGS...]
+nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
@@ -3287,6 +3309,12 @@ A shell then shows 130 or 143. A shell stops a loop or a script only when
 a command dies of `SIGINT`; with a plain exit code, one Ctrl-C would end
 only one `nodkey run`, and the next one would send its request to the
 phone. Once the command starts, the signals are the command's.
+
+`--mask` (section 5, step 7): the command runs as a child of nodkey, and
+each fetched value in its stdout and stderr becomes `***`. `--mask` takes
+no value and may be given once. With it, 126 also covers a command that
+cannot be started as a child, and a command that dies of a signal ends
+nodkey with the same signal.
 
 `nodkey run -h` or `nodkey run --help` prints the usage and exits with 0,
 but only as the only argument. With other arguments, `-h` and `--help`
@@ -3783,7 +3811,9 @@ name would not work for the whole update. Use `HTTPS_PROXY`.
   sends its request, so it writes no core dump while it holds the values,
   also when the agent sets `GOTRACEBACK`, and other processes of the user
   cannot read its memory. `execve` makes the command dumpable again. It
-  does not change `RLIMIT_CORE`, which the command would inherit.
+  does not change `RLIMIT_CORE`, which the command would inherit. With
+  `--mask`, nodkey stays not dumpable while the command runs, as it holds
+  the values to mask.
 - Time limits use Go's monotonic clock, so setting the wall clock does not
   move them. The monotonic clock stops while the host sleeps (suspend), so
   a request and a grant also end when the wall clock reaches their end:
