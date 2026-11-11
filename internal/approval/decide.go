@@ -34,6 +34,9 @@ type item struct {
 
 // pending is one request inside Decide.
 type pending struct {
+	// cfg is the config that the checks of the request used (Core.conf at
+	// the start of check).
+	cfg      *config.Broker
 	id, code string
 	client   string
 	kind     audit.Kind
@@ -237,12 +240,12 @@ func (c *Core) begin(p *pending) *Result {
 		// The grants that are approved and not ended, and the requests
 		// that wait for a tap (StartGrants checks the first again).
 		if p.kind == audit.KindStanding {
-			if c.standingCount(p.client)+cs.standingPending >= c.cfg.Standing.MaxGrants {
+			if c.standingCount(p.client)+cs.standingPending >= c.conf().Standing.MaxGrants {
 				return c.denied(p, audit.CauseLimit)
 			}
 			cs.standingPending++
 		} else {
-			if c.scheduledCount(p.client)+cs.preapproving >= c.cfg.Preapprove.MaxGrants {
+			if c.scheduledCount(p.client)+cs.preapproving >= c.conf().Preapprove.MaxGrants {
 				return c.denied(p, audit.CauseLimit)
 			}
 			cs.preapproving++
@@ -703,6 +706,7 @@ func (c *Core) newResult(p *pending) *Result {
 		Message:   p.text,
 		Subject:   s,
 		core:      c,
+		cfg:       p.cfg,
 		at:        c.clock.Wall(),
 	}
 }

@@ -1444,6 +1444,47 @@ Risk that remains: real. nodkey cannot see a read in Infisical's own apps
 or with the client secret, and it cannot check where an account is logged
 in. A leaked client secret gets tokens until it ends or is revoked.
 
+**T42. A reload of the config leaves access that the new config takes
+away, or is used to send a signal to another process.**
+A reload (DESIGN.md section 14, "Reload") must end every grant that the
+new config takes away, at once, and a removed client must not go on with
+a connection that it opened before.
+
+What nodkey does:
+- The broker checks the new config with the same code as a start. Any
+  error refuses it, and the old config stays (fail closed). A change of a
+  part that holds sockets, tokens or running stores is refused: it needs
+  a restart.
+- A grant stays only when its client has the same pin, and each secret
+  or key, with its store item, key file, public key and rule, is the same
+  and still lists the client, and each host of a key grant is still
+  allowed. Every other grant ends before the reload is done. A change
+  that nodkey does not know as harmless ends the grant.
+- An open connection of a removed client, or of a client with a new pin,
+  gets `403` at its next request and is closed; a new handshake checks
+  the new pins.
+- A request that waits for a tap during a reload starts no grant. Before
+  a value is fetched or a login signed, and again before the answer, the
+  broker checks the request against the config of now: the pin of the
+  client's key, and each secret or key, from the config of the start of
+  the request and from the config that the core decided with.
+- Each reload that the broker took has a `config_reloaded` entry. A
+  refused one is in the journal.
+- `nodkey broker reload` runs as root. It sends SIGHUP only to the process
+  in the status file, and only when that process runs as the owner of
+  the file (never root) and has the start time in the file. It does not
+  follow a symbolic link to the file. So a stale file, or one that the
+  broker's user wrote, cannot make root signal another user's process.
+
+Risk that remains: low. An answer that passed the last check just before
+the reload ends can still go out. Whoever can
+write the config can widen access with a reload, as with a restart; the
+config file must stay writable by root only (section 14). The broker's
+user can write the status file, so it can make `nodkey broker reload`
+signal another process of the broker's user, or report a false result;
+that user owns the broker already. The command cleans the text of the
+file before it prints it.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -43,6 +45,9 @@ const MaxTimeout = 10 * time.Minute
 // in it are expanded with ExpandPath and absolute.
 type Broker struct {
 	Path string // the config file it was loaded from
+	// Sum is the SHA-256 of the bytes of the config file that were read,
+	// in hex. nodkey broker reload compares it (DESIGN.md section 14).
+	Sum string
 	// Listen is the address to listen on: one IP address, never 0.0.0.0 or
 	// ::, never a multicast or broadcast address, never an IPv6 link-local
 	// address, with no zone, and a port from 1 to 65535.
@@ -412,6 +417,8 @@ func loadBroker(path string) (*Broker, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	b.Path = path
+	sum := sha256.Sum256(data)
+	b.Sum = hex.EncodeToString(sum[:])
 	return b, nil
 }
 

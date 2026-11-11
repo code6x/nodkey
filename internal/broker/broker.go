@@ -180,11 +180,11 @@ type Parts struct {
 // to transport.NewServer as the handler, call Run, and Close it when the
 // broker stops. Its methods are safe for use by many goroutines.
 type Service struct {
-	cfg    *config.Broker
+	// cur is the config and the keys of now; Reload changes it. A request
+	// takes it once, at its start (request.v).
+	cur    atomic.Pointer[view]
 	audit  AuditLog
 	stores map[string]store.Store
-	keys   map[string]sshauth.Key
-	keysOf map[string]api.KeysAnswer // the answer of PathKeys, by client
 	log    *slog.Logger
 	random io.Reader // crypto/rand.Reader, for request IDs
 	// version is the broker's own version (Parts.Version), or "" when it
@@ -203,7 +203,8 @@ type Service struct {
 	maxPerClient int
 
 	// bodies holds a place for each body that is read and decoded now;
-	// clientBodies holds the places of each client, by name.
+	// clientBodies holds the places of each client, by name. Read it with
+	// mu held (clientPlaces).
 	bodies       chan struct{}
 	clientBodies map[string]chan struct{}
 
@@ -280,11 +281,8 @@ func New(p Parts) (*Service, error) {
 	}
 	stopCtx, stop := context.WithCancel(context.Background())
 	s := &Service{
-		cfg:            cfg,
 		audit:          p.Audit,
 		stores:         maps.Clone(p.Stores),
-		keys:           maps.Clone(p.Keys),
-		keysOf:         keysOf,
 		log:            logger,
 		random:         rand.Reader,
 		maxPerClient:   MaxRequestsPerClient,
@@ -303,7 +301,39 @@ func New(p Parts) (*Service, error) {
 	if version.Valid(p.Version) {
 		s.version = p.Version
 	}
-	for name := range cfg.Clients {
+	s.cur.Store(&view{cfg: cfg, keys: maps.Clone(p.Keys), keysOf: keysOf})
+	s.addClients(cfg)
+	s.refusedLines = newRateLimit(refusedLinesPerMinute, func(n int) {
+		s.log.Info("broker: did not log refused requests, to keep the log small", slog.Int("dropped", n),
+			slog.Int("limit_per_minute", refusedLinesPerMinute))
+	})
+	s.bg.Add(1)
+	go s.writeTaps()
+	return s, nil
+}
+
+// view is the config of the Service, with the keys that fit it. Nothing
+// may change a view; Reload makes a new one.
+type view struct {
+	cfg    *config.Broker
+	keys   map[string]sshauth.Key
+	keysOf map[string]api.KeysAnswer // the answer of PathKeys, by client
+}
+
+// view returns the config and the keys of now.
+func (s *Service) view() *view { return s.cur.Load() }
+
+// addClients adds the state of each client of cfg that the Service does
+// not have yet: its places for bodies, its limit of refused entries, and
+// its notes about versions. The state of a removed client stays; it is
+// small, and its requests are refused. s.mu must not be held.
+func (s *Service) addClients(cfg *config.Broker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, name := range slices.Sorted(maps.Keys(cfg.Clients)) {
+		if s.clientBodies[name] != nil {
+			continue
+		}
 		s.versionNotes[name] = &versionNote{}
 		s.securityNotes[name] = &securityNote{}
 		s.clientBodies[name] = make(chan struct{}, maxBodiesPerClient)
@@ -312,13 +342,14 @@ func New(p Parts) (*Service, error) {
 				slog.String("client", name), slog.Int("requests", n), slog.Int("limit_per_minute", refusedEntriesPerMinute))
 		})
 	}
-	s.refusedLines = newRateLimit(refusedLinesPerMinute, func(n int) {
-		s.log.Info("broker: did not log refused requests, to keep the log small", slog.Int("dropped", n),
-			slog.Int("limit_per_minute", refusedLinesPerMinute))
-	})
-	s.bg.Add(1)
-	go s.writeTaps()
-	return s, nil
+}
+
+// clientPlaces returns the places for bodies of client, or nil for a
+// client that the Service never had.
+func (s *Service) clientPlaces(client string) chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clientBodies[client]
 }
 
 // checkStores checks that stores has a store for each [store.*] section,
@@ -472,7 +503,10 @@ func (s *Service) Close() {
 		s.requests.Wait()
 		close(s.tapsStop)
 		s.bg.Wait()
-		for _, l := range s.refusedEntries {
+		s.mu.Lock()
+		limits := slices.Collect(maps.Values(s.refusedEntries))
+		s.mu.Unlock()
+		for _, l := range limits {
 			l.stop()
 		}
 		s.refusedLines.stop()
@@ -599,7 +633,7 @@ func (s *Service) rateLimited(name string) {
 	s.mu.Unlock()
 	if send {
 		service := "1Password"
-		if s.cfg.Stores[name].Type == config.StoreInfisical {
+		if s.view().cfg.Stores[name].Type == config.StoreInfisical {
 			service = "Infisical"
 		}
 		s.sendAlert(fmt.Sprintf("The store %q reached the rate limit of %s. The broker denies its secrets "+

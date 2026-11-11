@@ -12,6 +12,7 @@ import (
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
+	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/store"
 	"github.com/code6x/nodkey/internal/transport"
 )
@@ -76,7 +77,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	adm := s.enter(client)
 	defer s.leave(client, adm)
-	rq := &request{s: s, w: w, client: client, kind: ep.kind, core: adm.core}
+	rq := &request{s: s, v: s.view(), w: w, client: client, kind: ep.kind, core: adm.core}
+	rq.pin, rq.hasPin = transport.ClientPin(r.Context())
 	if adm.status != 0 {
 		if ep.kind != "" && adm.cause != "" {
 			// These refusals do not count toward the cap, so their
@@ -187,11 +189,22 @@ func (r receipt) valid() bool { return r.last.Seq > 0 }
 
 // request is one request in progress.
 type request struct {
-	s      *Service
-	w      http.ResponseWriter
-	client string
-	kind   audit.Kind
-	core   *approval.Core
+	s *Service
+	// v is the config and the keys of the start of the request. Before it
+	// hands out a value or signs, the request checks that a reload since
+	// then changed nothing that it uses (stillAllowed).
+	v *view
+	// pin is the pin of the client's key, as the server checked it, and
+	// hasPin says that the server gave one.
+	pin    config.Pin
+	hasPin bool
+	// decided is the config that the core decided a request for secrets
+	// with (approval.Result.Config).
+	decided *config.Broker
+	w       http.ResponseWriter
+	client  string
+	kind    audit.Kind
+	core    *approval.Core
 
 	// pre holds the names that passed the broker's checks so far, and the
 	// claimed text once it is safe, before the core gives the request an
@@ -236,7 +249,7 @@ func (rq *request) answer(status int) {
 // that waits longer than bodyWait is denied for a limit (429). It reports
 // whether the request got a place; if not, the request has its answer.
 func (rq *request) takeBody(ctx context.Context) bool {
-	mine, all := rq.s.clientBodies[rq.client], rq.s.bodies
+	mine, all := rq.s.clientPlaces(rq.client), rq.s.bodies
 	if mine == nil {
 		rq.answer(http.StatusForbidden) // never: every client of the config has places
 		return false
@@ -345,7 +358,9 @@ func (rq *request) recordDenied(sub audit.Subject, cause audit.Cause, code audit
 // refusedAllowed reports whether the entries of one more refused request
 // of client may be written now (refusedEntriesPerMinute).
 func (s *Service) refusedAllowed(client string) bool {
+	s.mu.Lock()
 	l := s.refusedEntries[client]
+	s.mu.Unlock()
 	return l == nil || l.allow()
 }
 

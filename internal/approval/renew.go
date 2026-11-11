@@ -55,7 +55,7 @@ func (c *Core) OnRenewed(f func(audit.Decision) error) {
 // was approved at now: warnDays before its end. A grant that is not longer
 // than that gets no warning (zero).
 func (c *Core) warnTime(g *grant, now time.Time) time.Time {
-	at := g.end.wall.Add(-time.Duration(c.cfg.Standing.WarnDays) * 24 * time.Hour)
+	at := g.end.wall.Add(-time.Duration(c.conf().Standing.WarnDays) * 24 * time.Hour)
 	if !at.After(now) {
 		return time.Time{}
 	}
@@ -158,7 +158,7 @@ func (c *Core) renew(a Answer) error {
 	case c.onRenewed == nil:
 		return ErrNotAllowed
 	}
-	lim := c.cfg.Standing
+	lim := c.conf().Standing
 	// The new grant takes the place of g: g is counted, n is not.
 	if c.standingCount(g.client) > lim.MaxGrants {
 		return ErrNotAllowed

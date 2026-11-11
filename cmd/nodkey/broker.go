@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"os"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -104,6 +105,7 @@ var newStore = store.New
 var errPanicked = errors.New("it panicked; the panic value is not logged")
 
 const brokerUsage = `Usage: nodkey broker [--config FILE]
+       nodkey broker reload [--config FILE] [--timeout DURATION]
 
 Run the broker: the daemon that holds the SSH keys and the access to the
 secret stores. It asks the approver on Telegram before it hands out a
@@ -113,7 +115,8 @@ unit such as contrib/systemd/nodkey.service.
   --config FILE  the broker config (default /etc/nodkey/broker.toml)
 
 It logs to stderr, which systemd keeps in the journal, with the anchors
-of the audit log. SIGTERM or SIGINT stops it. So does a failed write to
+of the audit log. SIGTERM or SIGINT stops it. SIGHUP reloads the config
+without a restart; see "nodkey broker reload --help". So does a failed write to
 stderr, such as after its reader is gone: it stops with exit code 1.
 
 Exit codes: 0 stopped by SIGTERM or SIGINT, 1 any other error, 64 wrong
@@ -124,7 +127,10 @@ systemd must not start the broker again: only a person can fix them.
 
 // runBroker runs nodkey broker with args (after "broker") and returns the
 // exit code.
-func runBroker(args []string, stderr io.Writer) int {
+func runBroker(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "reload" {
+		return runBrokerReload(args[1:], stdout, stderr)
+	}
 	// A broken stderr must not end the broker with SIGPIPE in the middle
 	// of a line: the write fails instead, and the broker stops in its
 	// order (issue #73).
@@ -155,7 +161,12 @@ func runBroker(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	return serveBroker(ctx, *path, watch, log)
+	// SIGHUP asks for a reload (brokerreload.go). It must never stop the
+	// broker, which is what it does by default, also during the start.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	return serveBroker(ctx, *path, watch, log, hup)
 }
 
 // stderrWatch passes each write on to w, and closes failed at the first
@@ -192,7 +203,9 @@ func printBrokerUsage(w io.Writer) {
 // serveBroker starts the broker with the config at path, serves until ctx
 // ends (a signal) or a part stops, then stops the broker and returns the
 // exit code (DESIGN.md section 15).
-func serveBroker(ctx context.Context, path string, stderr *stderrWatch, log *slog.Logger) (code int) {
+func serveBroker(ctx context.Context, path string, stderr *stderrWatch, log *slog.Logger,
+	hup <-chan os.Signal,
+) (code int) {
 	defer func() {
 		// The runtime would print the panic value, and no line of the
 		// broker may hold text it did not choose.
@@ -201,7 +214,8 @@ func serveBroker(ctx context.Context, path string, stderr *stderrWatch, log *slo
 			code = exitFailure
 		}
 	}()
-	b := &brokerParts{log: log, stderr: stderr, stderrFailed: stderr.failed}
+	b := &brokerParts{log: log, stderr: stderr, stderrFailed: stderr.failed, hup: hup, path: path,
+		procStart: ownStart()}
 	bySignal := false
 	switch err := b.start(ctx, path); {
 	case err != nil && errors.Is(err, context.Canceled) && ctx.Err() != nil:
@@ -274,6 +288,14 @@ type brokerParts struct {
 
 	// started is true once the broker_started entry is on disk.
 	started bool
+
+	// hup gets SIGHUP: a reload of the config at path (brokerreload.go).
+	// reloads counts the reloads; procStart is the start time of this
+	// process, for the status file.
+	hup       <-chan os.Signal
+	path      string
+	reloads   uint64
+	procStart uint64
 
 	// stopCheck ends the check for a newer release; checkDone is closed
 	// when the check returned. Both are nil when the check is off.
@@ -410,6 +432,7 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 	b.startCheck(ch.inform, ch.loud)
 	b.serve(srv, ln)
 	b.log.Info("nodkey broker: listening; the broker is ready", slog.String("address", ln.Addr().String()))
+	b.writeReloadStatus(reloadStatus{Result: reloadStarted, ConfigSHA256: cfg.Sum})
 	return nil
 }
 
@@ -638,24 +661,28 @@ func (b *brokerParts) serve(srv *transport.Server, ln net.Listener) {
 }
 
 // wait waits until ctx ends, the approver stops, the server stops, or a
-// write to stderr fails. It reports whether a signal asked to stop.
+// write to stderr fails. On SIGHUP it reloads the config, and waits again. It reports whether a signal asked to stop.
 func (b *brokerParts) wait(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
-		b.log.Info("nodkey broker: stopping, as a signal asked")
-		return true
-	case <-b.runDone:
-		// The service has logged why.
-		b.log.Error("nodkey broker: stopping, because the approver stopped: no answer can come any more")
-		return false
-	case <-b.serveDone:
-		b.log.Error("nodkey broker: stopping, because the server stopped", slog.String("error", errText(b.serveErr)))
-		return false
-	case <-b.stderrFailed:
-		// This line most likely fails too.
-		b.log.Error("nodkey broker: stopping, because a write to stderr failed: " +
-			"the log lines and the audit anchors have nowhere to go")
-		return false
+	for {
+		select {
+		case <-b.hup:
+			b.reload(b.path)
+		case <-ctx.Done():
+			b.log.Info("nodkey broker: stopping, as a signal asked")
+			return true
+		case <-b.runDone:
+			// The service has logged why.
+			b.log.Error("nodkey broker: stopping, because the approver stopped: no answer can come any more")
+			return false
+		case <-b.serveDone:
+			b.log.Error("nodkey broker: stopping, because the server stopped", slog.String("error", errText(b.serveErr)))
+			return false
+		case <-b.stderrFailed:
+			// This line most likely fails too.
+			b.log.Error("nodkey broker: stopping, because a write to stderr failed: " +
+				"the log lines and the audit anchors have nowhere to go")
+			return false
+		}
 	}
 }
 

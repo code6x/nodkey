@@ -1449,7 +1449,9 @@ name exactly one client. The config check refuses all of these (section
   not started yet. Grants of other clients stay.
 - A window is 1 minute to 8 hours. A shorter one would give grants of 0
   whole minutes, so the rule would quietly act like `always`.
-- Grants live only in memory. A broker restart removes them all.
+- Grants live only in memory. A broker restart removes them all. A reload
+  of the config keeps the grants that the new config still allows
+  (section 14, "Reload").
 - A secret or key that is not in the broker config does not exist for the
   client. The client sends names, never store IDs. So the agent cannot ask
   for any other item in the store.
@@ -1909,7 +1911,7 @@ and the alarm comes. Run the job as its own system user (see
   written and without its newline, in hex. The first entry has 64 zeros.
 - A line is at most 64 KiB. The broker refuses a longer entry, so the
   request is denied.
-- Events: `broker_started`, `request`, `decision`, `grant_used`,
+- Events: `broker_started`, `config_reloaded`, `request`, `decision`, `grant_used`,
   `grant_ended`, `grant_alarm`, `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
   `log_recovered`, `broker_stopped`. Each event about a request holds the
   request ID, the client, the names, the verified host if any, and the
@@ -1956,10 +1958,11 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 |---|---|
 | `broker_started` | `version` |
 | `broker_stopped` | none |
+| `config_reloaded` | `config_sha256`: the SHA-256 of the new config file, in hex; `grants_ended`: how many grants the reload ended, of every kind (section 14, "Reload") |
 | `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
 | `decision` | the request fields; `user_id`: the Telegram user that answered, or 0 with ntfy; `channel`: only with ntfy, `ntfy:` and the answer topic, such as `ntfy:nodkey-answers`; `answer`: `approve_once`, `approve_window`, `deny` or `renew`; `window_minutes` for `approve_window`; for `renew`, the fields of the new standing grant (a new `request_id` and `grant_id`, `not_before` the time of the tap) and `renew_of`, the ID of the grant it renews |
 | `grant_used` | the request fields; `via`: `grant`, `never_rule`, `scheduled` or `standing` (then `grant_id` is in the request fields); for `standing` also `new_token_hash` |
-| `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked`, `stopped`, `alarm` or `renewed`; `uses_left` |
+| `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked`, `stopped`, `alarm`, `renewed` or `config_changed`; `uses_left` |
 | `grant_alarm` | the request fields; `grant_id` (none for an unknown token); `cause`: `old_token`, `over_uses`, `outside_window`, `unknown_token` or `missed_window` |
 | `secret_sent`, `signed` | the request fields |
 | `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
@@ -3116,10 +3119,69 @@ write to, below directories that pass the same checks. It may be a
 symbolic link. `broker_pin` is the client's only trust in the broker, so
 other users must not be able to change it.
 
+### Reload
+
+A change of the config needs no restart (issue 29). `SIGHUP` asks the
+broker to load its config again; `nodkey broker reload` sends it and waits
+for the result (section 15). A restart ends every grant; a reload ends only
+the grants that the new config takes away.
+
+1. The broker loads the config file, `known_hosts` and the SSH keys with
+   the same code and the same checks as a start (`config.LoadBroker`, then
+   the keys). A config that fails any check is refused.
+2. A reload may change only `[client.*]`, `[secret.*]`, `[key.*]`, the
+   `known_hosts` path and its hosts. Every other part must be equal, also
+   a part that a later version adds, until it is decided otherwise. A change of `listen`, `tls_key`,
+   `audit_log`, `[telegram]`, `[ntfy]`, `[updates]`, `[preapprove]`,
+   `[standing]` or any `[store.*]` is refused with "needs a restart".
+   These parts hold open sockets, tokens, running stores and timers; a
+   restart is the one safe way to change them.
+3. A refused reload changes nothing: the broker goes on with the config it
+   has, logs why, and writes no audit entry.
+4. A good reload makes the new config the config of the server (the client
+   pins) first, then of the approval core (which ends grants, rule 5), and
+   last of the service. A new connection is checked
+   against the new pins. An open connection of a client that is gone, or
+   that has a new pin, gets `403` at its next request and is closed.
+5. Each grant stays only when the new config allows it in the same way:
+   - its client is still there, with the same pin;
+   - each of its secrets is still there, still lists the client, and has
+     the same store, item and rule (other clients in the list may change);
+   - its key is still there, still lists the client, has the same file,
+     the same public key in it and the same rule, and each host of the
+     grant is still in `known_hosts` and still allowed by `hosts`.
+
+   A grant that stays keeps its uses left and its end. Every other grant
+   ends at once. A scheduled or standing grant that ends gets a
+   `grant_ended` entry with cause `config_changed`, and its message loses
+   the Revoke button.
+6. A request that the broker checked with the old config and that waits
+   for a tap is still decided. But its approval starts no grant (an
+   `nodkey ssh-grant` gets a deny), and before the broker fetches a value
+   or signs, and again before it sends the answer, it checks the request
+   again. The pin of the client's key must be the pin of the client in the
+   config of now. The client, each secret, or the key, its public key and
+   the host must be the same (rule 5) from the config of the start of the
+   request, and from the config that the core decided with, to the config
+   of now. If not, the request is denied (cause `not_allowed`, `403`),
+   after its `decision` entry, and a fetched value is cleared.
+7. Then the broker writes `config_reloaded`, with the SHA-256 of the new
+   config file and the number of grants that ended (section 9).
+8. The broker writes the result to `reload-status.json`, in the directory
+   of `audit_log`: its process ID and start time, a count of reloads, the
+   result (`started`, `loaded` or `refused`), the reason of a refusal, and
+   the SHA-256 of the config file that it uses. It writes the file at the
+   start too. The file is written to a new name and then renamed, mode
+   0600.
+
+A reload never changes the limits of grants that exist: `[preapprove]`
+and `[standing]` need a restart.
+
 ## 15. Commands and exit codes
 
 ```
 nodkey broker [--config FILE]
+nodkey broker reload [--config FILE] [--timeout DURATION]
 nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
@@ -3228,6 +3290,27 @@ it started before.
       sends no notice.
 11. Only then does it read the connections on the `listen` address and
     take requests.
+
+SIGHUP never stops it, also not during the start: once it is ready, a
+SIGHUP reloads the config (section 14, "Reload").
+
+`nodkey broker reload` asks a running broker to reload, and waits for the
+result. It runs as root or as the broker's user. It reads the config
+file only for the path of `audit_log` and the SHA-256 of the file; it
+checks nothing else, because the broker checks the config itself. It
+reads `reload-status.json` next to the audit log: a regular file, not a
+symbolic link, not owned by root. It sends SIGHUP only to the process in
+the file, and only when that process runs as the owner of the file and
+has the start time in the file (`/proc/PID/stat`), so a stale file never
+signals another process. Then it reads the file until the count of
+reloads goes up, at most `--timeout` (default 60s). It exits 0 only when
+the broker loaded the config and the SHA-256 of the config in use is the
+SHA-256 of the file when the command began. It exits 1 with the reason
+when the broker refused the config, when the file changed during the
+reload, when the broker restarted or did not answer in time, or when the
+command cannot parse the config (then it sends no signal); 64 on wrong
+usage. A tool that applies config changes, such as from git, runs it
+after each change and undoes the change when it fails.
 
 It stops on SIGTERM or SIGINT, also during the start, when the polling
 stops for good (section 7), when its server fails, and when a write to

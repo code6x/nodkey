@@ -29,13 +29,13 @@ func nextSummary(wall time.Time, day time.Weekday, minute int) time.Time {
 // not tried again until next week.
 func (c *Core) watchSummary(ctx context.Context) {
 	s, ok := c.approver.(Summarizer)
-	if !ok || !c.cfg.Standing.Enabled {
+	if !ok || !c.conf().Standing.Enabled {
 		return
 	}
 	var sent time.Time // the target of the last summary
 	for {
 		now := c.now()
-		target := nextSummary(now.wall, c.cfg.Standing.SummaryDay, c.cfg.Standing.SummaryMinute)
+		target := nextSummary(now.wall, c.conf().Standing.SummaryDay, c.conf().Standing.SummaryMinute)
 		t := c.clock.TimerAt(now.mono.Add(target.Sub(now.wall)))
 		select {
 		case <-t.C():

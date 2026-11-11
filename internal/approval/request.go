@@ -6,6 +6,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/code6x/nodkey/internal/audit"
+	"github.com/code6x/nodkey/internal/config"
 )
 
 // Request is one request, after the broker's own checks (DESIGN.md
@@ -114,9 +115,11 @@ type Result struct {
 	GrantFrom, GrantUntil time.Time
 
 	core     *Core
-	at       time.Time // when the request was decided, on the wall clock
-	plan     *grant    // the scheduled grant of an approved KindPreapprove request
-	msg      MessageID // with plan: the message of the request, and its prompt
+	cfg      *config.Broker // the config that the checks used
+	reloaded bool           // StartGrants started nothing: a reload came after the checks
+	at       time.Time      // when the request was decided, on the wall clock
+	plan     *grant         // the scheduled grant of an approved KindPreapprove request
+	msg      MessageID      // with plan: the message of the request, and its prompt
 	prompt   Prompt
 	su       *standingUse       // the use path of a standing grant
 	usedID   string             // the scheduled grant that allowed the request
@@ -263,6 +266,12 @@ func (r *Result) StartGrants() {
 		return
 	}
 	r.started = true
+	if r.cfg != c.conf() {
+		// A reload came after the checks: the grants start only from a
+		// request that the config of now checked (Reload).
+		r.reloaded = true
+		return
+	}
 	now := c.now()
 	if r.plan != nil {
 		c.startScheduled(r, now)

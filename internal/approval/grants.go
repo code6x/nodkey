@@ -725,11 +725,11 @@ func (c *Core) startScheduled(r *Result, now moment) {
 	if g.standing() {
 		// A Deny of another request does not touch a standing grant
 		// (DESIGN.md section 8).
-		if c.standingCount(g.client) >= c.cfg.Standing.MaxGrants {
+		if c.standingCount(g.client) >= c.conf().Standing.MaxGrants {
 			return
 		}
 	} else {
-		if c.scheduledCount(g.client) >= c.cfg.Preapprove.MaxGrants {
+		if c.scheduledCount(g.client) >= c.conf().Preapprove.MaxGrants {
 			return
 		}
 		for _, ref := range g.refs {

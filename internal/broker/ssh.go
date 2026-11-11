@@ -29,7 +29,7 @@ func (rq *request) listKeys(r *http.Request) {
 		rq.answered = true
 		return
 	}
-	rq.answerJSON(rq.s.keysOf[rq.client])
+	rq.answerJSON(rq.v.keysOf[rq.client])
 }
 
 // sign answers a request for the signature of one SSH login: nodkey
@@ -45,7 +45,7 @@ func (rq *request) sign(ctx context.Context, r *http.Request) {
 	rq.releaseBody()
 	// The key is the one with exactly these bytes, among the keys this
 	// client may use. Otherwise there is no message.
-	key, ok := rq.s.keyFor(rq.client, req.PublicKey)
+	key, ok := rq.v.keyFor(rq.client, req.PublicKey)
 	if !ok {
 		rq.deny(rq.pre, audit.CauseNotAllowed, "", http.StatusForbidden)
 		return
@@ -55,7 +55,7 @@ func (rq *request) sign(ctx context.Context, r *http.Request) {
 	// message or place in a queue. A Login holds only checked data.
 	login, err := key.Check(sshauth.Request{
 		Key: req.PublicKey, Data: req.Data, Flags: agent.SignatureFlags(req.Flags), Binds: req.Binds,
-	}, rq.s.cfg.KnownHosts)
+	}, rq.v.cfg.KnownHosts)
 	if err != nil {
 		rq.deny(rq.pre, audit.CauseNotAllowed, "", http.StatusForbidden)
 		// The errors of sshauth are fixed texts, without data from the
@@ -84,8 +84,14 @@ func (rq *request) sign(ctx context.Context, r *http.Request) {
 		rq.cancelled()
 		return
 	}
+	if !rq.stillAllowed(res.Config(), nil, key.Name(), login.HostKey().Marshal()) {
+		return
+	}
 	sig, ok := rq.signLogin(rc, key, login)
 	if !ok {
+		return
+	}
+	if !rq.stillAllowed(res.Config(), nil, key.Name(), login.HostKey().Marshal()) {
 		return
 	}
 	if !rq.handOut(rc, audit.Signed{Subject: rq.sub}) {
@@ -96,10 +102,10 @@ func (rq *request) sign(ctx context.Context, r *http.Request) {
 
 // keyFor returns the key whose public key is exactly blob, among the keys
 // that client may use.
-func (s *Service) keyFor(client string, blob []byte) (sshauth.Key, bool) {
-	for _, k := range s.keysOf[client].Keys {
+func (v *view) keyFor(client string, blob []byte) (sshauth.Key, bool) {
+	for _, k := range v.keysOf[client].Keys {
 		if bytes.Equal(k.PublicKey, blob) {
-			return s.keys[k.Name], true
+			return v.keys[k.Name], true
 		}
 	}
 	return sshauth.Key{}, false
@@ -161,6 +167,12 @@ func (rq *request) grant(ctx context.Context, r *http.Request) {
 		return
 	}
 	res.StartGrants()
+	if res.SkippedByReload() {
+		// A reload came after the checks: no grant started (DESIGN.md
+		// section 14, "Reload").
+		rq.stillAllowed(nil, nil, "", nil) // denies, with its entry and log line
+		return
+	}
 	rq.ended = true
 	rq.answerJSON(api.GrantAnswer{Minutes: res.WindowMinutes})
 }
@@ -175,7 +187,7 @@ func (rq *request) grant(ctx context.Context, r *http.Request) {
 func (s *Service) checkGrant(client string, req *api.GrantRequest) (audit.Subject, bool) {
 	var sub audit.Subject
 	ok := true
-	k, known := s.cfg.Keys[req.Key]
+	k, known := s.view().cfg.Keys[req.Key]
 	if known && slices.Contains(k.Clients, client) {
 		sub.Key = k.Name
 		window := int64(k.Rule.Window / time.Second)
@@ -198,7 +210,7 @@ func (s *Service) checkGrant(client string, req *api.GrantRequest) (audit.Subjec
 // the window of its key, when the key may be used by client and has the
 // "window" rule. It returns the window then.
 func (s *Service) grantTooLong(client string, req *api.GrantRequest) (time.Duration, bool) {
-	k, known := s.cfg.Keys[req.Key]
+	k, known := s.view().cfg.Keys[req.Key]
 	if !known || !slices.Contains(k.Clients, client) || k.Rule.Ask != config.AskWindow {
 		return 0, false
 	}
@@ -217,7 +229,7 @@ func (s *Service) checkHosts(k config.Key, known bool, names []string, sub *audi
 			continue // a host that is listed twice counts once
 		}
 		seen[h] = true
-		if len(s.cfg.KnownHosts.KeysFor(h)) == 0 || (known && len(k.Hosts) > 0 && !slices.Contains(k.Hosts, h)) {
+		if len(s.view().cfg.KnownHosts.KeysFor(h)) == 0 || (known && len(k.Hosts) > 0 && !slices.Contains(k.Hosts, h)) {
 			ok = false
 			continue
 		}

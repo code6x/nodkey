@@ -65,7 +65,7 @@ func toWindow(s WindowSpec) (window, bool) {
 // than max_window, and the uses per window inside max_uses. A config without
 // [standing] allows nothing. The count of grants is checked in begin.
 func (c *Core) checkStanding(r *Request, p *pending) bool {
-	lim := c.cfg.Standing
+	lim := p.cfg.Standing
 	ok := lim.Enabled && r.HostKey == nil && r.For == 0 && r.Key == "" && r.RemoteUser == "" &&
 		len(r.Hosts) == 0 && len(r.Secrets) > 0 && p.client != "" && r.TokenHash != [32]byte{}
 	var refs []ref
@@ -75,7 +75,7 @@ func (c *Core) checkStanding(r *Request, p *pending) bool {
 			continue
 		}
 		seen[name] = true
-		s, known := c.cfg.Secrets[name]
+		s, known := p.cfg.Secrets[name]
 		if !known || p.client == "" || !slices.Contains(s.Clients, p.client) ||
 			!s.Rule.Standing || s.Rule.Ask == config.AskNever || !validRule(s.Rule, s.Clients) {
 			ok = false
