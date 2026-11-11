@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -473,6 +474,9 @@ func testRunner(b *Broker, env []string, fx *fakeExec) runner {
 		// The test process must stay dumpable; TestRunNotDumpable checks
 		// the real one in a child process.
 		notDumpable: func() error { return nil },
+		masked: func(string, []string, []string, [][]byte, io.Writer) int {
+			panic("this test must not run a command with --mask")
+		},
 	}
 }
 

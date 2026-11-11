@@ -45,6 +45,8 @@ func TestRunUsage(t *testing.T) {
 			"the variable GH_TOKEN is given twice"},
 		{"too many", append(thirtyThree, "--", "gh"), "at most 32 --secret options"},
 		{"two reasons", []string{"--reason", "a", "--reason=b", "--secret", "A=b", "--", "gh"}, "--reason is given twice"},
+		{"a value for --mask", []string{"--secret", "A=b", "--mask=yes", "--", "gh"}, "--mask takes no value"},
+		{"two masks", []string{"--mask", "--secret", "A=b", "-mask", "--", "gh"}, "--mask is given twice"},
 		{"unknown option", []string{"--secret", "A=b", "--bogus", "--", "gh"}, `unknown option "--bogus"`},
 		{"one dash", []string{"-", "--", "gh"}, `unknown option "-"`},
 		{"a line break", []string{"--secret", "A\nB=c", "--", "gh"}, `the variable name "A\nB" must match`},
@@ -137,6 +139,13 @@ func TestParseArgs(t *testing.T) {
 	if !slices.Equal(o.secrets, want) || o.reason != "why" || !o.reasonSet ||
 		!slices.Equal(o.command, []string{"gh", "--secret", "--", "x"}) {
 		t.Errorf("parseArgs = %+v", o)
+	}
+	if o.mask {
+		t.Error("parseArgs without --mask: mask is on")
+	}
+	if o, err := parseArgs([]string{"--secret", "A=a", "-mask", "--", "gh", "--mask"}); err != nil || !o.mask ||
+		!slices.Equal(o.command, []string{"gh", "--mask"}) {
+		t.Errorf("--mask: %+v, %v", o, err)
 	}
 	o, err = parseArgs([]string{"--reason", "--", "--secret", "A=a", "--", "gh"})
 	if err != nil || o.reason != "--" || len(o.secrets) != 1 || !slices.Equal(o.command, []string{"gh"}) {
