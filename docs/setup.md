@@ -1322,6 +1322,41 @@ nodkey broker check --files /etc/nodkey/new --credentials /etc/nodkey/credential
 A config that passes the check can still fail at a start or a reload, on
 a check that needs a credential, such as a key file that does not parse.
 
+### See what a config change means
+
+`nodkey broker config-diff` lists the changes from one config to another
+by what they mean: who gets which secret or key, and with or without a
+tap. Comments, order and spaces are not changes. Give it two
+directories, each with `broker.toml` and `known_hosts`. You can also give
+a config file: then it reads the `known_hosts` next to that file.
+
+```sh
+nodkey broker config-diff /etc/nodkey ./broker-config
+```
+
+It prints one line per change. A line that starts with `⚠` widens access
+or weakens a control, such as a new client, a "never ask" rule, a longer
+`window`, or a new host key. A change that the command does not know as
+narrowing gets the sign too. Read every such line before you apply the
+change. An example:
+
+```text
+⚠ client "build-1": new client
+⚠ secret "backup-token": new rule: never ask (ask changed from "always" to "never")
+  SSH key "deploy": host "web-2" removed
+```
+
+`--short` gives a short form for one Telegram message, at most
+`--max-chars` characters (3500 by default). It puts the lines with `⚠`
+first. If they do not all fit, it says how many there are, and you must
+read the full list.
+
+It exits with 0 when the two configs mean the same, 1 when they differ,
+and 2 when a config cannot be read or is not valid. It reads no
+credential, needs no root, and uses no network. Like `nodkey broker
+check --files`, it needs the files to be owned by the user that runs it,
+or by root.
+
 ## 8. The systemd unit
 
 Copy the example unit

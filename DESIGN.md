@@ -3183,6 +3183,7 @@ and `[standing]` need a restart.
 nodkey broker [--config FILE]
 nodkey broker reload [--config FILE] [--timeout DURATION]
 nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
+nodkey broker config-diff [--short] [--max-chars N] OLD NEW
 nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
@@ -3341,6 +3342,47 @@ or from `--files`. A credential path with `..` in it is refused. Each line
 of the output is cleaned with `claim.Line`, so text from the config
 cannot add a line or change the terminal. It exits 0 when the config
 passed, 1 with the reason when it did not, and 64 on wrong usage.
+
+`nodkey broker config-diff OLD NEW` lists the changes from one config to
+another by what they mean (issue #174), such as for the owner's
+confirmation of a config change from git (#102). OLD and NEW are each a
+config file, or a directory with `broker.toml` and `known_hosts` (as
+`--files`). For a file, `known_hosts` is read from the directory of the
+file, by its base name, never from the path in the config: two configs
+that name one path would both read the live file, and a new host key
+would not show. Both are read with the parser of the start
+(`config.ReadBrokerFiles`); no other file is read, also no credential,
+and no root or network is needed. `config.Diff` compares the two parsed
+configs, so comments, order and spaces are no change, and a list of
+clients or hosts is a set. Each change is one line, sorted by group
+(the top keys and sections, clients, stores, secrets, SSH keys,
+`known_hosts`) and name. A line that starts with `⚠` widens access or
+weakens a control: a new client, secret, key, store or host; a new
+client of a secret or a key; `ask` towards `never`; a longer `window`;
+wider `hours`; a higher or no `max_per_day`; `notify` off (these three
+are compared only between two `never` rules; a move to `never` shows
+them on its line); more hosts,
+or every host, for a key; `preapprove` or `standing` turned on; a new
+`[standing]` or a higher limit in it or in `[preapprove]`; fewer
+`warn_days`; any change of the approver, the notice chat, the channel,
+the store's program, server or files, the item of a secret, the file of
+a key, `listen`, `tls_key`, `audit_log`, the `known_hosts` path, the
+`[standing]` summary time, or `[updates] check` turned off; a longer
+timeout; a new host key. Any other change is a plain line only when the
+code knows it narrows access. A field of the config that the code does
+not compare by name is still compared (`unknown` in
+`internal/config/diff.go`), and its change is marked as "a change that
+config-diff does not know". A test fails when a field is in neither
+list. Text from a config is quoted and each line cleaned with
+`claim.Line`.
+
+`--short` fits one Telegram message: at most `--max-chars` characters,
+counted in UTF-16 code units as Telegram counts them (default 3500, from 200 to 100000). It puts the lines that widen first,
+then the others, and cuts with "and N more". When the lines that widen
+do not all fit, it gives one line instead: how many there are, and that
+the full list must be read. It exits 0 when the configs mean the same, 1
+when they differ, 2 when a config cannot be read or is not valid, and 64
+on wrong usage.
 
 The broker stops on SIGTERM or SIGINT, also during the start, when the polling
 stops for good (section 7), when its server fails, and when a write to
