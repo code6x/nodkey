@@ -391,8 +391,8 @@ With `--no-mask` (and by default on a terminal), `nodkey run` itself
 keeps no value: it replaces itself with the command (`execve`), so the
 value is only in the environment of the command. When it masks the
 output (the default), it holds the values while the command runs, to
-mask them, and stays not dumpable. Before it asks, it marks itself not dumpable, so it writes no core dump
-while it holds the values, also when the agent sets `GOTRACEBACK`, and
+mask them, and stays not dumpable. Before it asks, it marks itself not
+dumpable, so it writes no core dump while it holds the values, also when the agent sets `GOTRACEBACK`, and
 other processes of the user cannot read its memory then. The command
 itself is dumpable again. Use short-lived or narrow secrets, and rotate a
 secret after a strange request.
