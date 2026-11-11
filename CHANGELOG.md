@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/code6x/nodkey/compare/v0.4.0...v0.5.0) (2026-11-11)
+
+
+### Features
+
+* audit verify reports every open gap, accepts a known gap, and gives old anchors a log ID ([#168](https://github.com/code6x/nodkey/issues/168)) ([0017857](https://github.com/code6x/nodkey/commit/0017857736b3c4b013ee15e017a6eaa13bcf3415))
+* **run:** --mask hides fetched values in the command's output ([#169](https://github.com/code6x/nodkey/issues/169)) ([4444bef](https://github.com/code6x/nodkey/commit/4444beffef849812b89af4bf0a57b5fabe867dd3))
+
+
+### Documentation
+
+* blank line before "Risk that remains" in T7, T28 and T35 ([#165](https://github.com/code6x/nodkey/issues/165)) ([8b556e6](https://github.com/code6x/nodkey/commit/8b556e620bb0e1c33653af35514bd39bbb729365))
+* keep only key lines from ssh-keyscan in the known_hosts steps ([#163](https://github.com/code6x/nodkey/issues/163)) ([d6157d7](https://github.com/code6x/nodkey/commit/d6157d7017a5a187343b5eb8e492fe8d6c78c193))
+* put shell notes on their own line, not after the command ([#164](https://github.com/code6x/nodkey/issues/164)) ([146b7f8](https://github.com/code6x/nodkey/commit/146b7f865bca85b959bb91e6677e628f5aaa5441))
+* say the secret goes to the command, not to the agent ([#167](https://github.com/code6x/nodkey/issues/167)) ([6df2171](https://github.com/code6x/nodkey/commit/6df2171887eaa5ee8809f85f2771a14b041901ed))
+* unpack bws and bw on disk, not in /run/nodkey-setup ([#161](https://github.com/code6x/nodkey/issues/161)) ([60202fa](https://github.com/code6x/nodkey/commit/60202fafb8e6f18957adda1298e7216f814f97b0))
+
 ## [0.4.0](https://github.com/code6x/nodkey/compare/v0.3.0...v0.4.0) (2026-11-06)
 
 
