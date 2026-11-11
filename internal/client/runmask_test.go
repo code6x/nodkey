@@ -183,3 +183,51 @@ func TestMaskedCommandClosedOutput(t *testing.T) {
 		t.Errorf("exit %d, signal %d, %v; want death by SIGPIPE", code, sig, err)
 	}
 }
+
+// TestRunMaskRule: which way the command runs, for each option and for
+// stdout and stderr on a terminal or not. Without an option, the output
+// is masked unless both are terminals; --mask always masks; --no-mask
+// never does.
+func TestRunMaskRule(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		option   string
+		terminal bool
+		masked   bool
+	}{
+		{"default, pipe", "", false, true},
+		{"default, terminal", "", true, false},
+		{"--mask, pipe", "--mask", false, true},
+		{"--mask, terminal", "--mask", true, true},
+		{"--no-mask, pipe", "--no-mask", false, false},
+		{"--no-mask, terminal", "--no-mask", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tb := newTestBroker(t)
+			tb.approver.Auto(audit.AnswerApproveOnce)
+			fx := &fakeExec{}
+			r := testRunner(tb.client(t), []string{"PATH=/usr/bin"}, fx)
+			r.terminal = func() bool { return tt.terminal }
+			ranMasked := false
+			r.masked = func(string, []string, []string, [][]byte, io.Writer) int {
+				ranMasked = true
+				return 7
+			}
+			args := []string{"--secret", "GH_TOKEN=github-token"}
+			if tt.option != "" {
+				args = append(args, tt.option)
+			}
+			code, stderr := runIn(t.Context(), r, append(args, "--", self(t))...)
+			execed := len(fx.ran()) == 1
+			switch {
+			case tt.masked && (!ranMasked || execed || code != 7):
+				t.Errorf("masked %v, exec %v, code %d; want masked (stderr %q)", ranMasked, execed, code, safe(stderr))
+			case !tt.masked && (ranMasked || !execed || code != 0):
+				t.Errorf("masked %v, exec %v, code %d; want exec (stderr %q)", ranMasked, execed, code, safe(stderr))
+			}
+		})
+	}
+}

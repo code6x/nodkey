@@ -181,3 +181,10 @@ func copyMasked(r *os.File, w io.Writer, values [][]byte) error {
 		}
 	}
 }
+
+// onTerminal reports whether both stdout and stderr of nodkey are
+// terminals. Then nodkey run without --mask or --no-mask replaces itself
+// with the command, so the command owns the terminal (DESIGN.md section 5).
+func onTerminal() bool {
+	return isTerminal(1) && isTerminal(2)
+}
