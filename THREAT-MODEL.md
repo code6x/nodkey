@@ -1485,6 +1485,19 @@ signal another process of the broker's user, or report a false result;
 that user owns the broker already. The command cleans the text of the
 file before it prints it.
 
+`nodkey broker check` (issue #173) checks a config before it is applied.
+It reads the config and `known_hosts`, from the paths in the config or
+from `--files DIR`, and runs as any user. It opens no credential and no
+key file: with `--credentials DIR` it only looks for the names. So a
+config from a branch or a pull request can be checked in CI without a
+secret. (A `known_hosts` in the credentials directory is read: it is not
+secret.) It cleans each line of its output (`claim.Line`), so text in a
+config from a pull request, such as a line break in a path, cannot add
+lines to a CI log. A config that passes the check can still fail at the reload, on
+a check that needs a credential; the reload then keeps the old config.
+The check is no part of what the broker trusts: the broker checks every
+config again when it loads it.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

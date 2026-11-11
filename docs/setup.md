@@ -1277,6 +1277,51 @@ The file holds no secret, but it lists your secret names, hosts and item
 IDs. To hide it from other users, use group `nodkey` and mode `0640`
 instead.
 
+### Check a config before you use it
+
+`nodkey broker check` checks a config without a start. It makes the
+checks of a start on the config file and on the files that it names. It
+starts nothing, opens no port, uses no network, and needs no root. On
+the broker host, run it as root like this, so that it runs as the
+broker's user:
+
+```sh
+runuser -u nodkey -- nodkey broker check --config /etc/nodkey/broker.toml
+```
+
+It exits with 0 when the config is good, 1 when it is not (it prints
+why), and 64 on wrong usage. It never reads a credential. It skips each
+`${CREDENTIALS_DIRECTORY}/` file and says so. `nodkey doctor broker`
+([section 14](#14-when-something-does-not-work)) checks that the unit
+has each of them. With `--credentials DIR`, the check looks for a file
+with the name, or the name and `.cred`, in DIR. It opens none of them.
+The user that runs the check must be able to enter DIR, and only root
+can enter `/etc/nodkey/credentials`.
+
+To check a new config before you copy it to `/etc/nodkey/`, such as in
+CI, put `broker.toml` and `known_hosts` in one directory and use
+`--files`. It reads `known_hosts` from that directory, by the base name
+of its path in the config, and not from `/etc/nodkey/`. It does not check the files of the broker host then:
+the TLS key, the token and key files, the store programs and the audit
+log. In CI, run it as the user of the job:
+
+```sh
+nodkey broker check --files ./broker-config
+```
+
+The directory and the files must be owned by the user that runs the
+check, or by root, and others must not be able to change them. On the
+broker host, root can run it with `--files` too, on a directory that
+root owns, such as `/etc/nodkey/new`. Then it can also look for the
+credentials:
+
+```sh
+nodkey broker check --files /etc/nodkey/new --credentials /etc/nodkey/credentials
+```
+
+A config that passes the check can still fail at a start or a reload, on
+a check that needs a credential, such as a key file that does not parse.
+
 ## 8. The systemd unit
 
 Copy the example unit
@@ -1615,6 +1660,8 @@ nodkey broker reload
 
 It asks the broker to load the config again (with `SIGHUP`), and waits
 for the result. The broker checks the new config as at a start.
+To check a config before you use it, run `nodkey broker check`
+([section 7](#check-a-config-before-you-use-it)).
 
 - When the new config is good, the broker uses it at once, and the
   command exits with 0. Grants that the new config still allows stay,

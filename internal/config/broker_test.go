@@ -997,7 +997,7 @@ func TestCheckFilesSameKeyFile(t *testing.T) {
 			e := newBrokerEnv(t)
 			path := e.write(t, edit{"[key.backup]",
 				"[key.deploy-2]\nfile = \"" + tt.file(t, e) + "\"\nclients = [\"laptop\"]\nask = \"always\"\n\n[key.backup]"})
-			if _, err := loadBroker(path); err != nil {
+			if _, err := loadBroker(path, ""); err != nil {
 				t.Fatalf("loadBroker: %v", err)
 			}
 			b, err := LoadBroker(path)
@@ -1036,7 +1036,7 @@ func TestLoadBrokerRunsCheckFiles(t *testing.T) {
 			e := newBrokerEnv(t)
 			path := e.write(t)
 			tt.setup(t, e)
-			if _, err := loadBroker(path); err != nil {
+			if _, err := loadBroker(path, ""); err != nil {
 				t.Fatalf("loadBroker: %v", err)
 			}
 			b, err := LoadBroker(path)
@@ -1333,7 +1333,7 @@ func TestCheckFilesAuditLogIsAnotherFile(t *testing.T) {
 			if tt.mode != 0 {
 				chmod(t, audit, tt.mode)
 			}
-			if _, err := loadBroker(path); err != nil {
+			if _, err := loadBroker(path, ""); err != nil {
 				t.Fatalf("loadBroker: %v", err)
 			}
 			b, err := LoadBroker(path)

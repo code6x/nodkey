@@ -387,7 +387,7 @@ func validField(f string) bool {
 // with ReadConfigFile. A config that LoadBroker returns has passed all
 // these checks; on any error it returns no config.
 func LoadBroker(path string) (*Broker, error) {
-	b, err := loadBroker(path)
+	b, err := loadBroker(path, "")
 	if err != nil {
 		return nil, err
 	}
@@ -399,10 +399,20 @@ func LoadBroker(path string) (*Broker, error) {
 
 // ReadBroker is LoadBroker without CheckFiles: nodkey doctor broker
 // checks the files itself, with CheckFilesAs.
-func ReadBroker(path string) (*Broker, error) { return loadBroker(path) }
+func ReadBroker(path string) (*Broker, error) { return loadBroker(path, "") }
 
-// loadBroker is LoadBroker without CheckFiles.
-func loadBroker(path string) (*Broker, error) {
+// ReadBrokerFiles is ReadBroker, but it reads known_hosts from the
+// directory dir, by the base name of the known_hosts path in the config,
+// and not from that path (nodkey broker check --files). So a new config is
+// checked with its own new known_hosts. The config keeps the path that it
+// names in KnownHostsFile. An empty dir is ReadBroker.
+func ReadBrokerFiles(path, dir string) (*Broker, error) { return loadBroker(path, dir) }
+
+// loadBroker is LoadBroker without CheckFiles. When filesDir is not
+// empty, known_hosts is read from it (see ReadBrokerFiles). The start,
+// a reload, nodkey doctor broker and nodkey broker check all parse the
+// config here, so they make the same checks.
+func loadBroker(path, filesDir string) (*Broker, error) {
 	data, err := ReadConfigFile(path)
 	if err != nil {
 		// The error can name a directory on the way, so name the file too.
@@ -412,7 +422,7 @@ func loadBroker(path string) (*Broker, error) {
 	if err := decode(data, &f, "client", "store", "secret", "key"); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	b, err := newBroker(&f)
+	b, err := newBroker(&f, filesDir)
 	if err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
@@ -422,7 +432,7 @@ func loadBroker(path string) (*Broker, error) {
 	return b, nil
 }
 
-func newBroker(f *brokerFile) (*Broker, error) {
+func newBroker(f *brokerFile, filesDir string) (*Broker, error) {
 	b := &Broker{
 		Clients: make(map[string]Client),
 		Stores:  make(map[string]Store),
@@ -482,7 +492,11 @@ func newBroker(f *brokerFile) (*Broker, error) {
 	if err := b.addSecrets(f.Secret); err != nil {
 		return nil, err
 	}
-	if b.KnownHosts, err = LoadKnownHosts(b.KnownHostsFile); err != nil {
+	knownHosts := b.KnownHostsFile
+	if filesDir != "" {
+		knownHosts = filepath.Join(filesDir, filepath.Base(knownHosts))
+	}
+	if b.KnownHosts, err = LoadKnownHosts(knownHosts); err != nil {
 		return nil, fmt.Errorf("known_hosts: %w", err)
 	}
 	if err := b.addKeys(f.Key); err != nil {
@@ -1296,6 +1310,42 @@ func (b *Broker) approverTokenPlace() string {
 	return place("[telegram]", "token_file")
 }
 
+// PrivateFile is a file that holds a key, a token or a password, as the
+// config names it.
+type PrivateFile struct {
+	Where string // the place in the config, such as "[store.main] token_file"
+	Path  string // the expanded path
+	Key   bool   // the file of a [key.*] section
+}
+
+// PrivateFiles returns the files of the config that hold a key, a token or
+// a password, in the order in which CheckFilesAs checks them: tls_key, the
+// approver's token_file, the stores by name, and the keys by name.
+func (b *Broker) PrivateFiles() ([]PrivateFile, error) {
+	private := []PrivateFile{
+		{Where: "tls_key", Path: b.TLSKey},
+		{Where: b.approverTokenPlace(), Path: b.ApproverTokenFile()},
+	}
+	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
+		s := b.Stores[name]
+		sec := sectionName("store", name)
+		switch s.Type {
+		case StoreBWS, StoreOnePassword:
+			private = append(private, PrivateFile{Where: place(sec, "token_file"), Path: s.TokenFile})
+		case StoreBW:
+			private = append(private, PrivateFile{Where: place(sec, "password_file"), Path: s.PasswordFile})
+		case StoreInfisical:
+			private = append(private, PrivateFile{Where: place(sec, "client_secret_file"), Path: s.ClientSecretFile})
+		default:
+			return nil, fmt.Errorf("config %s: %s: unknown store type", b.Path, sec)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(b.Keys)) {
+		private = append(private, PrivateFile{Where: place(sectionName("key", name), "file"), Path: b.Keys[name].File, Key: true})
+	}
+	return private, nil
+}
+
 // CheckFilesAs is CheckFiles for the user ID self, the user that runs the
 // broker, such as when root runs nodkey doctor broker. It skips each file
 // that holds a key, a token or a password, and the config file and
@@ -1305,29 +1355,9 @@ func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
 	if skip == nil {
 		skip = func(string) bool { return false }
 	}
-	type file struct {
-		where, path string
-		key         bool
-	}
-	private := []file{
-		{"tls_key", b.TLSKey, false},
-		{b.approverTokenPlace(), b.ApproverTokenFile(), false},
-	}
-	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
-		s := b.Stores[name]
-		switch s.Type {
-		case StoreBWS, StoreOnePassword:
-			private = append(private, file{place(sectionName("store", name), "token_file"), s.TokenFile, false})
-		case StoreBW:
-			private = append(private, file{place(sectionName("store", name), "password_file"), s.PasswordFile, false})
-		case StoreInfisical:
-			private = append(private, file{place(sectionName("store", name), "client_secret_file"), s.ClientSecretFile, false})
-		default:
-			return fmt.Errorf("config %s: %s: unknown store type", b.Path, sectionName("store", name))
-		}
-	}
-	for _, name := range slices.Sorted(maps.Keys(b.Keys)) {
-		private = append(private, file{place(sectionName("key", name), "file"), b.Keys[name].File, true})
+	private, err := b.PrivateFiles()
+	if err != nil {
+		return err
 	}
 	// checked holds every file that the broker reads or runs, to compare
 	// it with the audit log.
@@ -1338,20 +1368,20 @@ func (b *Broker) CheckFilesAs(self uint32, skip func(path string) bool) error {
 	}
 	var checked []checkedFile
 	for _, f := range private {
-		if skip(f.path) {
+		if skip(f.Path) {
 			continue
 		}
-		fi, err := checkPrivateFileAs(f.path, self)
+		fi, err := checkPrivateFileAs(f.Path, self)
 		if err != nil {
-			return fmt.Errorf("config %s: %s: %w", b.Path, f.where, err)
+			return fmt.Errorf("config %s: %s: %w", b.Path, f.Where, err)
 		}
 		for _, c := range checked {
-			if f.key && c.key && os.SameFile(c.fi, fi) {
+			if f.Key && c.key && os.SameFile(c.fi, fi) {
 				return fmt.Errorf("config %s: %s: is the same file as %s; each key may have one section",
-					b.Path, f.where, c.where)
+					b.Path, f.Where, c.where)
 			}
 		}
-		checked = append(checked, checkedFile{f.where, fi, f.key})
+		checked = append(checked, checkedFile{f.Where, fi, f.Key})
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.Stores)) {
 		if t := b.Stores[name].Type; t == StoreOnePassword || t == StoreInfisical {

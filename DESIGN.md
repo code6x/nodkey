@@ -3182,6 +3182,7 @@ and `[standing]` need a restart.
 ```
 nodkey broker [--config FILE]
 nodkey broker reload [--config FILE] [--timeout DURATION]
+nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
 nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
@@ -3312,7 +3313,36 @@ command cannot parse the config (then it sends no signal); 64 on wrong
 usage. A tool that applies config changes, such as from git, runs it
 after each change and undoes the change when it fails.
 
-It stops on SIGTERM or SIGINT, also during the start, when the polling
+`nodkey broker check` checks a config without a start, such as a new
+config before it is applied (issue #173). It starts nothing, opens no
+port, uses no network and needs no root. It parses the config with the
+code of the start and of a reload (`config.ReadBrokerFiles`, the parser
+of `LoadBroker`), with `known_hosts`, and then checks the files that the
+config names with `CheckFilesAs`, for the user that runs it. `nodkey
+doctor broker` uses the same two parts. It reads no credential:
+
+- A file in `${CREDENTIALS_DIRECTORY}/` is skipped, and the output says
+  so. With `--credentials DIR`, `${CREDENTIALS_DIRECTORY}` stands for
+  DIR, and the check only finds a regular file `NAME` or `NAME.cred`
+  there. It opens none of them.
+- With `--files DIR`, `known_hosts` is read from DIR, by the base name of
+  its path in the config, and not from that path. So a new config is
+  checked with its own new `known_hosts`, also in CI. The files of the
+  broker host (`tls_key`, the token and key files, the store programs and
+  the audit log) are then not checked; the output says so. Without
+  `--config`, the config is `DIR/broker.toml`.
+
+So it does not find what only the content of a credential shows, such as
+a TLS or SSH key that does not parse, or two `[key.*]` sections with the
+same key in two files. The start and a reload still check these. A
+`known_hosts` in `${CREDENTIALS_DIRECTORY}/` is not secret, and is the
+one file there that the check reads: from the `--credentials` directory,
+or from `--files`. A credential path with `..` in it is refused. Each line
+of the output is cleaned with `claim.Line`, so text from the config
+cannot add a line or change the terminal. It exits 0 when the config
+passed, 1 with the reason when it did not, and 64 on wrong usage.
+
+The broker stops on SIGTERM or SIGINT, also during the start, when the polling
 stops for good (section 7), when its server fails, and when a write to
 stderr fails (a log line or an audit anchor), such as after the reader
 of stderr went away. The broker catches SIGPIPE with `signal.Notify`, so

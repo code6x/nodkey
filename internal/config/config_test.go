@@ -567,7 +567,7 @@ func FuzzDecodeDoesNotRepeatText(f *testing.F) {
 		err := decode([]byte(data), &b, "client", "store", "secret", "key")
 		if err == nil {
 			b.KnownHosts = knownHosts
-			_, err = newBroker(&b)
+			_, err = newBroker(&b, "")
 		}
 		if err != nil && strings.Contains(err.Error(), pasteMark) {
 			t.Fatalf("broker config: the error shows the mark: %v", err)
