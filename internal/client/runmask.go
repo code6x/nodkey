@@ -7,20 +7,24 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 )
 
 // runMasked runs the command for nodkey run --mask, and returns the exit
 // code of nodkey run. The command is a child of nodkey, not a replacement:
 // its stdout and stderr go through a maskWriter each, to nodkey's stdout
-// and stderr (DESIGN.md section 5). When the command dies of a signal,
-// nodkey ends itself with the same signal, so that a shell sees it.
+// and stderr (DESIGN.md section 5). When the command dies of SIGINT,
+// SIGTERM, SIGHUP or SIGKILL, nodkey ends itself with the same signal, so
+// that a shell sees it. For another signal, it exits with 128 and its
+// number: Go would print a trace for SIGSEGV or SIGQUIT, not die of it.
 func runMasked(path string, argv, envv []string, values [][]byte, stderr io.Writer) int {
 	code, sig, err := maskedCommand(path, argv, envv, values, os.Stdout, stderr) //nolint:forbidigo // the command's own stdout.
 	if err != nil {
 		return fail(stderr, exitCannotRun, err.Error())
 	}
-	if sig != 0 {
+	switch sig {
+	case syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGKILL:
 		raise(sig)
 	}
 	return code
@@ -35,33 +39,58 @@ func runMasked(path string, argv, envv []string, values [][]byte, stderr io.Writ
 // While the command runs, nodkey passes on SIGTERM and SIGHUP to it. It
 // catches SIGINT and SIGQUIT and does nothing with them: a terminal sends
 // them to the command too, as the command is in the same process group.
-// A signal that nodkey ignores stays ignored, also in the command.
+// A signal that nodkey ignores stays ignored, also in the command. Once
+// the command has ended, these signals end nodkey again, also while a
+// process that the command left behind keeps the pipes open.
+//
+// nodkey catches SIGPIPE too, so a write to a closed stdout or stderr
+// fails and does not end nodkey. Then nodkey closes the pipe from the
+// command, so the command gets SIGPIPE or EPIPE on its next write.
 func maskedCommand(path string, argv, envv []string, values [][]byte, stdout, stderr io.Writer) (int, syscall.Signal, error) {
-	outMask := newMaskWriter(stdout, values)
-	errMask := newMaskWriter(stderr, values)
-	defer outMask.clear()
-	defer errMask.clear()
-	cmd := &exec.Cmd{
-		Path:   path,
-		Args:   argv,
-		Env:    envv,
-		Stdin:  os.Stdin, // the command reads nodkey's stdin, as after execve
-		Stdout: outMask,
-		Stderr: errMask,
-	}
 	sigs := make(chan os.Signal, 4)
 	var caught []os.Signal
-	for _, s := range []os.Signal{syscall.SIGTERM, syscall.SIGHUP, os.Interrupt, syscall.SIGQUIT} {
+	for _, s := range []os.Signal{syscall.SIGTERM, syscall.SIGHUP, os.Interrupt, syscall.SIGQUIT, syscall.SIGPIPE} {
 		if !signal.Ignored(s) {
 			caught = append(caught, s)
 		}
 	}
 	signal.Notify(sigs, caught...)
-	defer signal.Stop(sigs)
-	if err := cmd.Start(); err != nil {
+	stopSignals := sync.OnceFunc(func() { signal.Stop(sigs) })
+	defer stopSignals()
+
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		return 0, 0, fmt.Errorf("cannot run %q: cannot make a pipe: %w", path, err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		_ = outR.Close()
+		_ = outW.Close()
+		return 0, 0, fmt.Errorf("cannot run %q: cannot make a pipe: %w", path, err)
+	}
+	cmd := &exec.Cmd{
+		Path:   path,
+		Args:   argv,
+		Env:    envv,
+		Stdin:  os.Stdin, // the command reads nodkey's stdin, as after execve
+		Stdout: outW,
+		Stderr: errW,
+	}
+	err = cmd.Start()
+	// The command has its own copies of the write ends now.
+	_ = outW.Close()
+	_ = errW.Close()
+	if err != nil {
+		_ = outR.Close()
+		_ = errR.Close()
 		return 0, 0, fmt.Errorf("cannot run %q: %w", path, err)
 	}
-	done := make(chan struct{})
+	var wg sync.WaitGroup
+	var outErr, errErr error
+	wg.Go(func() { outErr = copyMasked(outR, stdout, values) })
+	wg.Go(func() { errErr = copyMasked(errR, stderr, values) })
+
+	exited := make(chan struct{})
 	go func() {
 		for {
 			select {
@@ -69,29 +98,57 @@ func maskedCommand(path string, argv, envv []string, values [][]byte, stdout, st
 				if s == syscall.SIGTERM || s == syscall.SIGHUP {
 					_ = cmd.Process.Signal(s)
 				}
-			case <-done:
+			case <-exited:
 				return
 			}
 		}
 	}()
-	err := cmd.Wait()
-	close(done)
-	// Write what is held back. A write that fails cannot be reported to
-	// anyone: the command's own exit code stays.
-	_ = outMask.Close()
-	_ = errMask.Close()
+	waitErr := cmd.Wait() // the pipes are files: Wait does not wait for the output
+	close(exited)
+	stopSignals()
+	wg.Wait()
 	st := cmd.ProcessState
 	if st == nil {
-		return 0, 0, fmt.Errorf("cannot run %q: %w", path, err)
+		return 0, 0, fmt.Errorf("cannot run %q: %w", path, waitErr)
 	}
 	if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 		return 128 + int(ws.Signal()), ws.Signal(), nil
 	}
-	var ee *exec.ExitError
-	if err != nil && !errors.As(err, &ee) && st.ExitCode() == 0 {
+	if st.ExitCode() == 0 && (outErr != nil || errErr != nil) {
 		// The command exited with 0, and its output could not be written
 		// (such as a closed stdout): not a success.
 		return 1, 0, nil
 	}
+	var ee *exec.ExitError
+	if waitErr != nil && !errors.As(waitErr, &ee) {
+		return 0, 0, fmt.Errorf("cannot run %q: %w", path, waitErr)
+	}
 	return st.ExitCode(), 0, nil
+}
+
+// copyMasked copies r to w through a maskWriter, until r ends, and closes
+// r. When a write to w fails, it closes r at once, so the command gets
+// SIGPIPE or EPIPE, and returns the error. It wipes its buffer and the
+// held data.
+func copyMasked(r *os.File, w io.Writer, values [][]byte) error {
+	defer func() { _ = r.Close() }()
+	m := newMaskWriter(w, values)
+	defer m.clear()
+	buf := make([]byte, 32*1024)
+	defer clear(buf)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if _, werr := m.Write(buf[:n]); werr != nil {
+				return werr
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return m.Close()
+		}
+		if err != nil {
+			_ = m.Close()
+			return err
+		}
+	}
 }

@@ -270,18 +270,25 @@ nodkey run --secret GH_TOKEN=github-token \
    one read. It holds back only the end of the output that may still be
    the start of a value, and writes it when the next read shows that it is
    not a value, or when the command ends. Where two values match at one
-   place, the longest wins. It masks a value only exactly as it is: not in
-   base64, not split between stdout and stderr, and not in another
-   encoding. It waits until the command has ended and the pipes are closed
-   (a process that the command left behind may keep them open), then exits
-   with the command's exit code. A command that exits with 0 when its
-   output cannot be written gives 1. When the command dies of a signal,
-   the client ends itself with the same signal. While the command runs,
-   the client stays not dumpable and holds the values. It passes `SIGTERM`
-   and `SIGHUP` on to the command, and catches `SIGINT` and `SIGQUIT`
-   without passing them on, because a terminal sends them to the command
-   too. The command sees pipes, not a terminal, so some programs print
-   without colors or buffer their output.
+   place, the longest wins. It masks only whole values, exactly as they
+   are: not in base64, not split between stdout and stderr, and not in
+   another encoding. A start of a value at the very end of the output, and
+   the rest of a value that overlaps a value before it, are shown as they
+   are. It waits until the command has ended and the pipes are closed (a
+   process that the command left behind may keep them open), then exits
+   with the command's exit code. When stdout or stderr of the client is
+   closed, the client closes the pipe from the command, so the command
+   gets `SIGPIPE` on its next write; a command that still exits with 0
+   gives 1. When the command dies of `SIGINT`, `SIGTERM`, `SIGHUP` or
+   `SIGKILL`, the client ends itself with the same signal. For another
+   signal, it exits with 128 and the number of the signal, such as 139
+   for `SIGSEGV`. While the command runs, the client stays not dumpable
+   and holds the values. It passes `SIGTERM` and `SIGHUP` on to the
+   command, and catches `SIGINT` and `SIGQUIT` without passing them on,
+   because a terminal sends them to the command too. Once the command has
+   ended, these signals end the client again. The command sees pipes, not
+   a terminal, so some programs print without colors or buffer their
+   output.
 8. On deny, timeout or error, the client prints one line to stderr, without
    any value, and exits: with 77 when the broker denies the request, and
    with 69 when it cannot reach the broker or gets another answer
@@ -3313,8 +3320,9 @@ phone. Once the command starts, the signals are the command's.
 `--mask` (section 5, step 7): the command runs as a child of nodkey, and
 each fetched value in its stdout and stderr becomes `***`. `--mask` takes
 no value and may be given once. With it, 126 also covers a command that
-cannot be started as a child, and a command that dies of a signal ends
-nodkey with the same signal.
+cannot be started as a child. A command that dies of `SIGINT`, `SIGTERM`,
+`SIGHUP` or `SIGKILL` ends nodkey with the same signal; another signal
+gives 128 and its number.
 
 `nodkey run -h` or `nodkey run --help` prints the usage and exits with 0,
 but only as the only argument. With other arguments, `-h` and `--help`

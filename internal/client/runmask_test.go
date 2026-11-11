@@ -147,3 +147,39 @@ func TestMaskedCommandOutputFails(t *testing.T) {
 		t.Errorf("exit %d, %v; want a code that is not 0", code, err)
 	}
 }
+
+// TestMaskedCommandOtherSignal: for a signal that Go would not die of,
+// such as SIGSEGV, nodkey run exits with 128 and its number, and does not
+// raise it (that would end this test process).
+func TestMaskedCommandOtherSignal(t *testing.T) {
+	t.Parallel()
+	var stderr bytes.Buffer
+	code := runMasked("/bin/sh", []string{"sh", "-c", "kill -SEGV $$"}, nil, [][]byte{[]byte("x")}, &stderr)
+	if code != 128+int(syscall.SIGSEGV) {
+		t.Errorf("exit %d, want %d; stderr %q", code, 128+int(syscall.SIGSEGV), stderr.String())
+	}
+}
+
+// TestMaskedCommandLeftBehind: a process that the command left behind
+// writes a value after the command ended. nodkey waits for it, and masks
+// it.
+func TestMaskedCommandLeftBehind(t *testing.T) {
+	t.Parallel()
+	canary := madeUp("canary")
+	code, _, out, _ := masked(t, []string{canary}, `(sleep 0.3; printf '<%s>' "$V0") & exit 5`)
+	if code != 5 || out != "<***>" {
+		t.Errorf("exit %d, stdout %q; want 5 and %q", code, safe(out), "<***>")
+	}
+}
+
+// TestMaskedCommandClosedOutput: when the output cannot be written, the
+// command gets SIGPIPE on its next write, so a command that writes
+// without end does not run on.
+func TestMaskedCommandClosedOutput(t *testing.T) {
+	t.Parallel()
+	code, sig, err := maskedCommand("/bin/sh", []string{"sh", "-c", "while :; do echo x; done"}, nil,
+		[][]byte{[]byte("y")}, failWriter{}, io.Discard)
+	if err != nil || sig != syscall.SIGPIPE || code != 128+int(syscall.SIGPIPE) {
+		t.Errorf("exit %d, signal %d, %v; want death by SIGPIPE", code, sig, err)
+	}
+}

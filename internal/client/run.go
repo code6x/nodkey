@@ -229,6 +229,11 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 			values = append(values, bytes.Clone(s.Value))
 		}
 	}
+	defer func() {
+		for _, v := range values {
+			clear(v)
+		}
+	}()
 	ans.Clear() // best effort: envv holds the values as Go strings
 	if err != nil {
 		// The person approved, and the broker sent a wrong answer: as for
@@ -240,11 +245,7 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 		return cancelled(ctx, stderr)
 	}
 	if o.mask {
-		code := r.masked(path, o.command, envv, values, stderr)
-		for _, v := range values {
-			clear(v)
-		}
-		return code
+		return r.masked(path, o.command, envv, values, stderr)
 	}
 	if err := r.exec(path, o.command, envv); err != nil {
 		return fail(stderr, exitCannotRun, fmt.Sprintf("cannot run %q: %v", path, err))

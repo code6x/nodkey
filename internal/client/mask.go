@@ -14,8 +14,10 @@ const maskText = "***"
 // by maskText. A value may be split across writes: maskWriter holds back
 // the end of the data while it may still be the start of a value, and
 // writes it with the next write, or with Close. At one place, the longest
-// value that matches wins. maskWriter never writes a part of a value.
-// It is not safe for use by more than one goroutine.
+// value that matches wins. Only whole values are masked: a start of a
+// value at the end of the output, or the rest of a value that overlaps a
+// value before it (values "ab" and "bcd", output "abcd" gives "***cd"),
+// is written as it is. It is not safe for use by more than one goroutine.
 type maskWriter struct {
 	w      io.Writer
 	values [][]byte // longest first; none is empty
@@ -42,6 +44,13 @@ func newMaskWriter(w io.Writer, values [][]byte) *maskWriter {
 // Write masks p and writes all of it that cannot be the start of a value.
 // It reports len(p) when the writes to w succeed.
 func (m *maskWriter) Write(p []byte) (int, error) {
+	if len(m.buf)+len(p) > cap(m.buf) {
+		// Wipe the old array, as it may hold a start of a value.
+		grown := make([]byte, len(m.buf), 2*cap(m.buf)+len(p))
+		copy(grown, m.buf)
+		clear(m.buf)
+		m.buf = grown
+	}
 	m.buf = append(m.buf, p...)
 	if err := m.flush(false); err != nil {
 		return 0, err
