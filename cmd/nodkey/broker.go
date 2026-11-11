@@ -107,6 +107,7 @@ var errPanicked = errors.New("it panicked; the panic value is not logged")
 const brokerUsage = `Usage: nodkey broker [--config FILE]
        nodkey broker reload [--config FILE] [--timeout DURATION]
        nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
+       nodkey broker config-diff [--short] [--max-chars N] OLD NEW
 
 Run the broker: the daemon that holds the SSH keys and the access to the
 secret stores. It asks the approver on Telegram before it hands out a
@@ -120,7 +121,8 @@ of the audit log. SIGTERM or SIGINT stops it. So does a failed write to
 stderr, such as after its reader is gone: it stops with exit code 1.
 SIGHUP reloads the config without a restart; see "nodkey broker reload
 --help". To check a config without a start, see "nodkey broker check
---help".
+--help". To list the changes between two configs by what they mean, see
+"nodkey broker config-diff --help".
 
 Exit codes: 0 stopped by SIGTERM or SIGINT, 1 any other error, 64 wrong
 usage, 76 Telegram reports a polling conflict: the bot token may be
@@ -136,6 +138,9 @@ func runBroker(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "check" {
 		return runBrokerCheck(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "config-diff" {
+		return runConfigDiff(args[1:], stdout, stderr)
 	}
 	// A broken stderr must not end the broker with SIGPIPE in the middle
 	// of a line: the write fails instead, and the broker stops in its

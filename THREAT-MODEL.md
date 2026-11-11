@@ -1498,6 +1498,15 @@ a check that needs a credential; the reload then keeps the old config.
 The check is no part of what the broker trusts: the broker checks every
 config again when it loads it.
 
+`nodkey broker config-diff` (issue #174) shows the owner what a config
+change means, before it is applied. Its risk is a change that widens
+access but is shown as harmless. So it marks each change that it does
+not know as narrowing, and a field of the config that it does not
+compare by name is still compared and marked; a test fails when a field
+is in neither list. The short form never drops a line that widens: when
+they do not all fit, it says how many there are. It reads no credential.
+It is no control of the broker: it only helps a person to decide.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has
