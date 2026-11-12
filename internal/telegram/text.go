@@ -266,7 +266,15 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	if p.Via == audit.ViaStanding && p.Kind != audit.KindSecrets {
 		return bad("a standing use outside a secrets request")
 	}
+	if err := checkLoginPrompt(p, notice); err != nil {
+		return err
+	}
 	switch p.Kind {
+	case audit.KindWebLogin:
+		if len(p.Secrets) != 0 || p.Key != "" || len(p.Hosts) != 0 || p.HostKey != "" || p.RemoteUser != "" ||
+			!p.GrantEnds.IsZero() || p.Login == nil || p.Login.For != 0 {
+			return bad("the fields of a website login")
+		}
 	case audit.KindSecrets:
 		if len(p.Secrets) == 0 || !allNames(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 || p.HostKey != "" ||
 			p.RemoteUser != "" || !p.GrantEnds.IsZero() {
@@ -284,6 +292,18 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 			return bad("the fields of an SSH grant")
 		}
 	case audit.KindPreapprove:
+		if p.Login != nil {
+			if len(p.Secrets) != 0 || p.Key != "" || len(p.Hosts) != 0 || p.HostKey != "" || p.RemoteUser != "" ||
+				!p.GrantEnds.IsZero() || p.WindowMinutes != 0 || p.Uses != 1 || !p.From.IsZero() || !p.Until.IsZero() ||
+				p.Via != "" || p.Login.For != approval.LoginPreapproveTime {
+				return bad("the fields of a login pre-approval")
+			}
+			if notice != validRequestID(p.GrantID) || (notice && p.UsesLeft != 1) ||
+				(!notice && (p.GrantID != "" || p.UsesLeft != 0 || !p.Once)) {
+				return bad("the fields of a login pre-approval")
+			}
+			break
+		}
 		named := len(p.Secrets) > 0 && allNames(p.Secrets) && p.Key == "" && len(p.Hosts) == 0 && p.RemoteUser == ""
 		keyed := len(p.Secrets) == 0 && namePattern.MatchString(p.Key) && len(p.Hosts) > 0 &&
 			len(p.Hosts) <= approval.MaxGrantHosts && allNames(p.Hosts) && remoteUserPattern.MatchString(p.RemoteUser)
@@ -328,6 +348,38 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	return nil
 }
 
+// loginOriginPattern is an https origin: a host name or an IP address,
+// and perhaps a port. The core made it from a checked page URL.
+var loginOriginPattern = regexp.MustCompile(`^https://([a-z0-9][a-z0-9.-]{0,252}|\[[0-9a-f:]{2,45}\])(:[0-9]{1,5})?$`)
+
+// maxLoginText is the most runes of an item name or a user name.
+const maxLoginText = 128
+
+// checkLoginPrompt checks the login part of p. The item name and the user
+// name come from the vault: the core cleaned them, and this checks that
+// they are clean, so a message never shows a line break or a direction
+// mark from the vault.
+func checkLoginPrompt(p approval.Prompt, notice bool) error {
+	bad := func(what string) error { return errors.New("telegram: the prompt is not valid: " + what) }
+	l := p.Login
+	if l == nil {
+		if p.Kind == audit.KindWebLogin {
+			return bad("a website login without its login")
+		}
+		return nil
+	}
+	if p.Kind != audit.KindWebLogin && p.Kind != audit.KindPreapprove {
+		return bad("a login outside a website login")
+	}
+	clean := func(s string) bool {
+		return utf8.RuneCountInString(s) <= maxLoginText && claim.Line(s, maxLoginText+1) == s
+	}
+	if l.Name == "" || !clean(l.Name) || !clean(l.Username) || !loginOriginPattern.MatchString(l.Origin) || l.For < 0 {
+		return bad("the login")
+	}
+	return nil
+}
+
 func allNames(names []string) bool {
 	for _, n := range names {
 		if !namePattern.MatchString(n) {
@@ -349,6 +401,8 @@ func title(p approval.Prompt, notice bool) string {
 		icon, name = "🗓", "Pre-approval"
 	case audit.KindStanding:
 		icon, name = "🗓", "Standing grant"
+	case audit.KindWebLogin:
+		icon, name = "🌐", "Website login"
 	}
 	if notice {
 		icon = "🔔"
@@ -376,12 +430,20 @@ func claimedValue(s string) string {
 
 // claimedValues are the claimed fields of a prompt, made with
 // claimedValue: Vars, Command, Dir and Reason.
-type claimedValues [4]string
+type claimedValues [5]string
+
+// loginPage returns the claimed origin of a website login, or "".
+func loginPage(p approval.Prompt) string {
+	if p.Login == nil {
+		return ""
+	}
+	return p.Login.Origin
+}
 
 func claimedOf(p approval.Prompt) claimedValues {
 	return claimedValues{
 		claimedValue(p.Claim.Vars), claimedValue(p.Claim.Command),
-		claimedValue(p.Claim.Dir), claimedValue(p.Claim.Reason),
+		claimedValue(p.Claim.Dir), claimedValue(p.Claim.Reason), claimedValue(loginPage(p)),
 	}
 }
 
@@ -417,7 +479,16 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		verified("hosts", strings.Join(p.Hosts, ", "))
 		verified("remote user", p.RemoteUser)
 		verified("grants end", p.GrantEnds.Format(clockFormat)+" ("+strconv.Itoa(p.WindowMinutes)+" min)")
+	case audit.KindWebLogin:
+		verified("login", p.Login.Name)
+		verified("username", p.Login.Username)
 	case audit.KindPreapprove:
+		if p.Login != nil {
+			verified("login", p.Login.Name)
+			verified("username", p.Login.Username)
+			t.write("\nallows: one login in the next " + strconv.Itoa(int(p.Login.For/time.Second)) + " s after the tap")
+			break
+		}
 		if len(p.Secrets) > 0 {
 			verified("secrets", strings.Join(p.Secrets, ", "))
 		} else {
@@ -442,6 +513,7 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		label, value string
 		limit        int
 	}{
+		{"page", cv[4], c.dir},
 		{"as", cv[0], c.vars},
 		{"command", cv[1], c.command},
 		{"in", cv[2], c.dir},
@@ -548,7 +620,12 @@ func promptMessage(p approval.Prompt) (*text, inlineKeyboard, error) {
 	if err != nil {
 		return nil, inlineKeyboard{}, err
 	}
-	t.write("\n" + expiryLine(p))
+	if p.Login == nil || p.Login.For == 0 {
+		// The message of a login pre-approval shows no time limit for the
+		// tap: its time starts at the tap, and a limit here would read as
+		// the time of the login.
+		t.write("\n" + expiryLine(p))
+	}
 	return t, keyboard(p), nil
 }
 
@@ -579,6 +656,10 @@ func resultLine(p approval.Prompt, e approval.Ending) string {
 		if p.Kind == audit.KindStanding {
 			return "👍 approved by you at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) in each window until " +
 				p.Until.Format(dateTimeFormat)
+		}
+		if p.Kind == audit.KindPreapprove && p.Login != nil {
+			return "👍 approved by you at " + at + ": one login in the next " +
+				strconv.Itoa(int(p.Login.For/time.Second)) + " s"
 		}
 		if p.Kind == audit.KindPreapprove {
 			return "👍 approved by you at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) until " +

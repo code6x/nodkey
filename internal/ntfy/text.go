@@ -96,7 +96,15 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	case p.WindowMinutes < 0 || p.Uses < 0 || p.UsesLeft < 0:
 		return bad("a number")
 	}
+	if err := checkLoginPrompt(p, notice); err != nil {
+		return err
+	}
 	switch p.Kind {
+	case audit.KindWebLogin:
+		if p.Login == nil || p.Login.For != 0 || len(p.Secrets) != 0 || p.Key != "" || len(p.Hosts) != 0 ||
+			p.HostKey != "" || p.RemoteUser != "" || !p.GrantEnds.IsZero() {
+			return bad("the fields of a website login")
+		}
 	case audit.KindSecrets:
 		if len(p.Secrets) == 0 {
 			return bad("no secrets")
@@ -110,6 +118,15 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 			return bad("the fields of an SSH grant")
 		}
 	case audit.KindPreapprove, audit.KindStanding:
+		if p.Kind == audit.KindPreapprove && p.Login != nil {
+			if p.Uses != 1 || !p.From.IsZero() || !p.Until.IsZero() || p.Login.For != approval.LoginPreapproveTime ||
+				len(p.Secrets) != 0 || p.Key != "" || len(p.Hosts) != 0 || p.RemoteUser != "" || p.HostKey != "" ||
+				p.Via != "" || p.WindowMinutes != 0 || !p.GrantEnds.IsZero() ||
+				(notice != (p.GrantID != "")) || (notice && p.UsesLeft != 1) || (!notice && (p.UsesLeft != 0 || !p.Once)) {
+				return bad("the fields of a login pre-approval")
+			}
+			break
+		}
 		if p.Uses < 1 || p.From.IsZero() || !p.From.Before(p.Until) {
 			return bad("the fields of a scheduled grant")
 		}
@@ -131,6 +148,38 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	return nil
 }
 
+// loginOriginPattern is an https origin: a host name or an IP address,
+// and perhaps a port. The core made it from a checked page URL.
+var loginOriginPattern = regexp.MustCompile(`^https://([a-z0-9][a-z0-9.-]{0,252}|\[[0-9a-f:]{2,45}\])(:[0-9]{1,5})?$`)
+
+// maxLoginText is the most runes of an item name or a user name.
+const maxLoginText = 128
+
+// checkLoginPrompt checks the login part of p. The item name and the user
+// name come from the vault: the core cleaned them, and this checks that
+// they are clean, so a message never shows a line break or a direction
+// mark from the vault.
+func checkLoginPrompt(p approval.Prompt, notice bool) error {
+	bad := func(what string) error { return errors.New("ntfy: the prompt is not valid: " + what) }
+	l := p.Login
+	if l == nil {
+		if p.Kind == audit.KindWebLogin {
+			return bad("a website login without its login")
+		}
+		return nil
+	}
+	if p.Kind != audit.KindWebLogin && p.Kind != audit.KindPreapprove {
+		return bad("a login outside a website login")
+	}
+	clean := func(s string) bool {
+		return utf8.RuneCountInString(s) <= maxLoginText && claim.Line(s, maxLoginText+1) == s
+	}
+	if l.Name == "" || !clean(l.Name) || !clean(l.Username) || !loginOriginPattern.MatchString(l.Origin) || l.For < 0 {
+		return bad("the login")
+	}
+	return nil
+}
+
 // title returns the first line of a message or a notice of p.
 func title(p approval.Prompt, notice bool) string {
 	icon, name := "🔑", "Secrets"
@@ -143,6 +192,8 @@ func title(p approval.Prompt, notice bool) string {
 		icon, name = "🗓", "Pre-approval"
 	case audit.KindStanding:
 		icon, name = "🗓", "Standing grant"
+	case audit.KindWebLogin:
+		icon, name = "🌐", "Website login"
 	}
 	if notice {
 		icon = "🔔"
@@ -208,9 +259,18 @@ func body(p approval.Prompt, notice bool, c caps) string {
 		verified("remote user", p.RemoteUser)
 	}
 	switch p.Kind {
+	case audit.KindWebLogin:
+		verified("login", p.Login.Name)
+		verified("username", p.Login.Username)
 	case audit.KindSSHGrant:
 		verified("grants end", p.GrantEnds.Format(clockFormat)+" ("+strconv.Itoa(p.WindowMinutes)+" min)")
 	case audit.KindPreapprove:
+		if p.Login != nil {
+			verified("login", p.Login.Name)
+			verified("username", p.Login.Username)
+			line("allows: one login in the next " + strconv.Itoa(int(p.Login.For/time.Second)) + " s after the tap")
+			break
+		}
 		verified("uses", strconv.Itoa(p.Uses))
 		verified("from", p.From.Format(dateTimeFormat))
 		verified("until", p.Until.Format(dateTimeFormat))
@@ -227,6 +287,7 @@ func body(p approval.Prompt, notice bool, c caps) string {
 		label, value string
 		limit        int
 	}{
+		{"page", loginPage(p), c.dir},
 		{"as", p.Claim.Vars, c.vars},
 		{"command", p.Claim.Command, c.command},
 		{"in", p.Claim.Dir, c.dir},
@@ -247,6 +308,14 @@ func body(p approval.Prompt, notice bool, c caps) string {
 	return b.String()
 }
 
+// loginPage returns the claimed origin of a website login, or "".
+func loginPage(p approval.Prompt) string {
+	if p.Login == nil {
+		return ""
+	}
+	return p.Login.Origin
+}
+
 // fitBodyWith returns the body of p in at most limit bytes, and, if fits is
 // not nil, so that fits says yes (it checks the whole publish body). It cuts the
 // claimed fields shorter as needed, never the verified ones: the person
@@ -258,6 +327,17 @@ func fitBodyWith(p approval.Prompt, notice bool, limit int, fits func(string) bo
 		}
 	}
 	return "", errTooLong
+}
+
+// withExpiry adds the expiry line to the text b of a message that waits
+// for an answer. The message of a login pre-approval has none: its time
+// starts at the tap, and a limit for the tap would read as the time of
+// the login.
+func withExpiry(b string, p approval.Prompt) string {
+	if p.Login != nil && p.Login.For != 0 {
+		return b
+	}
+	return b + "\n" + expiryLine(p)
 }
 
 // expiryLine is the last line of a message that waits for an answer.
@@ -327,6 +407,9 @@ func resultLine(p approval.Prompt, e approval.Ending) string {
 			return "👍 approved at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) in each window until " +
 				p.Until.Format(dateTimeFormat)
 		case audit.KindPreapprove:
+			if p.Login != nil {
+				return "👍 approved at " + at + ": one login in the next " + strconv.Itoa(int(p.Login.For/time.Second)) + " s"
+			}
 			return "👍 approved at " + at + ", for " + strconv.Itoa(p.Uses) + " use(s) until " +
 				p.Until.Format(dateTimeFormat)
 		}

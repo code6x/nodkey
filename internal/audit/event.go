@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/code6x/nodkey/internal/version"
@@ -41,6 +42,9 @@ const (
 	// KindStanding is nodkey preapprove with daily or weekly windows: a
 	// standing grant (DESIGN.md section 8).
 	KindStanding Kind = "standing"
+	// KindWebLogin is a website login: a username and a password from a
+	// Bitwarden collection (DESIGN.md section 21).
+	KindWebLogin Kind = "web_login"
 )
 
 // Answer is the button the approver pressed.
@@ -187,6 +191,16 @@ type Subject struct {
 	// "daily 03:00-05:00" or "mon,thu 03:00-05:00", in the broker's local
 	// time. Uses is then the number of uses in each window.
 	Windows []string `json:"windows,omitempty"`
+	// Logins is the [logins.NAME] section of a website login, a login
+	// pre-approval, or the list of logins.
+	Logins string `json:"logins,omitempty"`
+	// Item is the Bitwarden item ID (a UUID) of a website login. The
+	// broker read it from its own store.
+	Item string `json:"item,omitempty"`
+	// Origin is the https origin of the page, as the client claimed it
+	// (THREAT-MODEL.md T43). It holds no path, no user name and no
+	// password.
+	Origin string `json:"origin,omitempty"`
 }
 
 // IsPreapprove reports whether k is a request for a grant that nodkey
@@ -342,6 +356,45 @@ type Failure struct {
 	Code Code `json:"code"`
 }
 
+// LoginList records a list of website logins for a page (DESIGN.md
+// section 21.3). There is no tap. It holds no item names and no user
+// names.
+type LoginList struct {
+	// Client is the client that asked.
+	Client string `json:"client"`
+	// Logins is the [logins.NAME] section that was listed.
+	Logins string `json:"logins"`
+	// Origin is the claimed origin of the page.
+	Origin string `json:"origin"`
+	// Count is how many items matched.
+	Count int `json:"count"`
+}
+
+// LoginTOTP records a request for a TOTP code of a website login. It
+// never holds the code or the seed.
+type LoginTOTP struct {
+	Client string `json:"client"`
+	Logins string `json:"logins,omitempty"`
+	Item   string `json:"item,omitempty"`
+	Origin string `json:"origin,omitempty"`
+	// Allowed says whether the broker made a code.
+	Allowed bool `json:"allowed"`
+	// Cause says why not, when it is not allowed: a fixed word.
+	Cause TOTPCause `json:"cause,omitempty"`
+}
+
+// TOTPCause says why a TOTP code was refused.
+type TOTPCause string
+
+// The causes of a refused code.
+const (
+	TOTPNoGrant   TOTPCause = "no_login" // no approved login, ticket or window grant covers it
+	TOTPNoSeed    TOTPCause = "no_totp"  // the item has no TOTP seed
+	TOTPBadSeed   TOTPCause = "bad_totp" // the seed is not in a form nodkey knows
+	TOTPBadItem   TOTPCause = "bad_item" // the item failed a check
+	TOTPStoreFail TOTPCause = "store"    // the store failed
+)
+
 // logRecovered records a torn last line that Open found. Only Open writes
 // it, because only Open knows the torn bytes; so it is not exported.
 type logRecovered struct {
@@ -367,8 +420,12 @@ const (
 	eventForeignTap    = "foreign_tap"
 	eventError         = "error"
 	eventLogRecovered  = "log_recovered"
+	eventLoginList     = "login_list"
+	eventLoginTOTP     = "login_totp"
 )
 
+func (LoginList) eventName() string      { return eventLoginList }
+func (LoginTOTP) eventName() string      { return eventLoginTOTP }
 func (BrokerStarted) eventName() string  { return eventBrokerStarted }
 func (BrokerStopped) eventName() string  { return eventBrokerStopped }
 func (ConfigReloaded) eventName() string { return eventConfigReload }
@@ -435,9 +492,20 @@ func (s *Subject) validate(needRequest bool) error {
 		if len(s.Secrets) > 0 || s.HostKey != "" {
 			return errors.New("an SSH grant has no secret names and no single host key")
 		}
+	case KindWebLogin:
+		if s.Logins == "" || s.Item == "" || !strings.HasPrefix(s.Origin, "https://") ||
+			len(s.Secrets) > 0 || s.Key != "" || len(s.Hosts) > 0 || s.HostKey != "" || s.RemoteUser != "" {
+			return errors.New("a website login needs logins, item and an https origin, and has no secrets, key, host or remote user")
+		}
 	case KindPreapprove:
 		if s.HostKey != "" || (len(s.Secrets) > 0 && s.Key != "") {
 			return errors.New("a preapprove request names secrets or one key, not both, and has no single host key")
+		}
+		if s.Logins != "" || s.Item != "" || s.Origin != "" {
+			if s.Logins == "" || s.Item == "" || !strings.HasPrefix(s.Origin, "https://") ||
+				len(s.Secrets) > 0 || s.Key != "" || len(s.Hosts) > 0 || s.RemoteUser != "" {
+				return errors.New("a login pre-approval needs logins, item and an https origin, and has no secrets, key or hosts")
+			}
 		}
 	case KindStanding:
 		if s.HostKey != "" || s.Key != "" || len(s.Hosts) > 0 || s.RemoteUser != "" {
@@ -448,6 +516,12 @@ func (s *Subject) validate(needRequest bool) error {
 	}
 	if !s.Kind.IsPreapprove() && (s.Uses != 0 || s.NotBefore != "" || s.NotAfter != "") {
 		return errors.New("only a preapprove request has uses and a time span")
+	}
+	if s.Kind != KindWebLogin && s.Kind != KindPreapprove && (s.Logins != "" || s.Item != "" || s.Origin != "") {
+		return errors.New("only a website login and a login pre-approval have logins, item and origin")
+	}
+	if err := s.validateLogin(); err != nil {
+		return err
 	}
 	if s.Kind != KindStanding && len(s.Windows) > 0 {
 		return errors.New("only a standing request has windows")
@@ -496,6 +570,25 @@ func (s *Subject) validate(needRequest bool) error {
 	return nil
 }
 
+// validateLogin checks the form of logins, item and origin.
+func (s *Subject) validateLogin() error {
+	if s.Logins != "" && !namePattern.MatchString(s.Logins) {
+		return errors.New("logins must be a section name from the config")
+	}
+	if s.Item != "" && !uuidLower.MatchString(s.Item) {
+		return errors.New("item must be an item ID in lower case")
+	}
+	if s.Origin != "" && !originPattern.MatchString(s.Origin) {
+		return errors.New("origin must be an https origin: a host name and perhaps a port, no path")
+	}
+	return nil
+}
+
+var (
+	uuidLower     = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	originPattern = regexp.MustCompile(`^https://[a-z0-9][a-z0-9.-]{0,252}(:[0-9]{1,5})?$|^https://\[[0-9a-f:]{2,45}\](:[0-9]{1,5})?$`)
+)
+
 func (e BrokerStarted) validate() error {
 	if !version.Valid(e.Version) {
 		return errors.New("version must be a version such as 1.2.0 or dev")
@@ -514,6 +607,31 @@ func (e ConfigReloaded) validate() error {
 
 // sha256Hex is a SHA-256 in lower-case hex.
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func (e LoginList) validate() error {
+	if !namePattern.MatchString(e.Client) || !namePattern.MatchString(e.Logins) || !originPattern.MatchString(e.Origin) || e.Count < 0 {
+		return errors.New("it needs a client, a logins section, an https origin and a count that is not negative")
+	}
+	return nil
+}
+
+func (e LoginTOTP) validate() error {
+	s := Subject{Client: e.Client, Logins: e.Logins, Item: e.Item, Origin: e.Origin}
+	if !namePattern.MatchString(e.Client) {
+		return errors.New("client must be a name from the config")
+	}
+	if err := s.validateLogin(); err != nil {
+		return err
+	}
+	if e.Allowed != (e.Cause == "") {
+		return errors.New("a refused code needs a cause, and an allowed one has none")
+	}
+	switch e.Cause {
+	case "", TOTPNoGrant, TOTPNoSeed, TOTPBadSeed, TOTPBadItem, TOTPStoreFail:
+		return nil
+	}
+	return errors.New("cause is not known")
+}
 
 func (e Request) validate() error    { return e.Subject.validate(true) }
 func (e SecretSent) validate() error { return e.Subject.validate(true) }
@@ -663,7 +781,7 @@ func encodeEvent(ev Event) (string, []byte, error) {
 	// them.
 	switch ev.(type) {
 	case BrokerStarted, BrokerStopped, ConfigReloaded, Request, Decision, GrantUsed, GrantEnded, GrantAlarm, SecretSent, Signed, Denied, ForeignTap, Failure,
-		logRecovered:
+		logRecovered, LoginList, LoginTOTP:
 	default:
 		return "", nil, errors.New("not an event of the audit package; pass an event such as audit.Signed{...} as a value")
 	}
