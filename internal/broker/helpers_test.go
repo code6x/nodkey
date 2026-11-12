@@ -248,6 +248,10 @@ func eventName(ev audit.Event) string {
 		return "denied:" + string(e.Cause)
 	case audit.Failure:
 		return "error:" + string(e.Code)
+	case audit.LoginList:
+		return "login_list"
+	case audit.LoginTOTP:
+		return fmt.Sprintf("login_totp:%v:%s", e.Allowed, e.Cause)
 	case audit.ForeignTap:
 		return "foreign_tap:" + string(e.Cause)
 	}
@@ -408,6 +412,8 @@ type envOptions struct {
 	// clients are more clients, each with its own key, and no secret or
 	// key of their own.
 	clients []string
+	// vault, if set, is the store "vault" instead of the fake one.
+	vault store.Store
 }
 
 // newEnv starts a broker with this config:
@@ -521,10 +527,14 @@ func newEnv(t *testing.T, opts envOptions) *env {
 		t.Fatal(err)
 	}
 	e.core = core
+	var vaultStore store.Store = e.vault
+	if opts.vault != nil {
+		vaultStore = opts.vault
+	}
 	svc, err := New(Parts{
 		Config:  e.cfg,
 		Audit:   e.audit,
-		Stores:  map[string]store.Store{"main": e.main, "vault": e.vault},
+		Stores:  map[string]store.Store{"main": e.main, "vault": vaultStore},
 		Keys:    keys,
 		Logger:  NewLogger(e.logs),
 		Version: opts.version,

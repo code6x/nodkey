@@ -558,6 +558,12 @@ type PreapproveRequest struct {
 	// section 8): 1 to MaxWindows windows. Nil for a scheduled grant; then
 	// MarshalJSON does not write the field.
 	Windows []Window `json:"windows"`
+	// Login and URL make the request one for a login pre-approval (DESIGN.md
+	// section 21): Login is the item ID, URL the page URL (claimed). Then
+	// Uses is 1, and the other fields are empty. Both are "" for the
+	// other kinds; then MarshalJSON does not write them.
+	Login string `json:"login"`
+	URL   string `json:"url"`
 }
 
 // Check checks the caps of the request.
@@ -569,6 +575,9 @@ func (r *PreapproveRequest) Check() error {
 		if err := r.Windows[i].Check(); err != nil {
 			return err
 		}
+	}
+	if len(r.Login) > MaxItemID || len(r.URL) > MaxURL {
+		return errTooLong
 	}
 	if len(r.Key) > MaxName || len(r.User) > MaxName || len(r.From) > MaxTime || len(r.Until) > MaxTime {
 		return errTooLong
@@ -587,14 +596,21 @@ func (r PreapproveRequest) MarshalJSON() ([]byte, error) {
 	type plain PreapproveRequest
 	p := plain(r)
 	p.Secrets, p.Hosts = orEmpty(p.Secrets), orEmpty(p.Hosts)
-	if r.Windows == nil {
-		// The shallower field wins over the one in plain.
-		return json.Marshal(struct {
-			plain
-			Windows *struct{} `json:"windows,omitempty"`
-		}{plain: p})
+	// The shallower fields win over the ones in plain. A nil pointer is
+	// not written.
+	out := struct {
+		plain
+		Windows *[]Window `json:"windows,omitempty"`
+		Login   *string   `json:"login,omitempty"`
+		URL     *string   `json:"url,omitempty"`
+	}{plain: p}
+	if r.Windows != nil {
+		out.Windows = &r.Windows
 	}
-	return json.Marshal(p)
+	if r.Login != "" || r.URL != "" {
+		out.Login, out.URL = &r.Login, &r.URL
+	}
+	return json.Marshal(out)
 }
 
 // UnmarshalJSON decodes strictly, and checks the caps.
@@ -610,7 +626,9 @@ func (r *PreapproveRequest) UnmarshalJSON(data []byte) error {
 		"uses":    integer(&v.Uses),
 		"reason":  text(&v.Reason),
 		"windows": list(&v.Windows, MaxWindows, object[Window]()),
-	}, map[string]bool{"windows": true})
+		"login":   text(&v.Login),
+		"url":     text(&v.URL),
+	}, map[string]bool{"windows": true, "login": true, "url": true})
 	if err != nil {
 		return err
 	}

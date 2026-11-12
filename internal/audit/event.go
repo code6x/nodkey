@@ -493,9 +493,17 @@ func (s *Subject) validate(needRequest bool) error {
 			return errors.New("an SSH grant has no secret names and no single host key")
 		}
 	case KindWebLogin:
-		if s.Logins == "" || s.Item == "" || !strings.HasPrefix(s.Origin, "https://") ||
+		// A request that a check denied before the item was known has none
+		// of the three; else it has all.
+		set := 0
+		for _, f := range []string{s.Logins, s.Item, s.Origin} {
+			if f != "" {
+				set++
+			}
+		}
+		if (set != 0 && set != 3) || (set == 3 && !strings.HasPrefix(s.Origin, "https://")) ||
 			len(s.Secrets) > 0 || s.Key != "" || len(s.Hosts) > 0 || s.HostKey != "" || s.RemoteUser != "" {
-			return errors.New("a website login needs logins, item and an https origin, and has no secrets, key, host or remote user")
+			return errors.New("a website login has logins, item and an https origin, or none of them, and no secrets, key, host or remote user")
 		}
 	case KindPreapprove:
 		if s.HostKey != "" || (len(s.Secrets) > 0 && s.Key != "") {
