@@ -4553,36 +4553,47 @@ account can see (section 11): the collection, not the owner's vault.
 Putting an item into the collection is the "allow" step: no config edit,
 no restart.
 
-### 21.2 Config
+### 21.2 Config *(built: `internal/config/logins.go`)*
 
 ```toml
 [logins.web]                          # any name
 store = "vault"                       # a store of type bw
 collection = "00000000-0000-0000-0000-000000000000"
 clients = ["laptop"]
-ask = "window"                        # always, window or never, as for a secret
+ask = "window"                        # always or window
 window = "15m"
 preapprove = true                     # optional; `nodkey preapprove --login` may ask for it
 standing = false                      # optional; standing grants of one item
 
-[logins.web.item."11111111-1111-1111-1111-111111111111"]
+[[logins.web.items]]                  # optional; the rule of one item
+id = "11111111-1111-1111-1111-111111111111"
 clients = ["laptop"]                  # this item's rule replaces the collection's rule
 ask = "always"
 ```
 
-- `store` must be a `bw` store. `collection` is a UUID.
+- `store` must be a `bw` store. `collection` and `id` are UUIDs, in
+  upper or lower case.
+- `ask = "never"` is refused, for the collection and for an item: a
+  website login always needs a tap, or a grant that came from a tap.
 - **The item's rule wins, completely** (owner, 2026-11-11). Its
   `clients`, `ask`, `window`, `preapprove` and `standing` replace the
   collection's rule. Nothing is merged. A client that is in the
   collection's `clients` but not in the item's `clients` is refused. The
   item's rule may be looser than the collection's: the owner wrote it for
-  that one item. Two rules for one item are an error at start.
+  that one item. Two rules for one item, in one section or in two, are
+  an error at start and at reload.
 - The broker applies the rule on each request, after it has found the
   item, not only at start.
 - The same collection in two `[logins.*]` sections is an error at start
   and at reload.
 - An item that leaves the collection is no longer served, even if it has
   its own rule.
+- For now, a change of `[logins.*]` needs a restart: a reload refuses
+  it and names `[logins.*]` (section 14, "Reload"). This ends when the
+  broker keeps login grants per item (21.7).
+- `nodkey broker config-diff` lists the changes of `[logins.*]`. A new
+  or a removed item rule is marked as one that widens: either rule can
+  be the looser one.
 
 ### 21.3 Requests
 

@@ -43,7 +43,7 @@ func (c Change) String() string {
 }
 
 // groups is the order of the groups in the output.
-var groups = []string{"broker", "client", "store", "secret", "key", "known_hosts"}
+var groups = []string{"broker", "client", "store", "secret", "logins", "key", "known_hosts"}
 
 // Diff returns the changes from old to next, by group and then by name,
 // in a fixed order. No change means the two configs mean the same.
@@ -53,6 +53,7 @@ func Diff(old, next *Broker) []Change {
 	d.clients(old, next)
 	d.stores(old, next)
 	d.secrets(old, next)
+	d.logins(old, next)
 	d.keys(old, next)
 	d.knownHosts(old.KnownHosts, next.KnownHosts)
 	d.unknown(old, next)
@@ -272,6 +273,60 @@ func (d *differ) secrets(old, next *Broker) {
 		}
 		d.clientList("secret", name, what, "ask for it", o.Clients, n.Clients)
 		d.rule("secret", name, what, o.Rule, n.Rule)
+	}
+}
+
+// logins compares the [logins.*] sections. A new or removed rule of an
+// item is marked as widening: the item's rule replaces the collection's,
+// and either one can be the looser (DESIGN.md section 21.2).
+func (d *differ) logins(old, next *Broker) {
+	for _, name := range sortedUnion(old.Logins, next.Logins) {
+		o, inOld := old.Logins[name]
+		n, inNew := next.Logins[name]
+		what := "logins " + q(name)
+		switch {
+		case !inOld:
+			d.add("logins", name, true, "%s: new website logins of collection %s in store %s, %s",
+				what, q(n.Collection), q(n.Store), ruleText(n.Rule))
+			for _, c := range n.Clients {
+				d.add("logins", name, true, "%s: client %s may now ask for a login", what, q(c))
+			}
+			for _, id := range slices.Sorted(maps.Keys(n.Items)) {
+				d.add("logins", name, true, "%s: item %s has its own rule: %s", what, q(id), ruleText(n.Items[id].Rule))
+			}
+			continue
+		case !inNew:
+			d.add("logins", name, false, "%s: removed", what)
+			continue
+		}
+		for _, p := range []struct{ key, old, new string }{
+			{"store", o.Store, n.Store},
+			{"collection", o.Collection, n.Collection},
+		} {
+			if p.old != p.new {
+				d.add("logins", name, true, "%s: now other logins: %s changed from %s to %s", what, p.key, q(p.old), q(p.new))
+			}
+		}
+		d.clientList("logins", name, what, "ask for a login", o.Clients, n.Clients)
+		d.rule("logins", name, what, o.Rule, n.Rule)
+		for _, id := range sortedUnion(o.Items, n.Items) {
+			oi, inO := o.Items[id]
+			ni, inN := n.Items[id]
+			iw := what + " item " + q(id)
+			switch {
+			case !inO:
+				d.add("logins", name, true, "%s: has its own rule now, in place of the collection's: %s", iw, ruleText(ni.Rule))
+				for _, c := range ni.Clients {
+					d.add("logins", name, !slices.Contains(o.Clients, c), "%s: client %s may ask for it", iw, q(c))
+				}
+			case !inN:
+				d.add("logins", name, true, "%s: its own rule is removed; the collection's rule applies now: %s",
+					iw, ruleText(n.Rule))
+			default:
+				d.clientList("logins", name, iw, "ask for it", oi.Clients, ni.Clients)
+				d.rule("logins", name, iw, oi.Rule, ni.Rule)
+			}
+		}
 	}
 }
 
@@ -517,6 +572,13 @@ func (d *differ) unknown(old, next *Broker) {
 	x.Stores, y.Stores = common(old.Stores, next.Stores)
 	x.Secrets, y.Secrets = common(old.Secrets, next.Secrets)
 	x.Keys, y.Keys = common(old.Keys, next.Keys)
+	x.Logins, y.Logins = common(old.Logins, next.Logins)
+	for name, l := range x.Logins {
+		// Item rules that only one side has are compared in logins.
+		m := y.Logins[name]
+		l.Items, m.Items = common(l.Items, m.Items)
+		x.Logins[name], y.Logins[name] = l, m
+	}
 	if (x.Ntfy == nil) != (y.Ntfy == nil) {
 		x.Ntfy, y.Ntfy = nil, nil // a change of the channel is compared above
 	}
@@ -543,8 +605,10 @@ var compared = map[reflect.Type][]string{
 		"ClientSecretFile"},
 	reflect.TypeFor[Secret](): {"Name", "Store", "ID", "Field", "Project", "Environment", "Path", "SecretName",
 		"Clients"},
-	reflect.TypeFor[Key]():  {"Name", "File", "Clients", "Hosts"},
-	reflect.TypeFor[Rule](): {"Ask", "Window", "Preapprove", "Standing", "Notify", "MaxPerDay", "Hours"},
+	reflect.TypeFor[Key]():           {"Name", "File", "Clients", "Hosts"},
+	reflect.TypeFor[Logins]():        {"Name", "Store", "Collection", "Clients"},
+	reflect.TypeFor[LoginItemRule](): {"ID", "Clients"},
+	reflect.TypeFor[Rule]():          {"Ask", "Window", "Preapprove", "Standing", "Notify", "MaxPerDay", "Hours"},
 }
 
 // zeroCompared zeros the fields in compared, in v and in each struct,

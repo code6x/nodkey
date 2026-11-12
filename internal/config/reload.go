@@ -39,6 +39,9 @@ func (b *Broker) ReloadFixed(next *Broker) error {
 		{"[preapprove]", b.Preapprove, next.Preapprove},
 		{"[standing]", b.Standing, next.Standing},
 		{"[store.*]", b.Stores, next.Stores},
+		// Until the broker serves logins and keeps their grants per item
+		// (DESIGN.md section 21.7), a change of them needs a restart.
+		{"[logins.*]", b.Logins, next.Logins},
 	}
 	parts = append(parts, part{"the config", x, y}) // a part that is not named above
 	for _, p := range parts {

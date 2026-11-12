@@ -943,9 +943,9 @@ access to it: such an account could read them too.
 ### Website logins: a shared collection
 
 > **Not ready yet.** The broker part of website logins (issue #103) is
-> still being built. You can do these Bitwarden steps now. The
-> `[logins.*]` section of the config comes with the broker part
-> (DESIGN.md section 21).
+> still being built. You can do these Bitwarden steps now. The broker
+> already checks a `[logins.*]` section (DESIGN.md section 21.2), but it
+> does not hand out logins yet.
 
 Agents can log in to websites with logins from your own Bitwarden vault.
 You choose the logins: you put them into one shared collection. The
