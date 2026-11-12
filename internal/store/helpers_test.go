@@ -184,7 +184,7 @@ func (f *testFake) steps() []string {
 	var steps []string
 	for _, c := range f.calls() {
 		switch {
-		case len(c.Args) >= 2 && (c.Args[0] == "secret" || c.Args[0] == "get"):
+		case len(c.Args) >= 2 && (c.Args[0] == "secret" || c.Args[0] == "get" || c.Args[0] == "list"):
 			steps = append(steps, c.Args[0]+" "+c.Args[1])
 		case len(c.Args) >= 1:
 			steps = append(steps, c.Args[0])

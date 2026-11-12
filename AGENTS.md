@@ -40,6 +40,10 @@ Planned. Each v1 issue adds its part.
     section 10).
   - `internal/grantkey/` - the token of a standing grant: make, parse,
     hash, and hide it in every format (DESIGN.md section 8).
+  - `internal/totp/` - TOTP codes made on the broker (RFC 6238) from the
+    `login.totp` field of a Bitwarden item (DESIGN.md section 21).
+  - `internal/loginmatch/` - the page URL of a website login and
+    Bitwarden's URI match types (DESIGN.md section 21).
   - `internal/doctor/` - the checks of `nodkey doctor` (client) and
     `nodkey doctor broker`: read only, with the text and JSON form of
     the result (DESIGN.md section 15).
@@ -116,7 +120,8 @@ that it makes.
   request. If it changes the config, the example unit, a command, or a
   line that `docs/setup.md` or a `docs/manual-*-test.md` guide shows,
   update these guides too.
-- **Dependencies:** the standard library, `golang.org/x/crypto` and
+- **Dependencies:** the standard library, `golang.org/x/crypto`,
+  `golang.org/x/net` (only `publicsuffix`, for website logins) and
   `github.com/BurntSushi/toml`. Anything else needs a reason in the pull
   request. The `1password` and `infisical` stores also link the official
   1Password and Infisical Go SDKs (DESIGN.md section 4).

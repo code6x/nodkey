@@ -76,6 +76,7 @@ type fakeScenario struct {
 	Password string              `json:"password"` // bw: the master password, the first line of the password file
 	Session  string              `json:"session"`  // bw: the session key that unlock makes; random if empty
 	Items    map[string]string   `json:"items"`    // the answer for each item ID, in lower case
+	Lists    map[string]string   `json:"lists"`    // bw: the answer of "list items" for each collection ID, in lower case
 	Steps    map[string]fakeStep `json:"steps"`    // what a step does instead of its usual work
 	Pause    time.Duration       `json:"pause"`    // each run waits this long first
 }
@@ -189,6 +190,8 @@ func fakeBW(home string, sc *fakeScenario) int {
 		step = args[0]
 	case len(args) > 2 && args[0] == "get" && args[1] == "item":
 		step = "get item"
+	case len(args) > 3 && args[0] == "list" && args[1] == "items" && args[2] == "--collectionid":
+		step = "list items"
 	default:
 		return fakeFail("Invalid command: "+strings.Join(args, " "), 1)
 	}
@@ -250,12 +253,20 @@ func fakeBW(home string, sc *fakeScenario) int {
 		_, _ = fakeStdout.WriteString("Syncing complete.")
 		return 0
 	}
-	// get item
+	// get item, list items
 	switch {
 	case st.LoggedOut:
 		return fakeFail("You are not logged in.", 1)
 	case !unlocked:
 		return fakeFail("Vault is locked.", 1)
+	}
+	if step == "list items" {
+		list, ok := sc.Lists[strings.ToLower(args[3])]
+		if !ok {
+			list = "[]"
+		}
+		_, _ = fakeStdout.WriteString(list)
+		return 0
 	}
 	item, ok := sc.Items[strings.ToLower(args[2])]
 	if !ok {

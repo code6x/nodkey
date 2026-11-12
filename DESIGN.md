@@ -4099,6 +4099,7 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
 | a `bw` unlock | `bw unlock --passwordfile FILE --raw --nointeraction` | stdout: only the session key, in base64. |
 | a `bw` fetch, first | `bw sync --force --nointeraction` | only the exit code. |
 | a `bw` fetch, then | `bw get item ID --nointeraction` | stdout: one JSON object, the item. The broker reads only `id`, `login.password`, `deletedDate` and `archivedDate`. |
+| a website login (section 21) | `bw list items --collectionid ID --nointeraction`, and `bw get item ID --nointeraction` | see section 21.9. |
 | after a `bw` step failed | `bw status --nointeraction` | stdout: one JSON object. The broker reads only `status`: `unauthenticated` (logged out), `locked` (the session key does not work) or `unlocked`. |
 
 - Both programs write errors to stderr and exit with 1; `bws` exits with
@@ -4522,3 +4523,232 @@ Standards we use or borrow names from:
 (a request ID, a short code shown on both sides, an expiry), and
 [RFC 4252](https://www.rfc-editor.org/rfc/rfc4252) (the SSH authentication
 request).
+
+## 21. Website logins
+
+Issue #103. An agent logs in to a website with a browser that it drives.
+nodkey hands it one login (a username and a password, and later one TOTP
+code) after a tap, from a shared collection of the owner's Bitwarden
+vault. The only browser that nodkey supports is agent-browser, through
+its credential plugin (#104). nodkey has no Chrome DevTools Protocol
+command of its own.
+
+**What is built.** The parts below that are marked *(built)* are in the
+code. The rest is the design that the next pull requests of #103 build.
+
+### 21.1 The owner's setup
+
+No nodkey code. The owner's main Bitwarden account makes an organization
+with one collection, for example `agents`. The separate account of the
+broker's `bw` store (T24) is the second member. It has access to that
+collection only, with "Can view": it cannot change items. The owner
+moves the logins that agents may use into the collection. The owner still
+sees, fills and changes them in the normal vault. The Free plan allows 2
+users and 2 collections
+([organizations](https://bitwarden.com/help/what-is-an-organization/),
+seen 2026-10-21). `docs/setup.md` shows the steps.
+
+The master password on the broker still opens only what the separate
+account can see (section 11): the collection, not the owner's vault.
+Putting an item into the collection is the "allow" step: no config edit,
+no restart.
+
+### 21.2 Config
+
+```toml
+[logins.web]                          # any name
+store = "vault"                       # a store of type bw
+collection = "00000000-0000-0000-0000-000000000000"
+clients = ["laptop"]
+ask = "window"                        # always, window or never, as for a secret
+window = "15m"
+preapprove = true                     # optional; `nodkey preapprove --login` may ask for it
+standing = false                      # optional; standing grants of one item
+
+[logins.web.item."11111111-1111-1111-1111-111111111111"]
+clients = ["laptop"]                  # this item's rule replaces the collection's rule
+ask = "always"
+```
+
+- `store` must be a `bw` store. `collection` is a UUID.
+- **The item's rule wins, completely** (owner, 2026-11-11). Its
+  `clients`, `ask`, `window`, `preapprove` and `standing` replace the
+  collection's rule. Nothing is merged. A client that is in the
+  collection's `clients` but not in the item's `clients` is refused. The
+  item's rule may be looser than the collection's: the owner wrote it for
+  that one item. Two rules for one item are an error at start.
+- The broker applies the rule on each request, after it has found the
+  item, not only at start.
+- The same collection in two `[logins.*]` sections is an error at start
+  and at reload.
+- An item that leaves the collection is no longer served, even if it has
+  its own rule.
+
+### 21.3 Requests
+
+The client sends a page URL. **The page URL is claimed** (T43): the
+broker cannot check that the browser is on that page.
+
+1. **List** (no tap). The client sends a page URL. The broker runs
+   `bw sync --force` and `bw list items --collectionid ID`, and returns
+   the items that have a URI that matches the page (21.4): the item ID,
+   the item name and the username. Never a password or a TOTP seed. A
+   tap only to see a list would teach the approver to tap without
+   reading, so a list needs none. It has a rate limit per client of
+   `LoginListRate` (planned: 10 lists a minute), and an audit entry.
+2. **Login** (a tap, a grant, or a pre-approval). The client sends a
+   page URL and one item ID from the list. The broker runs
+   `bw sync --force` and `bw get item ID`, and checks that the item:
+   is a login item; is not in the trash; is not archived; has
+   `collectionIds` that hold the configured collection and no other
+   configured collection; and has a URI that matches the page. Each
+   check that fails means deny, with an audit entry. Then it applies the
+   item's rule (21.2). On approval the broker returns the username and
+   the password.
+   An item with Bitwarden's "Master password re-prompt" (`reprompt` is
+   1) needs a tap for each login, whatever its rule: no `window` grant
+   and no standing grant hands it out. A pre-approval is a tap for that
+   one login, so it works.
+3. **TOTP code.** When the item has `login.totp`, the broker makes the
+   current code itself (*built*: `internal/totp`). The seed never leaves
+   the broker. The client asks for the code after the password step,
+   when the site shows its code page. It sends the same page origin and
+   item ID.
+   - An approved login (a tap or a pre-approval) covers **one** code, for
+     `LoginTOTPTime` (2 minutes) after the login. The second ask for a
+     code needs a new login.
+   - A `window` grant covers codes during its window, like logins.
+   - A standing grant covers one login and one code per use.
+
+Several logins for one site: the list shows them all, and the client
+names one item ID. The page must match that item.
+
+### 21.4 URI match *(built: `internal/loginmatch`)*
+
+The broker follows the match type of each URI of the item, as Bitwarden
+does:
+
+| match | Bitwarden name | the page matches when |
+|---|---|---|
+| `null` or `0` | base domain | the base domains are the same: the public suffix and one label more (`shop.example.co.uk` → `example.co.uk`) |
+| `1` | host | the host and the port are the same |
+| `2` | starts with | the URI is `https`, its host and port are the page's, and the page URL, with no fragment, starts with the URI, as plain text |
+| `3` | exact | the URI is `https`, its host and port are the page's, and the page URL, with no fragment, is the URI |
+| `4`, `5`, other | regular expression, never | never |
+
+- A URI with no match type uses the base domain (#103 open question 5).
+  The real default is a setting of each Bitwarden app, which the CLI
+  cannot read. Base domain is the loosest type: an item with the URI
+  `https://app.example.com` and no match type also serves
+  `https://other.example.com`. Set the match type of each URI to "Host"
+  when other hosts of the same domain are run by other people (T43).
+- The public suffix list comes from `golang.org/x/net/publicsuffix`
+  (BSD-3-Clause, the same authors and licence as `golang.org/x/crypto`).
+  It holds the private suffixes too, so `alice.github.io` and
+  `bob.github.io` do not match. A host that is itself a public suffix
+  matches nothing. An IP address and a name with no dot are their own
+  base domain.
+- Bitwarden's equivalent domains are not used.
+- A URI with no scheme is read as `http://`, as Bitwarden does. A URI of
+  another scheme, such as `androidapp://`, matches no page.
+- **The page URL must be `https`** (owner, 2026-11-11). An `http` page,
+  such as a router on the local network, is refused for now.
+- The page URL must be at most 2048 bytes, in plain ASCII, with a host
+  name in plain ASCII (punycode for other letters), no user name or
+  password, no trailing dot, and a port from 1 to 65535. Port 443 is
+  dropped. Anything else is refused, and the error never holds the URL.
+- "Starts with" and "exact" are stricter than in Bitwarden. In
+  Bitwarden, the URI `https://example.com` with "starts with" also
+  matches `https://example.com.example.net/`. In nodkey the host and the
+  port must be the same as the page's first.
+- A host whose last label is all digits, or starts with `0x`, is refused
+  unless it is an IP address: a browser reads `https://192.0.2.01/` as
+  an IP address.
+- The public suffix list is the one in the `golang.org/x/net` version in
+  `go.mod`. It changes only when that dependency is updated.
+
+### 21.5 TOTP forms *(built: `internal/totp`)*
+
+- A plain base32 secret: SHA1, 6 digits, 30 seconds. Spaces, dashes,
+  lower case and missing padding are accepted.
+- An `otpauth://totp/...?secret=...` URI with `algorithm` SHA1, SHA256 or
+  SHA512, `digits` from 6 to 8, and `period` from 1 to 3600 seconds.
+- Everything else is refused with an error that says what to fix:
+  `steam://`, `otpauth://hotp`, another algorithm, other digits, two
+  values of one parameter. The error never holds the field.
+- The tests use the test vectors of RFC 6238, appendix B.
+
+### 21.6 Messages
+
+The message shows the item name and the username as read from Bitwarden
+(verified), and the page origin as sent by the client (claimed):
+
+> log in to https://example.com as alice@example.com (Example shop), from laptop
+
+The pre-approval message says what the tap allows, and for how long
+after the tap:
+
+> approve one login to https://example.com as alice@example.com (Example shop), from laptop, in the next 60 s
+
+The message never names a time limit for the tap itself.
+
+The item name and the username come from the owner's vault, but they can
+hold any text, for example from an import. They get the same treatment
+as claimed text (section 7): one line, no control characters and no
+characters that change the direction of the text, a length limit, and
+escaped HTML. The claimed origin comes after the verified lines.
+
+### 21.7 Grants and the one-use pre-approval
+
+Grants are kept per (client, item ID), and the one-use pre-approval per
+(client, item ID, page origin). They are not kept per config section
+name: a grant must not move to another item through a rename. A grant
+for one login does not hand out another login of the same site. On
+reload, a grant stays only if the new config still gives the same rule
+to that item.
+
+**The pre-approval** (step 9 of #103, owner 2026-10-27) is
+`nodkey preapprove --login ITEM --url URL`, on the grant core of
+`nodkey preapprove` (section 8). It asks for a tap and hands out nothing.
+
+- It waits for the tap as long as any other request: the broker's
+  `timeout` setting. No extra limit for logins (owner, 2026-11-11).
+- After the tap, the broker keeps a one-use approval for (client, item
+  ID, origin) for `LoginPreapproveTime` = **60 seconds**.
+- The next login request with the same client, item and origin gets the
+  login without a tap, and uses the approval up, in one atomic step. A
+  request from another client, for another item or another origin does
+  not use it.
+- It works for items with `ask = "always"` too, when the rule has
+  `preapprove = true`.
+- Why: agent-browser waits only 15 seconds for a credential plugin, and
+  a tap often takes longer. So the wait runs in a nodkey command.
+
+### 21.8 Audit events
+
+New events: `login-list` (client, collection section, page origin, the
+number of items), `login` (client, item ID, page origin, the decision and
+why), `login-totp` (client, item ID, page origin, decision), and the
+`preapprove` events of section 9 with the scope `login`. No event holds a
+password, a TOTP seed, a TOTP code or a username.
+
+### 21.9 What the broker reads from bw *(built)*
+
+| when | command | what the broker reads |
+|---|---|---|
+| a list | `bw sync --force`, then `bw list items --collectionid ID --nointeraction` | stdout: one JSON array of items. Of each item: `id`, `type`, `name`, `reprompt`, `deletedDate`, `archivedDate`, `collectionIds`, `login.username`, and `uri` and `match` of each `login.uris`. It checks `login.password` and `login.totp` (a string or `null`) and keeps neither. |
+| a login | `bw sync --force`, then `bw get item ID --nointeraction` | the same fields, and `login.password` and `login.totp`, each into its own buffer that is cleared after use. |
+
+- `bw list items` returns whole items, with every password of the
+  collection. The broker skips every other field without keeping it, and
+  clears the whole answer at once.
+- Items that are not logins (`type` is not 1), in the trash, archived,
+  or whose `collectionIds` do not hold the collection are left out of a
+  list.
+- A login with no password, or a password with a NUL byte, is refused.
+- Limits: 500 items in a collection, and 1 MiB for the whole answer, as
+  for every store program; 100 URIs and 100 collections of an item, 1024
+  bytes of a name or a username, 2048 bytes of a URI. An answer over a
+  limit is refused: the broker never cuts a field. One bad item refuses
+  the whole list, so the list fails closed.
+- `reprompt` is read too (21.3).

@@ -129,6 +129,12 @@ func (r *jsonReader) object(member func(r *jsonReader, key string) error) error 
 
 // array reads an array and skips its values.
 func (r *jsonReader) array() error {
+	return r.arrayEach(func(r *jsonReader) error { return r.skip() })
+}
+
+// arrayEach reads an array and calls each for each value, with the reader
+// at the value: each must read the value.
+func (r *jsonReader) arrayEach(each func(r *jsonReader) error) error {
 	if r.peek() != '[' {
 		return ErrBadAnswer
 	}
@@ -141,7 +147,7 @@ func (r *jsonReader) array() error {
 		return nil
 	}
 	for {
-		if err := r.skip(); err != nil {
+		if err := each(r); err != nil {
 			return err
 		}
 		r.space()
