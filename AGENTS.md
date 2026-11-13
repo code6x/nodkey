@@ -21,8 +21,8 @@ Planned. Each v1 issue adds its part.
   binary with `go:embed`, for `nodkey update`. The tests of the script
   are in `install_linux_test.go`. CI checks it with shellcheck.
 - `cmd/nodkey/` - the one binary. Subcommands: `broker`, `try`, `run`,
-  `ssh-agent`, `ssh-grant`, `preapprove`, `keygen`, `audit verify`, `update`,
-  `version`, `doctor`.
+  `ssh-agent`, `ssh-grant`, `preapprove`, `agent-browser-plugin`, `keygen`,
+  `audit verify`, `update`, `version`, `doctor`.
   `nodkey broker` starts the broker's parts in a fixed order, and stops
   them in a fixed order (DESIGN.md section 15). Its tests run it in a
   child process, with a fake Telegram server behind a fake HTTPS proxy.
@@ -58,7 +58,9 @@ Planned. Each v1 issue adds its part.
     (config, TLS key, deadline, short code, strict answer),
     `nodkey run` (DESIGN.md sections 5 and 15), `nodkey ssh-agent`
     (sections 6 and 15), `nodkey ssh-grant` (sections 13 and 15) and
-    `nodkey preapprove` (sections 8 and 15).
+    `nodkey preapprove` (sections 8 and 15), and `nodkey agent-browser-plugin`
+    (section 21.10), with recorded requests of agent-browser in
+    `testdata/`.
 - `contrib/systemd/` - the example systemd unit of the broker, with
   encrypted credentials and a sandbox (DESIGN.md section 16).
 - `docs/` - the guides for people:
@@ -72,6 +74,8 @@ Planned. Each v1 issue adds its part.
     server, on Android and on an iPhone (issue #24), with a table for
     the results.
   - `docs/releasing.md` - how releases are made and checked.
+  - `docs/agent-browser.md` - website logins with agent-browser: the
+    plugin entry, the login steps and the `agents` Chrome profile.
   - `docs_test.go` (at the root of the module) checks that no shell
     block in a Markdown file at the root or in `docs/` ends a command line
     with a `#` comment: zsh does not treat it as a comment (#92).

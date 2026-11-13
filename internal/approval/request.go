@@ -60,6 +60,12 @@ type Request struct {
 	// Claim is the claimed text, made safe by the caller (see Claim).
 	Claim Claim
 
+	// NoTap is for a KindWebLogin request only: when no grant and no
+	// pre-approval covers it, it is denied with audit.CauseNoTap at once,
+	// and no message is sent (DESIGN.md section 21.10). The core denies a
+	// request of another kind with NoTap.
+	NoTap bool
+
 	// OnWait, if set, is called once, with the short code, when the
 	// request starts to wait for the person: when it goes into the queue
 	// or its message is about to be sent. The client prints the code. It

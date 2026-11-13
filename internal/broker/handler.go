@@ -182,6 +182,8 @@ func statusFor(cause audit.Cause) int {
 		return http.StatusTooManyRequests
 	case audit.CauseError:
 		return http.StatusServiceUnavailable
+	case audit.CauseNoTap:
+		return http.StatusPreconditionRequired
 	default:
 		return http.StatusForbidden
 	}

@@ -56,6 +56,7 @@ type pending struct {
 	once            bool // the message has "Approve once"
 	windowMinutes   int  // the message has "Approve N min" with this N; 0: no
 	notify          bool // a "never ask" rule with notify allowed it
+	noTap           bool // Request.NoTap: deny when nothing covers the request
 
 	// used is the scheduled grant that allowed p, and whose use p took.
 	// preCounted says that p counts in clientState.preapproving.
@@ -167,9 +168,10 @@ func (c *Core) Decide(ctx context.Context, r *Request) *Result {
 		return c.denied(p, audit.CauseNotAllowed)
 	}
 	p.deadline = p.start.add(c.timeout(r.Kind))
-	if !c.check(r, p) {
+	if !c.check(r, p) || (r.NoTap && p.kind != audit.KindWebLogin) {
 		return c.denied(p, audit.CauseNotAllowed)
 	}
+	p.noTap = r.NoTap
 	if p.kind == audit.KindSSHGrant {
 		// Its grants end at a fixed time. After it, an approval would
 		// grant nothing, so the request ends then too.
@@ -311,6 +313,10 @@ func (c *Core) begin(p *pending) *Result {
 			res.vias[i] = audit.ViaScheduled
 		}
 		return res
+	}
+	if p.noTap {
+		// Nothing covers it, and the client asked for no tap: no message.
+		return c.denied(p, audit.CauseNoTap)
 	}
 	if c.stopped {
 		return c.failed(p, ErrStopped)
