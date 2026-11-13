@@ -368,7 +368,19 @@ type LoginList struct {
 	Origin string `json:"origin"`
 	// Count is how many items matched.
 	Count int `json:"count"`
+	// Cause is set when the list was refused; then Logins and Origin may
+	// be empty and Count is 0.
+	Cause ListCause `json:"cause,omitempty"`
 }
+
+// ListCause says why a list of logins was refused.
+type ListCause string
+
+const (
+	ListLimited ListCause = "limit"   // the client asked too often
+	ListBadURL  ListCause = "bad_url" // the page URL is not valid
+	ListStore   ListCause = "store"   // a store failed
+)
 
 // LoginTOTP records a request for a TOTP code of a website login. It
 // never holds the code or the seed.
@@ -617,8 +629,21 @@ func (e ConfigReloaded) validate() error {
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (e LoginList) validate() error {
-	if !namePattern.MatchString(e.Client) || !namePattern.MatchString(e.Logins) || !originPattern.MatchString(e.Origin) || e.Count < 0 {
-		return errors.New("it needs a client, a logins section, an https origin and a count that is not negative")
+	if !namePattern.MatchString(e.Client) {
+		return errors.New("client must be a name from the config")
+	}
+	switch e.Cause {
+	case "":
+		if !namePattern.MatchString(e.Logins) || !originPattern.MatchString(e.Origin) || e.Count < 0 {
+			return errors.New("it needs a logins section, an https origin and a count that is not negative")
+		}
+	case ListLimited, ListBadURL, ListStore:
+		if e.Count != 0 || (e.Logins != "" && !namePattern.MatchString(e.Logins)) ||
+			(e.Origin != "" && !originPattern.MatchString(e.Origin)) {
+			return errors.New("a refused list has a count of 0, and a section name and an https origin only if it has them")
+		}
+	default:
+		return errors.New("cause must be limit, bad_url or store")
 	}
 	return nil
 }

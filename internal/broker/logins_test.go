@@ -402,7 +402,7 @@ func TestLoginList(t *testing.T) {
 		}
 	}
 	events := l.audit.all()
-	mustEvents(t, events, "login_list")
+	mustEvents(t, events, "login_list login_list") // other: 0 matches, web: 2
 	if got := encodeEvents(t, events); !strings.Contains(got, `"count":2`) || strings.Contains(got, "alice") ||
 		strings.Contains(got, "Example") {
 		t.Errorf("entry %s", got)
@@ -653,4 +653,209 @@ func TestLoginPreapproveDeny(t *testing.T) {
 		l.noMessage(l.post(t.Context(), l.laptp, api.PathPreapprove, api.PreapproveRequest{Login: itemShop, URL: pageShop, Uses: 1}),
 			http.StatusForbidden)
 	})
+}
+
+// changeAfterAsk starts a login, changes the shop item when the person is
+// asked, taps, and returns the answer.
+func (l *loginTest) changeAfterAsk(change func()) *result {
+	l.t.Helper()
+	p := l.start(l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+	pr := l.waitAsked(1)[0].Prompt
+	change()
+	l.tap(pr.RequestID, audit.AnswerApproveOnce)
+	return p.wait(l.t)
+}
+
+func TestLoginItemChangesAfterTheTap(t *testing.T) {
+	changes := map[string]func(l *loginTest){
+		"username":   func(l *loginTest) { l.shop.Username = "mallory@example.com" },
+		"name":       func(l *loginTest) { l.shop.Name = "Another name" },
+		"collection": func(l *loginTest) { l.shop.Collections = []string{collNone} },
+		"uri":        func(l *loginTest) { l.shop.URIs = []store.LoginURI{{URI: "https://evil.test"}} },
+		"reprompt":   func(l *loginTest) { l.shop.Reprompt = true },
+		"second collection": func(l *loginTest) {
+			l.shop.Collections = []string{collWeb, collOther}
+		},
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			l := newLoginEnv(t, nil)
+			res := l.changeAfterAsk(func() { change(l) })
+			mustStatus(t, res, http.StatusForbidden)
+			if bytes.Contains(res.body, []byte(l.pw)) {
+				t.Error("the password is in the answer")
+			}
+			if strings.Contains(eventNames(l.audit.all()), "secret_sent") {
+				t.Error("a password was sent")
+			}
+			l.vs.checkCleared(t)
+		})
+	}
+}
+
+func TestLoginRuleChangesAfterTheTap(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	p := l.start(l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+	pr := l.waitAsked(1)[0].Prompt
+	// A reload gives the section a longer window: the decided rule differs.
+	cfg := *l.svc.view().cfg
+	cfg.Logins = map[string]config.Logins{}
+	for k, v := range l.svc.view().cfg.Logins {
+		cfg.Logins[k] = v
+	}
+	w := cfg.Logins["web"]
+	w.Rule.Window = 4 * time.Hour
+	cfg.Logins["web"] = w
+	v := *l.svc.view()
+	v.cfg = &cfg
+	l.svc.cur.Store(&v)
+	l.tap(pr.RequestID, audit.AnswerApproveOnce)
+	mustStatus(t, p.wait(t), http.StatusForbidden)
+}
+
+func TestLoginItemRuleInAnotherSection(t *testing.T) {
+	l := newLoginEnv(t, func(cfg *config.Broker) {
+		o := cfg.Logins["other"]
+		o.Items = map[string]config.LoginItemRule{
+			itemShop: {Clients: []string{"laptop"}, Rule: config.Rule{Ask: config.AskAlways}},
+		}
+		cfg.Logins["other"] = o
+	})
+	l.noMessage(l.post(t.Context(), l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop)), http.StatusForbidden)
+	res := l.listReq(pageShop)
+	ans, err := api.ReadAnswer[api.ListLoginsAnswer](bytes.NewReader(res.body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ans.Logins {
+		if e.ID == itemShop {
+			t.Errorf("the list holds an item that another section has a rule for")
+		}
+	}
+}
+
+func TestLoginTOTPStoreFailure(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	mustStatus(t, l.approveLogin(itemShop, pageShop, audit.AnswerApproveOnce), http.StatusOK)
+	l.shop.fetchErr = errors.New("fake bw: down")
+	mustStatus(t, l.totp(itemShop, pageShop), http.StatusServiceUnavailable)
+	events := l.audit.all()
+	if got := encodeEvents(t, events[len(events)-1:]); !strings.Contains(got, `"cause":"store"`) {
+		t.Errorf("last entry %s", got)
+	}
+}
+
+func TestLoginTOTPNoTicketIsLimited(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	l.svc.setNow(func() time.Time { return now })
+	for i := range LoginTOTPNoTicketRate {
+		if res := l.totp(itemShop, pageShop); res.status != http.StatusForbidden {
+			t.Fatalf("request %d: status %d", i, res.status)
+		}
+	}
+	n := len(l.audit.all())
+	mustStatus(t, l.totp(itemShop, pageShop), http.StatusTooManyRequests)
+	if got := len(l.audit.all()); got != n {
+		t.Errorf("a limited request wrote an entry")
+	}
+	if l.vs.fetches() != 0 {
+		t.Error("a request with no ticket fetched from the store")
+	}
+}
+
+func TestLoginListAudited(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	// No match: one entry with a count of 0 for each section of the client.
+	mustStatus(t, l.listReq("https://nothing.test/"), http.StatusOK)
+	mustEvents(t, l.audit.all(), "login_list login_list")
+	if got := encodeEvents(t, l.audit.all()); strings.Contains(got, `"count":1`) || strings.Contains(got, `"count":2`) {
+		t.Errorf("entries %s", got)
+	}
+	// A bad URL.
+	mustStatus(t, l.listReq("http://example.com/"), http.StatusForbidden)
+	events := l.audit.all()
+	mustEvents(t, events, "login_list login_list login_list")
+	if got := encodeEvents(t, events[2:]); !strings.Contains(got, `"cause":"bad_url"`) {
+		t.Errorf("entry %s", got)
+	}
+	// A store failure.
+	l.vs.lmu.Lock()
+	l.vs.listErr = errors.New("fake bw: down")
+	l.vs.lmu.Unlock()
+	mustStatus(t, l.listReq(pageShop), http.StatusServiceUnavailable)
+	events = l.audit.all()
+	if got := encodeEvents(t, events[len(events)-1:]); !strings.Contains(got, `"cause":"store"`) {
+		t.Errorf("entry %s", got)
+	}
+}
+
+func TestLoginListRateIsAudited(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	l.svc.setNow(func() time.Time { return now })
+	for range LoginListRate {
+		mustStatus(t, l.listReq(pageShop), http.StatusOK)
+	}
+	n := len(l.audit.all())
+	mustStatus(t, l.listReq(pageShop), http.StatusTooManyRequests)
+	events := l.audit.all()
+	if len(events) != n+1 || !strings.Contains(encodeEvents(t, events[n:]), `"cause":"limit"`) {
+		t.Errorf("entries %s", eventNames(events[n:]))
+	}
+}
+
+func TestLoginRequestRate(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	l.svc.setNow(func() time.Time { return now })
+	for i := range LoginRequestRate {
+		if res := l.post(t.Context(), l.laptp, api.PathLogin, l.loginReq(itemShop, "https://nothing.test/")); res.status != http.StatusForbidden {
+			t.Fatalf("request %d: status %d", i, res.status)
+		}
+	}
+	// The cap counts requests, so the next one is refused before the store.
+	// (A bad page is refused before the cap, so use a good page.)
+	for range LoginRequestRate {
+		l.post(t.Context(), l.laptp, api.PathLogin, l.loginReq("cccccccc-0000-0000-0000-000000000009", pageShop))
+	}
+	before := l.vs.fetches()
+	mustStatus(t, l.post(t.Context(), l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop)), http.StatusTooManyRequests)
+	mustStatus(t, l.post(t.Context(), l.laptp, api.PathPreapprove,
+		api.PreapproveRequest{Login: itemShop, URL: pageShop, Uses: 1}), http.StatusTooManyRequests)
+	if l.vs.fetches() != before {
+		t.Error("a limited request ran the store")
+	}
+	if n := len(l.approver.Asked()); n != 0 {
+		t.Errorf("the approver was asked %d times", n)
+	}
+	now = now.Add(time.Minute)
+	p := l.start(l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+	l.waitAsked(1)
+	p.cancel()
+}
+
+func TestLoginPreapproveUsedOnce(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	mustStatus(t, l.loginPre(itemShop, pageShop), http.StatusOK)
+	p1 := l.start(l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+	p2 := l.start(l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+	var won, other *pendingResult
+	select {
+	case r := <-p1.done:
+		p1.done <- r
+		won, other = p1, p2
+	case r := <-p2.done:
+		p2.done <- r
+		won, other = p2, p1
+	case <-time.After(waitLimit):
+		t.Fatal("no request got the login")
+	}
+	mustStatus(t, won.wait(t), http.StatusOK)
+	// The other one needs a tap of its own.
+	l.waitAsked(2)
+	other.cancel()
+	if n := len(l.approver.Asked()); n != 2 {
+		t.Errorf("%d messages, want 2", n)
+	}
 }

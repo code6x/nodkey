@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -30,6 +31,14 @@ const (
 	// LoginListRate is the most lists of logins that one client may ask for
 	// in a minute. There is no tap for a list, so the rate is limited.
 	LoginListRate = 10
+	// LoginRequestRate is the most requests for a login, or for a login
+	// pre-approval, that one client may make in a minute. Each one runs the
+	// store (bw sync and get) before any tap.
+	LoginRequestRate = 10
+	// LoginTOTPNoTicketRate is the most TOTP requests without a ticket or
+	// a window grant that one client may have answered with an audit entry
+	// in a minute.
+	LoginTOTPNoTicketRate = 10
 	// LoginTOTPTime is how long a TOTP code may be asked for after an
 	// approved login of the same client, item and origin. One code only.
 	LoginTOTPTime = 2 * time.Minute
@@ -50,6 +59,8 @@ type loginTicket struct {
 type loginState struct {
 	mu      sync.Mutex
 	lists   map[string][]time.Time // when each client asked for a list
+	reqs    map[string][]time.Time // when each client asked for a login
+	noTotp  map[string][]time.Time // TOTP requests without a ticket
 	tickets map[loginTicket]time.Time
 }
 
@@ -60,22 +71,44 @@ func (s *Service) nowTime() time.Time {
 	return s.now()
 }
 
+// allowIn reports whether client may do one more thing now, with at most
+// limit in a minute, and counts it. The caller holds s.logins.mu.
+func allowIn(m *map[string][]time.Time, now time.Time, client string, limit int) bool {
+	if *m == nil {
+		*m = make(map[string][]time.Time)
+	}
+	recent := slices.DeleteFunc((*m)[client], func(t time.Time) bool { return now.Sub(t) >= time.Minute })
+	if len(recent) >= limit {
+		(*m)[client] = recent
+		return false
+	}
+	(*m)[client] = append(recent, now)
+	return true
+}
+
 // allowList reports whether client may ask for one more list now, and
 // counts it.
 func (s *Service) allowList(client string) bool {
 	now := s.nowTime()
 	s.logins.mu.Lock()
 	defer s.logins.mu.Unlock()
-	if s.logins.lists == nil {
-		s.logins.lists = make(map[string][]time.Time)
-	}
-	recent := slices.DeleteFunc(s.logins.lists[client], func(t time.Time) bool { return now.Sub(t) >= time.Minute })
-	if len(recent) >= LoginListRate {
-		s.logins.lists[client] = recent
-		return false
-	}
-	s.logins.lists[client] = append(recent, now)
-	return true
+	return allowIn(&s.logins.lists, now, client, LoginListRate)
+}
+
+// allowLoginRequest is allowList for a login or a login pre-approval.
+func (s *Service) allowLoginRequest(client string) bool {
+	now := s.nowTime()
+	s.logins.mu.Lock()
+	defer s.logins.mu.Unlock()
+	return allowIn(&s.logins.reqs, now, client, LoginRequestRate)
+}
+
+// allowNoTicket is allowList for a TOTP request that has no ticket.
+func (s *Service) allowNoTicket(client string) bool {
+	now := s.nowTime()
+	s.logins.mu.Lock()
+	defer s.logins.mu.Unlock()
+	return allowIn(&s.logins.noTotp, now, client, LoginTOTPNoTicketRate)
 }
 
 // addTicket lets the client take one TOTP code for the login.
@@ -167,6 +200,11 @@ func checkLoginItem(cfg *config.Broker, client string, page loginmatch.Page, met
 		return loginSel{}, "the item is in no collection of a [logins.*] section"
 	case len(sections) > 1:
 		return loginSel{}, "the item is in two configured collections"
+	}
+	for name, other := range cfg.Logins {
+		if _, has := other.Items[strings.ToLower(meta.ID)]; has && name != sections[0] {
+			return loginSel{}, "another [logins.*] section has an item rule for the item"
+		}
 	}
 	l := cfg.Logins[sections[0]]
 	if l.Store != from {
@@ -293,6 +331,13 @@ func loginScope(sel loginSel, origin string) *approval.LoginScope {
 // returns only what the item says about itself. On a failure the request
 // is answered.
 func (rq *request) checkedLogin(ctx context.Context, page loginmatch.Page, item string) (loginSel, bool) {
+	if !rq.s.allowLoginRequest(rq.client) {
+		rq.s.log.Info("broker: a request for a website login is denied: the client asks too often; wait a minute",
+			slog.String("client", rq.client))
+		rq.recordDenied(audit.Subject{}, audit.CauseLimit, "", true)
+		rq.answer(http.StatusTooManyRequests)
+		return loginSel{}, false
+	}
 	cfg := rq.v.cfg
 	sections := candidateSections(cfg, rq.client)
 	rq.failCode = audit.CodeStoreFailed
@@ -369,6 +414,7 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 	defer l.Clear()
 	again, reason := checkLoginItem(rq.s.view().cfg, rq.client, page, l.LoginItem, from)
 	if reason != "" || again.section != sel.section || l.Username != sel.meta.Username ||
+		l.Name != sel.meta.Name || l.Reprompt != sel.meta.Reprompt || !reflect.DeepEqual(again.rule, sel.rule) ||
 		!strings.EqualFold(l.ID, item) || !rq.stillAllowedLogin(sel, item) {
 		rq.s.log.Warn("broker: the login item changed while the request waited; the request is denied",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
@@ -450,8 +496,11 @@ func (rq *request) stillAllowedLogin(sel loginSel, item string) bool {
 		return false
 	}
 	clients, rule, ok := l.RuleFor(item)
-	_ = rule
-	return ok && slices.Equal(clients, sel.clients) && slices.Contains(clients, rq.client)
+	if sel.meta.Reprompt {
+		rule.Ask = config.AskAlways // as in checkLoginItem
+	}
+	return ok && slices.Equal(clients, sel.clients) && slices.Contains(clients, rq.client) &&
+		reflect.DeepEqual(rule, sel.rule)
 }
 
 // listLogins answers a request for the list of logins of a page. It needs
@@ -462,15 +511,27 @@ func (rq *request) listLogins(ctx context.Context, r *http.Request) {
 		return // ReadJSON has answered
 	}
 	rq.releaseBody()
+	// refuse writes the one entry of a refused list, limited per minute so
+	// that a client cannot fill the disk with them, then answers.
+	refuse := func(cause audit.ListCause, origin string, status int) {
+		if rq.s.refusedAllowed(rq.client) {
+			if _, err := rq.s.append(audit.LoginList{Client: rq.client, Origin: origin, Cause: cause}); err != nil {
+				status = http.StatusServiceUnavailable
+			}
+		}
+		rq.answer(status)
+	}
 	page, err := loginmatch.ParsePage(req.URL)
 	if err != nil {
 		rq.s.log.Info("broker: a request for a list of logins is denied: the page URL is not valid",
 			slog.String("client", rq.client))
-		rq.answer(http.StatusForbidden)
+		refuse(audit.ListBadURL, "", http.StatusForbidden)
 		return
 	}
 	if !rq.s.allowList(rq.client) {
-		rq.answer(http.StatusTooManyRequests)
+		rq.s.log.Info("broker: a request for a list of logins is denied: the client asks too often; wait a minute",
+			slog.String("client", rq.client))
+		refuse(audit.ListLimited, page.Origin(), http.StatusTooManyRequests)
 		return
 	}
 	cfg := rq.v.cfg
@@ -495,9 +556,10 @@ func (rq *request) listLogins(ctx context.Context, r *http.Request) {
 			if errors.Is(err, store.ErrRateLimited) {
 				rq.s.rateLimited(l.Store)
 			}
-			rq.answer(http.StatusServiceUnavailable)
+			refuse(audit.ListStore, page.Origin(), http.StatusServiceUnavailable)
 			return
 		}
+		counts[name] = 0
 		for _, it := range items {
 			sel, reason := checkLoginItem(cfg, rq.client, page, it, l.Store)
 			if reason != "" || sel.section != name {
@@ -508,10 +570,11 @@ func (rq *request) listLogins(ctx context.Context, r *http.Request) {
 		}
 	}
 	if len(entries) > api.MaxLoginEntries {
-		rq.answer(http.StatusServiceUnavailable)
+		refuse(audit.ListStore, page.Origin(), http.StatusServiceUnavailable)
 		return
 	}
-	// The entries come before the answer; no entry, no list.
+	// The entries come before the answer; no entry, no list. A section
+	// with no match gets an entry with a count of 0.
 	for _, name := range slices.Sorted(maps.Keys(counts)) {
 		if _, err := rq.s.append(audit.LoginList{Client: rq.client, Logins: name, Origin: page.Origin(), Count: counts[name]}); err != nil {
 			rq.answer(http.StatusServiceUnavailable)
@@ -551,14 +614,25 @@ func (rq *request) loginTOTP(ctx context.Context, r *http.Request) {
 	ticket := loginTicket{client: rq.client, item: item, origin: origin}
 	// Cheap check first: no ticket and no window grant, no fetch.
 	if !rq.s.hasTicket(ticket) && !rq.core.LoginGranted(rq.client, item) {
+		if !rq.s.allowNoTicket(rq.client) {
+			// Limited: no entry, as for other refused requests over the cap.
+			rq.s.log.Info("broker: a request for a TOTP code is denied: the client asks too often without a login; wait a minute",
+				slog.String("client", rq.client))
+			rq.answer(http.StatusTooManyRequests)
+			return
+		}
 		deny(audit.TOTPNoGrant, http.StatusForbidden, audit.Subject{Logins: "", Item: item, Origin: origin})
 		return
 	}
 	cfg := rq.v.cfg
 	sections := candidateSections(cfg, rq.client)
 	rq.failCode = ""
-	l, from, ok := rq.fetchLoginForTOTP(ctx, cfg, sections, item)
-	if !ok {
+	l, from, kind := rq.fetchLoginForTOTP(ctx, cfg, sections, item)
+	switch kind {
+	case totpFetchStore:
+		deny(audit.TOTPStoreFail, http.StatusServiceUnavailable, audit.Subject{})
+		return
+	case totpFetchRefused:
 		deny(audit.TOTPBadItem, http.StatusForbidden, audit.Subject{})
 		return
 	}
@@ -606,9 +680,18 @@ func (rq *request) loginTOTP(ctx context.Context, r *http.Request) {
 	}{Code: code})
 }
 
+// totpFetch says how fetchLoginForTOTP ended.
+type totpFetch int
+
+const (
+	totpFetched      totpFetch = iota // the login is returned
+	totpFetchRefused                  // no store has the item, or it was cancelled
+	totpFetchStore                    // a store failed
+)
+
 // fetchLoginForTOTP is fetchLogin for a request that has no audit subject
-// of the core: it only answers the failures with a plain status.
-func (rq *request) fetchLoginForTOTP(ctx context.Context, cfg *config.Broker, sections []string, item string) (store.Login, string, bool) {
+// of the core: it does not answer; it says how the fetch ended.
+func (rq *request) fetchLoginForTOTP(ctx context.Context, cfg *config.Broker, sections []string, item string) (store.Login, string, totpFetch) {
 	for _, name := range loginStores(cfg, sections) {
 		ls, isLS := rq.s.stores[name].(store.LoginStore)
 		if !isLS {
@@ -619,7 +702,7 @@ func (rq *request) fetchLoginForTOTP(ctx context.Context, cfg *config.Broker, se
 		cancel()
 		if err == nil {
 			rq.values = append(rq.values, l.Password, l.TOTP)
-			return l, name, true
+			return l, name, totpFetched
 		}
 		l.Clear()
 		if ctx.Err() == nil && errors.Is(err, store.ErrFailed) && !errors.Is(err, store.ErrLoggedOut) && !errors.Is(err, store.ErrLocked) {
@@ -630,9 +713,13 @@ func (rq *request) fetchLoginForTOTP(ctx context.Context, cfg *config.Broker, se
 		if errors.Is(err, store.ErrRateLimited) {
 			rq.s.rateLimited(name)
 		}
-		return store.Login{}, "", false
+		if ctx.Err() != nil || errors.Is(err, store.ErrTrashed) || errors.Is(err, store.ErrArchived) ||
+			errors.Is(err, store.ErrNotLogin) || errors.Is(err, store.ErrNoValue) {
+			return store.Login{}, "", totpFetchRefused
+		}
+		return store.Login{}, "", totpFetchStore
 	}
-	return store.Login{}, "", false
+	return store.Login{}, "", totpFetchRefused
 }
 
 // preapproveLogin answers a request for a one-use pre-approval of a login

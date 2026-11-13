@@ -1552,8 +1552,8 @@ item name and the username of each item of the collection that matches
 the page. These are not secrets, but they tell the agent which accounts
 the owner has on a site.
 What nodkey does: a list shows only items that match an `https` page,
-never a password or a TOTP seed. Each list is in the audit log, and lists
-have a rate limit per client. The owner puts into the collection only
+never a password or a TOTP seed. Each list is in the audit log, even an
+empty or refused one, and lists have a rate limit per client. The owner puts into the collection only
 the logins that agents may use.
 Risk that remains: low.
 
@@ -1598,7 +1598,11 @@ What nodkey does:
 - An item with "Master password re-prompt" needs a tap for each login;
   no `window` grant hands it out.
 - The broker does not keep the password while the request waits for the
-  tap. After the tap it reads the item again and runs every check again.
+  tap. After the tap it reads the item again and runs every check again;
+  the username, the item name, the rule and the re-prompt flag must be
+  unchanged.
+- Logins and pre-approvals have a rate limit per client, before the
+  store runs.
 - A reload keeps a login grant only when the item has the same rule.
 Risk that remains: low. In its 60 seconds, a pre-approval can be used by
 any process of that client that asks for that item and origin (as T35).

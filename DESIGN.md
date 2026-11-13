@@ -4617,19 +4617,24 @@ broker cannot check that the browser is on that page.
    the item name and the username. Never a password or a TOTP seed. A
    tap only to see a list would teach the approver to tap without
    reading, so a list needs none. It has a rate limit per client of
-   `LoginListRate` (10 lists a minute), and an audit entry.
+   `LoginListRate` (10 lists a minute). Every list has an audit entry:
+   one for each section of the client, with a count of 0 when nothing
+   matches. A refused list (rate limit, bad URL, store failure) has one
+   entry with a `cause`, at most `refusedEntriesPerMinute` a minute.
 2. **Login** (a tap, a grant, or a pre-approval). The client sends a
    page URL and one item ID from the list. The broker runs
-   `bw sync --force` and `bw get item ID`, and checks that the item:
+   `bw sync --force` and `bw get item ID` (at most `LoginRequestRate`,
+   10 a minute per client, for logins and pre-approvals together; more
+   get 429 before the store runs), and checks that the item:
    is a login item; is not in the trash; is not archived; has
    `collectionIds` that hold the configured collection and no other
-   configured collection; and has a URI that matches the page. Each
+   configured collection; has no item rule in another section; and has a URI that matches the page. Each
    check that fails means deny, with an audit entry. Then it applies the
    item's rule (21.2). The broker clears the password and the TOTP seed
    at once: they are not kept while the request waits for the tap. On
    approval it runs `bw sync --force` and `bw get item ID` again, runs
-   every check again, and the username must be the same as in the
-   message. Then it returns the username and the password.
+   every check again, and the username, the item name and the rule
+   must be the same as in the message. Then it returns the username and the password.
    A request with the header of a standing grant token is refused:
    standing grants for logins are not built yet.
    An item with Bitwarden's "Master password re-prompt" (`reprompt` is
@@ -4646,6 +4651,9 @@ broker cannot check that the browser is on that page.
      for `LoginTOTPTime` (2 minutes) after the login. The second ask for
      a code needs a new login. The broker keeps at most 1024 tickets.
    - A `window` grant covers codes during its window, like logins.
+   - A request with no ticket and no grant is answered with 403 and an
+     entry, at most `LoginTOTPNoTicketRate` (10) a minute per client;
+     more get 429 and no entry. A store failure is `store`, status 503.
    - Standing grants for logins are not built yet (21.7).
 
 Several logins for one site: the list shows them all, and the client
@@ -4755,7 +4763,7 @@ to that item (`RuleFor` gives the same clients and rule).
 ### 21.8 Audit events
 
 *(Built.)* New events: `login_list` (client, collection section, page
-origin, the number of items), `login_totp` (client, section, item ID,
+origin, the number of items; or the `cause` of a refused list), `login_totp` (client, section, item ID,
 page origin, the decision and why), the request events of section 9 with
 the kind `web_login` and the subject fields `logins`, `item` and
 `origin`, and the `preapprove` events of section 9 with these subject

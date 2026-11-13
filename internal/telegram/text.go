@@ -466,6 +466,12 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		}
 	}
 	verified := func(label, value string) { t.write("\n✅ " + label + ": " + value) }
+	// The name and the user name of an item come from the vault, so they
+	// are set apart as code.
+	verifiedCode := func(label, value string) {
+		t.write("\n✅ " + label + ": ")
+		t.code(value)
+	}
 	verified("machine", p.Client)
 	switch p.Kind {
 	case audit.KindSecrets:
@@ -480,12 +486,12 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		verified("remote user", p.RemoteUser)
 		verified("grants end", p.GrantEnds.Format(clockFormat)+" ("+strconv.Itoa(p.WindowMinutes)+" min)")
 	case audit.KindWebLogin:
-		verified("login", p.Login.Name)
-		verified("username", p.Login.Username)
+		verifiedCode("login", p.Login.Name)
+		verifiedCode("username", p.Login.Username)
 	case audit.KindPreapprove:
 		if p.Login != nil {
-			verified("login", p.Login.Name)
-			verified("username", p.Login.Username)
+			verifiedCode("login", p.Login.Name)
+			verifiedCode("username", p.Login.Username)
 			t.write("\nallows: one login in the next " + strconv.Itoa(int(p.Login.For/time.Second)) + " s after the tap")
 			break
 		}
