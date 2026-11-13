@@ -242,6 +242,9 @@ type Service struct {
 	// nil for none (SetSecurity). The handler reads it without mu.
 	security atomic.Pointer[securityInfo]
 
+	// logins holds the lists and the TOTP tickets of website logins.
+	logins loginState
+
 	coreStopped atomic.Bool // the approval core's Run returned
 	broken      atomic.Bool // an audit write failed
 

@@ -940,6 +940,102 @@ access to it: such an account could read them too.
    not start, and the error has `bw unlock` and `took too long`, the
    unlock took more than 30 seconds: lower the KDF settings (step 3).
 
+### Website logins: a shared collection
+
+> **The browser part is not ready yet.** The broker hands out logins
+> (issue #103). The plugin for agent-browser is issue #104. Until then,
+> only `nodkey preapprove --login` uses logins from the command line.
+
+Agents can log in to websites with logins from your own Bitwarden vault.
+You choose the logins: you put them into one shared collection. The
+separate account of the `bw` store (above) can read only that
+collection. You still see, fill and change these logins in your normal
+vault. A password that you change there is used on the next request.
+
+The Free plan of Bitwarden allows an organization with 2 users and 2
+collections ([organizations](https://bitwarden.com/help/what-is-an-organization/),
+seen 2026-10-21). That is enough: your main account and the separate
+account.
+
+1. **Make the organization.** Log in to the web app with your main
+   account. Choose **New organization**, give it a name, and choose the
+   Free plan.
+2. **Make the collection.** In the organization, open **Collections**
+   and make one named, for example, `agents`.
+3. **Invite the separate account.** In **Members**, invite the email
+   address of the separate account of the `bw` store, with the role
+   **User**. Give it access to the `agents` collection only, with the
+   permission **Can view**. It must not be able to change items. Do not
+   give it "Can view, except passwords": then the broker cannot read the
+   password. Accept the invitation as the separate account, and confirm
+   the member with your main account.
+4. **Move the logins.** In your main vault, open each login that agents
+   may use, and choose **Assign to collections** (or **Move to
+   organization**) and `agents`. Only these logins. Check the URIs of
+   each item: the broker hands out a login only for an `https` page that
+   matches a URI of the item, with Bitwarden's match type of that URI.
+   A URI with no match type is read as **Base domain**, the loosest
+   type. When other people run other hosts of the same domain, set the
+   match type to **Host**. Regular expressions never match.
+5. **The TOTP seed, if any.** When a login has an "Authenticator key",
+   the broker makes the codes itself. It reads a base32 secret, or an
+   `otpauth://totp` URI with SHA1, SHA256 or SHA512, 6 to 8 digits and
+   any period. It refuses `steam://` and other forms. For a site whose
+   second factor matters more, leave the key out of the item and type
+   the code yourself.
+6. **Find the ID of the collection.** On the broker host, as the user of
+   the store, after a sync:
+
+   ```sh
+   bw list collections --nointeraction
+   ```
+
+   The config names the collection by its `id`, never by its name.
+7. **Add the collection to `broker.toml`** (DESIGN.md section 21.2):
+
+   ```toml
+   [logins.web]
+   store = "vault"
+   collection = "00000000-0000-0000-0000-000000000000"
+   clients = ["laptop"]
+   ask = "window"
+   window = "15m"
+   preapprove = true
+
+   [[logins.web.items]]
+   id = "11111111-1111-1111-1111-111111111111"
+   clients = ["laptop"]
+   ask = "always"
+   preapprove = true
+   ```
+
+   `store` is a store of type `bw`. `ask = "never"` is refused for
+   logins. An item's own rule replaces the rule of the collection
+   completely. A change of `[logins.*]` needs a restart of the broker:
+   a reload refuses it. Putting an item into the collection needs no
+   change of the config.
+
+8. **One login after one tap, for a browser that waits only a short
+   time.** On the client:
+
+   ```sh
+   nodkey preapprove --login 11111111-1111-1111-1111-111111111111 --url https://example.com/sign-in
+   ```
+
+   It waits for your tap as long as any other request (the `timeout`
+   of the broker). After the tap, the next login to that item, from that
+   machine, for that origin, gets the login without a new tap. It works
+   once, and only in the 60 seconds after the tap. The rule of the item
+   needs `preapprove = true`.
+
+**Never unlock your main vault in a browser or an app that an agent can
+drive**: not in agent-browser, not in a browser that an agent reaches
+over the Chrome DevTools Protocol, and not in a browser profile that
+such a browser uses. With the unlocked extension, the agent can open the
+extension's own page in a tab and read every item
+(THREAT-MODEL.md T32 and T46). Keep the separate account off agent
+machines, as above.
+
 ## 6. SSH keys and the broker's known_hosts
 
 Skip this section if you use nodkey only for secrets. The broker still

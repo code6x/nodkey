@@ -53,6 +53,10 @@ type Request struct {
 	Windows   []WindowSpec
 	TokenHash [32]byte
 
+	// Login is the website login of a KindWebLogin request, and of a
+	// KindPreapprove request for one login (Uses 1, no times).
+	Login *LoginScope
+
 	// Claim is the claimed text, made safe by the caller (see Claim).
 	Claim Claim
 
@@ -61,6 +65,26 @@ type Request struct {
 	// or its message is about to be sent. The client prints the code. It
 	// must not block for long.
 	OnWait func(shortCode string)
+}
+
+// LoginScope describes one website login (DESIGN.md section 21). The
+// broker fills it from the Bitwarden item it read, after its own checks.
+// The core checks it against the config again.
+type LoginScope struct {
+	// Section is the [logins.NAME] section that holds the item.
+	Section string
+	// Item is the item ID in lower case.
+	Item string
+	// Name and Username are text from the vault. The core cleans them
+	// before they reach a message, and they never go into the audit log.
+	Name, Username string
+	// Origin is the https origin of the page, as the client claimed it.
+	Origin string
+	// Clients and Rule are what config.Logins.RuleFor gave for the item.
+	// For an item with "master password re-prompt", the broker sets
+	// Rule.Ask to config.AskAlways.
+	Clients []string
+	Rule    config.Rule
 }
 
 // WindowSpec is one daily or weekly window of a KindStanding request, in

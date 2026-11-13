@@ -1008,6 +1008,22 @@ What to do:
   a security key. A code by email does not help if you read that email on
   an agent machine.
 
+**Website logins (DESIGN.md section 21, owner 2026-11-11).** The logins
+that agents may use are in a collection of an organization that the
+owner's main account owns. So the main account can read them, and the
+rule above needs other words for it. These are the owner's own logins,
+and the owner uses them every day. The rule is:
+- The separate account of the `bw` store stays off agent machines, in
+  every app, as above.
+- The owner's main vault is never unlocked in a browser or an app that
+  an agent can drive: not in agent-browser, not in a browser that the
+  agent reaches over the Chrome DevTools Protocol, and not in a browser
+  profile that such a browser uses. An agent that drives a browser with
+  the unlocked extension can open the extension's own page in a tab and
+  read every item (T46).
+- The owner may keep the main vault unlocked in a browser that only the
+  owner uses, on a machine with no agent.
+
 Risk that remains: real. nodkey cannot see a read in Bitwarden's own
 apps, and it cannot check where an account is logged in.
 
@@ -1506,6 +1522,90 @@ compare by name is still compared and marked; a test fails when a field
 is in neither list. The short form never drops a line that widens: when
 they do not all fit, it says how many there are. It reads no credential.
 It is no control of the broker: it only helps a person to decide.
+
+**T43. A website login goes to a page that the client claims.**
+The client sends the page URL of a login (DESIGN.md section 21). The
+broker cannot check that the browser is on that page: the agent can
+claim `https://example.com` and paste the password into another site.
+What nodkey does:
+- The message shows the page origin as claimed, and the item name and
+  the username as read from Bitwarden. The tap is for that login, from
+  that client.
+- The page must be `https`, and it must match a URI of the item, by
+  Bitwarden's match type of that URI. So a login for one site is never
+  handed out for a page of another site, by mistake or by a prompt
+  injection that names a wrong site.
+- "Starts with" and "exact" also need the same host and port as the
+  page, which is stricter than in Bitwarden.
+- A URI with no match type uses the base domain, the loosest type
+  (DESIGN.md section 21.4). Where other people run other hosts of the
+  same domain, set the URI's match type to "Host".
+- The page URL is checked strictly and is never in an error.
+What nodkey does not do: it cannot stop an agent that has the password
+from using it anywhere. This is the same as for every secret (section 5).
+Risk that remains: real, and the same as for a secret.
+
+**T44. A list of logins shows item names and usernames on the agent
+machine.**
+A list needs no tap (DESIGN.md section 21.3). It shows the item ID, the
+item name and the username of each item of the collection that matches
+the page. These are not secrets, but they tell the agent which accounts
+the owner has on a site.
+What nodkey does: a list shows only items that match an `https` page,
+never a password or a TOTP seed. Each list is in the audit log, even an
+empty or refused one, and lists have a rate limit per client. The owner puts into the collection only
+the logins that agents may use.
+Risk that remains: low.
+
+**T45. The broker reads TOTP seeds.**
+The broker makes TOTP codes itself, so it reads the seed of each login
+it hands out. Anyone who controls the broker can make codes. And a login
+with its seed in the same item is one factor, not two, for anyone who
+can read the item.
+What nodkey does:
+- The seed never leaves the broker: not in an answer, an error, a log or
+  the audit log. Its type hides it in every format, and its buffer is
+  cleared after use.
+- A code is handed out only after an approved login, for one code within
+  2 minutes, or during a `window` grant.
+- `bw list items` returns every seed of the collection: the broker checks
+  the field and keeps none of it, and clears the whole answer.
+- Only base32 secrets and `otpauth://totp` are read; `steam://` and other
+  forms are refused.
+Risk that remains: the broker host is trusted (section 3). Put a login
+whose second factor matters more into the collection with no seed, and
+type the code yourself.
+
+**T46. The owner's vault is open in a browser that an agent drives.**
+An agent that drives a browser with an unlocked Bitwarden extension can
+open the extension's own page in a tab and read every item. Then nodkey
+gives no protection. See the rule for website logins in T32.
+What nodkey does: the setup guide says it, and the agent-browser how-to
+(#104) uses a separate browser profile with no password manager.
+Risk that remains: real; it depends on the owner.
+
+**T47. A login grant or a pre-approval hands out another login.**
+A `window` grant or a one-use pre-approval (DESIGN.md section 21.7)
+lets a login go out without a new tap. An agent could try to use it for
+another item of the same site, from another client, for another page, or
+later than the person meant.
+What nodkey does:
+- A `window` grant covers (client, item ID), never a config section or a
+  site. A pre-approval covers (client, item ID, page origin).
+- A pre-approval is used at most once, in one atomic step, and ends
+  `LoginPreapproveTime` (60 seconds) after the tap. The message says
+  this. It names no time limit for the tap itself.
+- An item with "Master password re-prompt" needs a tap for each login;
+  no `window` grant hands it out.
+- The broker does not keep the password while the request waits for the
+  tap. After the tap it reads the item again and runs every check again;
+  the username, the item name, the rule and the re-prompt flag must be
+  unchanged.
+- Logins and pre-approvals have a rate limit per client, before the
+  store runs.
+- A reload keeps a login grant only when the item has the same rule.
+Risk that remains: low. In its 60 seconds, a pre-approval can be used by
+any process of that client that asks for that item and origin (as T35).
 
 ## 7. Assumptions
 

@@ -154,6 +154,10 @@ type Prompt struct {
 	// (audit.ViaScheduled). It is empty in a notice of a "never ask" use.
 	Via audit.Via
 
+	// Login is set for a KindWebLogin request and for a pre-approval of
+	// one login.
+	Login *LoginPrompt
+
 	// Claim is the claimed part.
 	Claim Claim
 
@@ -172,6 +176,18 @@ type Prompt struct {
 	// message has no such button. For an SSH grant, this button makes the
 	// grants that end at GrantEnds.
 	WindowMinutes int
+}
+
+// LoginPrompt is the part of a Prompt about a website login. Name and
+// Username come from the vault: they are verified, but the core has
+// cleaned them, because the vault may hold text that fakes the look of a
+// message. Origin is claimed by the client (THREAT-MODEL.md T43).
+type LoginPrompt struct {
+	Name, Username, Origin string
+	// For is how long after the tap a pre-approval allows its one login:
+	// LoginPreapproveTime. It is zero for a login request, and the
+	// message of a pre-approval shows no time limit for the tap.
+	For time.Duration
 }
 
 // Ending says how a request with a message ended, so the approver can

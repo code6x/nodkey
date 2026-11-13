@@ -49,6 +49,8 @@ type pending struct {
 	grantHostKeys []string // KindSSHGrant: the host keys of the hosts, in SSH wire form
 	grantEnds     moment   // KindSSHGrant: when its grants end
 	plan          *grant   // KindPreapprove: the grant that an approval starts
+	origin        string   // KindWebLogin, and a login pre-approval: the claimed https origin
+	login         *LoginPrompt
 
 	start, deadline moment
 	once            bool // the message has "Approve once"
@@ -119,7 +121,14 @@ func (p *pending) prompt(now moment) Prompt {
 	if p.kind == audit.KindSSHGrant {
 		pr.GrantEnds = p.grantEnds.wall
 	}
-	if p.kind.IsPreapprove() {
+	if p.login != nil {
+		l := *p.login
+		pr.Login = &l
+	}
+	if p.kind.IsPreapprove() && p.login != nil {
+		// A login pre-approval has no span: its end comes from the tap.
+		pr.Uses = p.plan.uses
+	} else if p.kind.IsPreapprove() {
 		loc := now.wall.Location()
 		pr.Uses, pr.From, pr.Until = p.plan.uses, p.plan.start.In(loc), p.plan.end.wall.In(loc)
 		if p.kind == audit.KindStanding {
@@ -168,9 +177,12 @@ func (c *Core) Decide(ctx context.Context, r *Request) *Result {
 	}
 	if p.kind.IsPreapprove() {
 		// Its grant ends at a fixed time, as an SSH grant's do: after it,
-		// an approval would grant nothing.
-		end := p.plan.end.wall
-		p.deadline = earlier(p.deadline, moment{mono: p.start.mono.Add(end.Sub(p.start.wall)), wall: end})
+		// an approval would grant nothing. A login pre-approval has no
+		// fixed end: its time starts at the tap.
+		if p.login == nil {
+			end := p.plan.end.wall
+			p.deadline = earlier(p.deadline, moment{mono: p.start.mono.Add(end.Sub(p.start.wall)), wall: end})
+		}
 		if err := c.makeGrantID(p); err != nil {
 			res := c.denied(p, audit.CauseError)
 			res.Err = err
@@ -676,6 +688,9 @@ func (c *Core) approvePlan(p *pending, res *Result) {
 	res.plan = &g
 	res.GrantID = g.id
 	loc := c.clock.Wall().Location()
+	if g.loginOrigin != "" {
+		return // the end comes at the tap (startScheduled)
+	}
 	res.GrantFrom, res.GrantUntil = g.start.In(loc), g.end.wall.In(loc)
 }
 

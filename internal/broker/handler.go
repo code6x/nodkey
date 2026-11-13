@@ -31,6 +31,9 @@ var endpoints = []endpoint{
 	{api.PathSSHGrant, audit.KindSSHGrant},
 	{api.PathPreapprove, audit.KindPreapprove},
 	{api.PathPreapproveCancel, ""},
+	{api.PathLoginList, ""},
+	{api.PathLogin, audit.KindWebLogin},
+	{api.PathLoginTOTP, ""},
 }
 
 // route returns the endpoint of r, or the status of the answer: 404 for a
@@ -111,6 +114,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rq.preapprove(ctx, r)
 	case api.PathPreapproveCancel:
 		rq.cancelGrant(r)
+	case api.PathLoginList:
+		rq.listLogins(ctx, r)
+	case api.PathLogin:
+		rq.logins(ctx, r)
+	case api.PathLoginTOTP:
+		rq.loginTOTP(ctx, r)
 	}
 }
 

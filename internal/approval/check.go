@@ -43,13 +43,16 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = false
 	}
 	switch r.Kind {
-	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant, audit.KindPreapprove, audit.KindStanding:
+	case audit.KindSecrets, audit.KindSSHLogin, audit.KindSSHGrant, audit.KindPreapprove, audit.KindStanding, audit.KindWebLogin:
 		p.kind = r.Kind
 		p.subject.Kind = r.Kind
 	default:
 		return false
 	}
 	ok = c.checkClaim(r.Claim, p) && ok
+	if r.Login != nil && r.Kind != audit.KindWebLogin && r.Kind != audit.KindPreapprove {
+		ok = false // a login belongs to a website login only
+	}
 	switch r.Kind {
 	case audit.KindSecrets:
 		ok = c.checkSecrets(r, p) && ok
@@ -57,8 +60,14 @@ func (c *Core) check(r *Request, p *pending) bool {
 		ok = c.checkLogin(r, p) && ok
 	case audit.KindSSHGrant:
 		ok = c.checkGrant(r, p) && ok
+	case audit.KindWebLogin:
+		ok = c.checkWebLogin(r, p) && ok
 	case audit.KindPreapprove:
-		ok = c.checkPreapprove(r, p) && ok
+		if r.Login != nil {
+			ok = c.checkLoginPreapprove(r, p) && ok
+		} else {
+			ok = c.checkPreapprove(r, p) && ok
+		}
 	case audit.KindStanding:
 		ok = c.checkStanding(r, p) && ok
 	}
@@ -224,7 +233,7 @@ func (c *Core) addGrantHosts(names []string, k config.Key, keyOK bool, p *pendin
 // limits of [preapprove]; a limit that is not set (0) allows nothing.
 func (c *Core) checkPreapprove(r *Request, p *pending) bool {
 	lim := p.cfg.Preapprove
-	ok := r.HostKey == nil && r.For == 0
+	ok := r.Login == nil && r.HostKey == nil && r.For == 0
 	allowed := func(rule config.Rule, clients []string) bool {
 		return rule.Preapprove && rule.Ask != config.AskNever && validRule(rule, clients)
 	}

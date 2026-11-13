@@ -68,6 +68,7 @@ type Broker struct {
 	Stores     map[string]Store  // by name
 	Secrets    map[string]Secret // by name
 	Keys       map[string]Key    // by name
+	Logins     map[string]Logins // by name: the [logins.*] sections (DESIGN.md section 21)
 }
 
 // Telegram is the [telegram] section.
@@ -289,6 +290,7 @@ type (
 		Store      map[string]storeSection  `toml:"store"`
 		Secret     map[string]secretSection `toml:"secret"`
 		Key        map[string]keySection    `toml:"key"`
+		Logins     map[string]loginsSection `toml:"logins"`
 	}
 	telegramSection struct {
 		TokenFile    string  `toml:"token_file"`
@@ -419,7 +421,7 @@ func loadBroker(path, filesDir string) (*Broker, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	var f brokerFile
-	if err := decode(data, &f, "client", "store", "secret", "key"); err != nil {
+	if err := decode(data, &f, "client", "store", "secret", "key", "logins"); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	b, err := newBroker(&f, filesDir)
@@ -437,6 +439,7 @@ func newBroker(f *brokerFile, filesDir string) (*Broker, error) {
 		Clients: make(map[string]Client),
 		Stores:  make(map[string]Store),
 		Secrets: make(map[string]Secret),
+		Logins:  make(map[string]Logins),
 		Keys:    make(map[string]Key),
 	}
 	var err error
@@ -490,6 +493,9 @@ func newBroker(f *brokerFile, filesDir string) (*Broker, error) {
 		return nil, err
 	}
 	if err := b.addSecrets(f.Secret); err != nil {
+		return nil, err
+	}
+	if err := b.addLogins(f.Logins); err != nil {
 		return nil, err
 	}
 	knownHosts := b.KnownHostsFile

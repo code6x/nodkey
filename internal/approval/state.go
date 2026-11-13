@@ -12,10 +12,15 @@ import (
 // MaxNoticesPerMinute count.
 const rateWindow = time.Minute
 
-// ref names a secret or a key of the broker config.
+// ref names a secret or a key of the broker config, or a website login.
 type ref struct {
-	key  bool // a [key.*] section; else a [secret.*] section
-	name string
+	key bool // a [key.*] section; else a [secret.*] section
+	// login says that name is the ID of a Bitwarden login item, in lower
+	// case (DESIGN.md section 21). It is never set together with key. A
+	// login ref is never equal to a secret or key ref, so a grant for one
+	// never covers the other.
+	login bool
+	name  string
 }
 
 // grantKey is the scope of a grant (DESIGN.md section 8): a client and a

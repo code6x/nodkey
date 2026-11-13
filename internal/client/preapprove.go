@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/grantkey"
+	"github.com/code6x/nodkey/internal/loginmatch"
 	"github.com/code6x/nodkey/internal/sshauth"
 	"github.com/code6x/nodkey/internal/transport"
 )
@@ -27,6 +29,7 @@ const preapproveUsage = `Usage: nodkey preapprove (--secret NAME... | --key NAME
                          (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM)
                          --until TIME [--from TIME] [--uses N]
                          --grant-token FILE [--reason TEXT]
+       nodkey preapprove --login ITEM --url URL [--reason TEXT]
        nodkey preapprove --cancel ID
 
 Ask the broker now for a grant that you use later, and wait until a person
@@ -60,6 +63,12 @@ planned.
                   for a standing grant: the file where the token is
                   written. The token is never printed. It must be a new
                   file, or your own file with mode 0600.
+  --login ITEM    a website login: the ID of a Bitwarden item of the broker.
+                  Needs --url. The tap allows one login, for the page
+                  --url, in the 60 s after the tap. It excludes --secret,
+                  --key, --user, --host, --from, --until, --uses, --daily,
+                  --weekly and --grant-token.
+  --url URL       the https page of the login, with --login
   --reason TEXT   why the grant is needed. Without it, the reason is the
                   environment variable NODKEY_REASON.
   --cancel ID     end a grant of this machine now, without a tap; ID is
@@ -119,6 +128,9 @@ type preapproveOptions struct {
 	windows []api.Window
 	// grantToken is the file of --grant-token, for a standing grant.
 	grantToken string
+	// login and url are the item ID of --login and the page of --url, for
+	// a pre-approval of one login.
+	login, url string
 }
 
 // runPreapprove runs nodkey preapprove, and returns the exit code.
@@ -142,7 +154,7 @@ func (g granter) runPreapprove(ctx context.Context, args []string, stdout, w io.
 			return fail(stderr, exitUsage, err.Error())
 		}
 	}
-	if o.cancel == "" && o.from == "" {
+	if o.cancel == "" && o.from == "" && o.login == "" {
 		o.from = g.now().Format(time.RFC3339)
 	}
 	path, body, err := newPreapprove(o, reason)
@@ -219,6 +231,10 @@ func (g granter) runPreapprove(ctx context.Context, args []string, stdout, w io.
 	}
 	// The grant is made. The ID goes to stdout for a script that cancels.
 	_, _ = fmt.Fprintln(stdout, ans.ID)
+	if o.login != "" {
+		_, _ = fmt.Fprintf(stderr, "nodkey: grant %s: one login for this page, until %s (exit %d)\n", ans.ID, ans.Until, exitOK)
+		return exitOK
+	}
 	if o.windows != nil {
 		_, _ = fmt.Fprintf(stderr, "nodkey: standing grant %s: %s in each window, %s (broker time), from %s until %s (exit %d)\n",
 			ans.ID, usesText(o.uses), windowText(o.windows[0]), ans.From, ans.Until, exitOK)
@@ -336,7 +352,7 @@ func parsePreapproveArgs(args []string) (*preapproveOptions, error) {
 		name, value, hasValue := splitOption(arg)
 		switch name {
 		case "secret", "key", "user", "host", "from", "until", "uses", "reason", "cancel",
-			"daily", "weekly", "grant-token":
+			"daily", "weekly", "grant-token", "login", "url":
 		case "h", "help":
 			return nil, errors.New("--help must be the only argument")
 		default:
@@ -373,6 +389,16 @@ func parsePreapproveArgs(args []string) (*preapproveOptions, error) {
 				err = errors.New("--grant-token: give the path of a file")
 			}
 			o.grantToken = value
+		case "login":
+			if !itemIDPattern.MatchString(value) {
+				err = fmt.Errorf("--login: %.64q is not an item ID: give the UUID that the broker lists for the page", value)
+			}
+			o.login = value
+		case "url":
+			if _, perr := loginmatch.ParsePage(value); perr != nil {
+				err = fmt.Errorf("--url: %w", perr)
+			}
+			o.url = value
 		case "secret":
 			err = addSecret(o, seen, value)
 		case "key":
@@ -420,6 +446,18 @@ func checkPreapproveGiven(o *preapproveOptions, given map[string]bool) error {
 	if given["cancel"] {
 		if len(given) > 1 || len(o.secrets) > 0 || len(o.hosts) > 0 {
 			return errors.New("--cancel must be the only option")
+		}
+		return nil
+	}
+	if given["url"] && !given["login"] {
+		return errors.New("--url is for a website login: give --login ITEM too")
+	}
+	if given["login"] {
+		if len(given) > 1+btoi(given["url"])+btoi(given["reason"]) || len(o.secrets) > 0 || len(o.hosts) > 0 {
+			return errors.New("--login excludes --secret, --key, --user, --host, --from, --until, --uses, --daily, --weekly and --grant-token; give only --login, --url and --reason")
+		}
+		if !given["url"] {
+			return errors.New("give the page of the login with --url URL, such as --url https://example.com/sign-in")
 		}
 		return nil
 	}
@@ -484,9 +522,13 @@ func newPreapprove(o *preapproveOptions, reason string) (string, []byte, error) 
 		path, v = api.PathPreapproveCancel, api.PreapproveCancelRequest{ID: o.cancel}
 	} else {
 		req := api.PreapproveRequest{
+			Login: o.login, URL: o.url,
 			Secrets: o.secrets, Key: o.key, User: o.user, Hosts: o.hosts,
 			From: o.from, Until: o.until, Uses: int64(o.uses), Reason: claimedText(reason),
 			Windows: o.windows,
+		}
+		if o.login != "" {
+			req.Uses = 1
 		}
 		if err := req.Check(); err != nil {
 			return "", nil, errors.New("the request is over a cap of the broker")
@@ -566,4 +608,15 @@ func parseDays(s string) ([]string, error) {
 		return slices.Index(api.Weekdays[:], a) - slices.Index(api.Weekdays[:], b)
 	})
 	return days, nil
+}
+
+// itemIDPattern is a Bitwarden item ID.
+var itemIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// btoi returns 1 for true and 0 for false.
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

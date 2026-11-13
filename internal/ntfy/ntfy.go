@@ -213,13 +213,13 @@ func (a *Approver) Ask(ctx context.Context, p approval.Prompt) (approval.Shown, 
 	}
 	// The text, and the whole publish body with the buttons, must fit.
 	b, err := fitBodyWith(p, false, limit, func(b string) bool {
-		pm.Message = b + "\n" + expiryLine(p)
+		pm.Message = withExpiry(b, p)
 		return fitsPublish(pm)
 	})
 	if err != nil {
 		return approval.Shown{}, err
 	}
-	msg := b + "\n" + expiryLine(p)
+	msg := withExpiry(b, p)
 	pm.Message = msg
 	if err := a.add(p.RequestID, e); err != nil {
 		return approval.Shown{}, err

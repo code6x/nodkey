@@ -32,6 +32,10 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 		rq.deniedBody()
 		return
 	}
+	if req.Login != "" || req.URL != "" {
+		rq.preapproveLogin(ctx, req)
+		return
+	}
 	cl := approval.Claim{Reason: freeText(req.Reason, maxReasonRunes)}
 	standing := len(req.Windows) > 0
 	var sub audit.Subject
@@ -72,6 +76,12 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 	if !ok {
 		return
 	}
+	rq.startedGrant(ctx, res, standing, token)
+}
+
+// startedGrant starts the grant of an approved request for a scheduled or
+// standing grant, and answers it.
+func (rq *request) startedGrant(ctx context.Context, res *approval.Result, standing bool, token grantkey.Token) {
 	// The grant is all that an approval gives. When the client has hung
 	// up, no grant starts.
 	if ctx.Err() != nil {
@@ -114,7 +124,7 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 	if standing {
 		ans.GrantToken = token.Reveal()
 	}
-	err = transport.WriteJSON(rq.w, http.StatusOK, ans)
+	err := transport.WriteJSON(rq.w, http.StatusOK, ans)
 	if err == nil {
 		// writeBody does not flush; a hang-up shows here, not at Write.
 		if err = http.NewResponseController(rq.w).Flush(); errors.Is(err, http.ErrNotSupported) {

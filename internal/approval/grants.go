@@ -46,6 +46,11 @@ type grant struct {
 	// origin is the subject of the request that made a scheduled grant,
 	// for its audit entries.
 	origin audit.Subject
+	// loginOrigin is the https origin of a pre-approval of one login
+	// (DESIGN.md section 21). The grant covers only a request for the
+	// same origin. It is "" for every other grant. The end of such a grant
+	// is set at the tap (LoginPreapproveTime), not when it is asked for.
+	loginOrigin string
 	// reqID is the ID of the request that made a scheduled grant. The
 	// Revoke button carries it.
 	reqID string
@@ -666,12 +671,17 @@ func (c *Core) standingCount(client string) int {
 // are not mixed with each other or with other rules (DESIGN.md section 8).
 // Of several, the one that ends first. Core.mu must be held.
 func (c *Core) findScheduled(p *pending, now moment) *grant {
-	if p.kind != audit.KindSecrets && p.kind != audit.KindSSHLogin || len(p.items) == 0 {
+	if p.kind != audit.KindSecrets && p.kind != audit.KindSSHLogin && p.kind != audit.KindWebLogin || len(p.items) == 0 {
 		return nil
 	}
 	var best *grant
 	for _, g := range c.grants {
 		if !g.scheduled() || g.uses < 1 || !g.live(now) {
+			continue
+		}
+		// A login pre-approval covers the same origin only, and a login
+		// request is covered by nothing else.
+		if g.loginOrigin != p.origin || (p.kind == audit.KindWebLogin) != (g.loginOrigin != "") {
 			continue
 		}
 		all := true
@@ -711,6 +721,12 @@ func (c *Core) settle(p *pending, res *Result) {
 // grants were dropped already). Core.mu must be held.
 func (c *Core) startScheduled(r *Result, now moment) {
 	g := r.plan
+	if g.loginOrigin != "" {
+		// The time of a login pre-approval starts at the tap, not when
+		// it was asked for: the person may take long to tap.
+		g.end.wall = now.wall.Add(LoginPreapproveTime)
+		r.GrantFrom, r.GrantUntil = now.wall, g.end.wall
+	}
 	// The end is an absolute time. Its monotonic reading is counted from
 	// now, so a wall clock that is set back later cannot make it later.
 	g.end.mono = now.mono.Add(g.end.wall.Sub(now.wall))

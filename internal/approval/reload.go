@@ -68,6 +68,12 @@ func keeps(old, next *config.Broker, sameKey func(string) bool, g *grant) bool {
 		return false
 	}
 	for _, r := range g.refs {
+		if r.login {
+			if !keepsLogin(old, next, r.name, g.client) {
+				return false
+			}
+			continue
+		}
 		if !r.key {
 			if !old.SameSecret(next, r.name, g.client) {
 				return false
