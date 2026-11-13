@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/code6x/nodkey/compare/v0.5.0...v0.6.0) (2026-11-13)
+
+
+### Features
+
+* nodkey agent-browser-plugin, the credential plugin for agent-browser ([#104](https://github.com/code6x/nodkey/issues/104)) ([#182](https://github.com/code6x/nodkey/issues/182)) ([7858003](https://github.com/code6x/nodkey/commit/7858003d7457455c2268bec7c4f3a965d92b2b5f))
+* nodkey broker check checks a config without a start ([#178](https://github.com/code6x/nodkey/issues/178)) ([0abb4a2](https://github.com/code6x/nodkey/commit/0abb4a26c25a2be8177e1be415ed76c196534388))
+* nodkey broker config-diff lists config changes by meaning ([#180](https://github.com/code6x/nodkey/issues/180)) ([c6d8d6d](https://github.com/code6x/nodkey/commit/c6d8d6d7b63c625d302c14a99d96017702ed68fd))
+* reload the broker config without a restart ([#175](https://github.com/code6x/nodkey/issues/175)) ([f168ce6](https://github.com/code6x/nodkey/commit/f168ce65a74c044a017255a0cd127a2065e18eaa))
+* **run:** mask fetched values by default; --no-mask turns it off ([#171](https://github.com/code6x/nodkey/issues/171)) ([6e42f97](https://github.com/code6x/nodkey/commit/6e42f971b7bd5a58b51f413473a98ad39ac282c7))
+* website logins from a shared Bitwarden collection ([#103](https://github.com/code6x/nodkey/issues/103)) ([#181](https://github.com/code6x/nodkey/issues/181)) ([4ebffa8](https://github.com/code6x/nodkey/commit/4ebffa84425202577dedd36977aa2026a74c35d6))
+
 ## [0.5.0](https://github.com/code6x/nodkey/compare/v0.4.0...v0.5.0) (2026-11-11)
 
 
