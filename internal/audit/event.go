@@ -377,9 +377,10 @@ type LoginList struct {
 type ListCause string
 
 const (
-	ListLimited ListCause = "limit"   // the client asked too often
-	ListBadURL  ListCause = "bad_url" // the page URL is not valid
-	ListStore   ListCause = "store"   // a store failed
+	ListLimited   ListCause = "limit"     // the client asked too often
+	ListBadURL    ListCause = "bad_url"   // the page URL is not valid
+	ListCancelled ListCause = "cancelled" // the client went away while the store ran
+	ListStore     ListCause = "store"     // a store failed
 )
 
 // LoginTOTP records a request for a TOTP code of a website login. It
@@ -637,13 +638,13 @@ func (e LoginList) validate() error {
 		if !namePattern.MatchString(e.Logins) || !originPattern.MatchString(e.Origin) || e.Count < 0 {
 			return errors.New("it needs a logins section, an https origin and a count that is not negative")
 		}
-	case ListLimited, ListBadURL, ListStore:
+	case ListLimited, ListBadURL, ListStore, ListCancelled:
 		if e.Count != 0 || (e.Logins != "" && !namePattern.MatchString(e.Logins)) ||
 			(e.Origin != "" && !originPattern.MatchString(e.Origin)) {
 			return errors.New("a refused list has a count of 0, and a section name and an https origin only if it has them")
 		}
 	default:
-		return errors.New("cause must be limit, bad_url or store")
+		return errors.New("cause must be limit, bad_url, cancelled or store")
 	}
 	return nil
 }

@@ -548,7 +548,7 @@ func (rq *request) listLogins(ctx context.Context, r *http.Request) {
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
-				rq.answer(http.StatusForbidden)
+				refuse(audit.ListCancelled, page.Origin(), http.StatusForbidden)
 				return
 			}
 			rq.s.log.Warn("broker: a store failed; the list of logins is denied",
@@ -607,6 +607,12 @@ func (rq *request) loginTOTP(ctx context.Context, r *http.Request) {
 		return p, strings.ToLower(req.Item), true
 	}()
 	if !ok {
+		// A bad request needs no ticket: it shares the cap of the requests
+		// with no ticket, so a loop cannot fill the audit log.
+		if !rq.s.allowNoTicket(rq.client) {
+			rq.answer(http.StatusTooManyRequests)
+			return
+		}
 		deny(audit.TOTPBadItem, http.StatusForbidden, audit.Subject{})
 		return
 	}

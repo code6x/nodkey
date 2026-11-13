@@ -764,6 +764,28 @@ func TestLoginTOTPNoTicketIsLimited(t *testing.T) {
 	}
 }
 
+// A bad TOTP request shares the cap of the requests with no ticket, so a
+// loop cannot fill the audit log.
+func TestLoginTOTPBadRequestIsLimited(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	l.svc.setNow(func() time.Time { return now })
+	for i := range LoginTOTPNoTicketRate {
+		if res := l.totp("not-an-id", pageShop); res.status != http.StatusForbidden {
+			t.Fatalf("request %d: status %d", i, res.status)
+		}
+	}
+	n := len(l.audit.all())
+	if n != LoginTOTPNoTicketRate {
+		t.Errorf("got %d entries, want %d", n, LoginTOTPNoTicketRate)
+	}
+	mustStatus(t, l.totp("not-an-id", pageShop), http.StatusTooManyRequests)
+	mustStatus(t, l.totp(itemShop, "http://example.com/"), http.StatusTooManyRequests)
+	if got := len(l.audit.all()); got != n {
+		t.Errorf("a limited request wrote an entry")
+	}
+}
+
 func TestLoginListAudited(t *testing.T) {
 	l := newLoginEnv(t, nil)
 	// No match: one entry with a count of 0 for each section of the client.
