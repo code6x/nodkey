@@ -136,8 +136,14 @@ func (e *Error) Error() string { return e.text }
 // (by a limit). nodkey run exits with 77 then, and with 69 for every other
 // Error (DESIGN.md section 15).
 func (e *Error) Denied() bool {
-	return e.Status == http.StatusForbidden || e.Status == http.StatusTooManyRequests
+	return e.Status == http.StatusForbidden || e.Status == http.StatusTooManyRequests ||
+		e.Status == http.StatusPreconditionRequired
 }
+
+// NeedsTap reports whether the broker answered 428: a login request with
+// api.NoTapHeader that no pre-approval or grant covers (DESIGN.md section
+// 21.10).
+func (e *Error) NeedsTap() bool { return e.Status == http.StatusPreconditionRequired }
 
 // statusError returns the Error of a final answer with status, which is
 // not 200.
@@ -147,6 +153,8 @@ func statusError(status int) *Error {
 		return &Error{Status: status, text: "denied"}
 	case http.StatusTooManyRequests:
 		return &Error{Status: status, text: "denied by a limit of the broker"}
+	case http.StatusPreconditionRequired:
+		return &Error{Status: status, text: "this login needs a tap, and no pre-approval or grant covers it"}
 	}
 	text := fmt.Sprintf("the broker answered %d", status)
 	if s := http.StatusText(status); s != "" {

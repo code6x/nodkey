@@ -87,6 +87,9 @@ const (
 	CauseNotAllowed Cause = "not_allowed" // a check failed: an unknown name, a name this client may not use, bad input
 	CauseLimit      Cause = "limit"       // a limit per client, the queue, the pause after a Deny, or a limit of the approver itself (DESIGN.md section 8)
 	CauseError      Cause = "error"       // a failure; an error entry says which
+	// CauseNoTap: the client asked for no tap (api.NoTapHeader), and no
+	// grant or pre-approval covered the request (DESIGN.md section 21.10).
+	CauseNoTap Cause = "no_tap"
 )
 
 // EndCause says why a scheduled grant ended (DESIGN.md section 8).
@@ -769,7 +772,7 @@ func (e Denied) validate() error {
 		return err
 	}
 	switch e.Cause {
-	case CauseApprover, CauseExpired, CauseCancelled, CauseNotAllowed, CauseLimit, CauseError:
+	case CauseApprover, CauseExpired, CauseCancelled, CauseNotAllowed, CauseLimit, CauseError, CauseNoTap:
 		return nil
 	}
 	return errors.New("cause is not known")

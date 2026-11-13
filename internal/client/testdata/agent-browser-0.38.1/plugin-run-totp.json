@@ -1,0 +1,1 @@
+{"capability":"command.run","protocol":"agent-browser.plugin.v1","request":{"itemRef":"11111111-1111-1111-1111-111111111111","url":"https://127.0.0.1:18766/login.html"},"type":"nodkey.totp"}

@@ -332,6 +332,13 @@ func newTestBroker(t *testing.T) *testBroker {
 // version ("" for none).
 func newTestBrokerWith(t *testing.T, version string) *testBroker {
 	t.Helper()
+	return newTestBrokerFull(t, version, nil, nil)
+}
+
+// newTestBrokerFull is newTestBrokerWith with more: edit, if not nil,
+// changes the config, and stores are more stores by name.
+func newTestBrokerFull(t *testing.T, version string, edit func(*config.Broker), stores map[string]store.Store) *testBroker {
+	t.Helper()
 	tb := &testBroker{
 		key:      newTLSKey(t),
 		laptop:   newTLSKey(t),
@@ -356,12 +363,19 @@ func newTestBrokerWith(t *testing.T, version string) *testBroker {
 			"npm-token": {Name: "npm-token", Store: "main", ID: idNPM, Clients: []string{"laptop"}, Rule: always},
 		},
 	}
+	if edit != nil {
+		edit(cfg)
+	}
+	all := map[string]store.Store{"main": tb.store}
+	for name, st := range stores {
+		all[name] = st
+	}
 	core, err := approval.New(cfg, tb.approver, approval.Options{Clock: tb.clock})
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc, err := broker.New(broker.Parts{Config: cfg, Audit: tb.audit,
-		Stores: map[string]store.Store{"main": tb.store}, Version: version})
+		Stores: all, Version: version})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,1 @@
+{"capability":"command.run","protocol":"agent-browser.plugin.v1","request":{"url":"https://example.com/"},"type":"nodkey.list"}

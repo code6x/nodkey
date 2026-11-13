@@ -118,6 +118,18 @@ func KeyWindow(h http.Header) (window time.Duration, ok bool) {
 // value is a secret: never print or log it.
 const GrantTokenHeader = "Nodkey-Grant-Token" //nolint:gosec // G101: a header name, not a credential.
 
+// NoTapHeader, with the value NoTapValue, asks the broker not to ask
+// the person for a request for a website login (PathLogin). When no grant
+// and no pre-approval covers the login, the broker answers 428 Precondition
+// Required at once, and sends no message (DESIGN.md section 21.10). The
+// agent-browser plugin sends it: agent-browser waits only 15 seconds, too
+// short for a tap. The broker refuses another value; other paths ignore
+// the header.
+const NoTapHeader = "Nodkey-No-Tap"
+
+// NoTapValue is the only value of NoTapHeader.
+const NoTapValue = "1"
+
 // Version returns the version in the header VersionHeader of a request or
 // an answer. It returns "" when there is no such header, more than one,
 // or a value that version.Valid refuses. Such a value counts as no

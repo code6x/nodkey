@@ -412,3 +412,43 @@ func TestLoginReload(t *testing.T) {
 		}
 	})
 }
+
+// TestLoginNoTap: with NoTap, a login that nothing covers is denied with
+// no_tap at once and asks nobody; a pre-approval still covers it. NoTap on
+// a request of another kind, or on a login pre-approval, is not allowed.
+func TestLoginNoTap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := loginEnv(t)
+		defer e.stop()
+		noTap := func() *approval.Request {
+			r := webLogin(e, "laptop", itemA)
+			r.NoTap = true
+			return r
+		}
+		if res := e.now(noTap()); res.Allowed || res.Cause != audit.CauseNoTap {
+			t.Errorf("no grant: %+v", res)
+		}
+		if n := len(e.fake.Asked()); n != 0 {
+			t.Errorf("%d messages, want 0", n)
+		}
+		e.grant(webPre(e, "laptop", itemA), 1)
+		if res := e.now(noTap()); !res.Allowed {
+			t.Errorf("pre-approved: %+v", res)
+		}
+		if res := e.now(noTap()); res.Allowed || res.Cause != audit.CauseNoTap {
+			t.Errorf("used up: %+v", res)
+		}
+		sec := secretsReq("laptop", "github-token")
+		sec.NoTap = true
+		pre := webPre(e, "laptop", itemB)
+		pre.NoTap = true
+		for _, r := range []*approval.Request{sec, pre} {
+			if res := e.now(r); res.Allowed || res.Cause != audit.CauseNotAllowed {
+				t.Errorf("%s: %+v", r.Kind, res)
+			}
+		}
+		if n := len(e.fake.Asked()); n != 1 {
+			t.Errorf("%d messages, want 1", n)
+		}
+	})
+}

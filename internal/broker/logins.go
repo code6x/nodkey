@@ -377,6 +377,15 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 		rq.refuseLogin(audit.Subject{}, "a grant token is not used for logins")
 		return
 	}
+	noTap := false
+	if v := r.Header.Values(api.NoTapHeader); len(v) > 0 {
+		if len(v) != 1 || v[0] != api.NoTapValue {
+			rq.releaseBody()
+			rq.refuseLogin(audit.Subject{}, "the no-tap header is not valid")
+			return
+		}
+		noTap = true
+	}
 	page, item, ok := rq.loginInput(req.URL, req.Item)
 	if !ok {
 		return
@@ -389,7 +398,7 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 	origin := page.Origin()
 	rq.pre = audit.Subject{Logins: sel.section, Item: item, Origin: origin}
 	res, rc, ok := rq.decide(ctx, &approval.Request{
-		Client: rq.client, Kind: audit.KindWebLogin, Login: loginScope(sel, origin),
+		Client: rq.client, Kind: audit.KindWebLogin, Login: loginScope(sel, origin), NoTap: noTap,
 	})
 	if !ok {
 		return

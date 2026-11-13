@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 
 	"github.com/code6x/nodkey/internal/api"
 )
@@ -46,6 +47,23 @@ func Login(ctx context.Context, b *Broker, pageURL, item string, onCode func(cod
 		return nil, errLoginRequest
 	}
 	return Post[api.LoginAnswer](ctx, b, api.PathLogin, body, onCode)
+}
+
+// LoginNoTap is Login with api.NoTapHeader: the broker never asks the
+// person. When no pre-approval or grant covers the login, it answers at
+// once, and the error is an *Error whose NeedsTap is true. The caller must
+// Clear the answer.
+func LoginNoTap(ctx context.Context, b *Broker, pageURL, item string) (*api.LoginAnswer, error) {
+	req := api.LoginRequest{URL: pageURL, Item: item}
+	if req.Check() != nil {
+		return nil, errLoginRequest
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, errLoginRequest
+	}
+	h := http.Header{api.NoTapHeader: []string{api.NoTapValue}}
+	return postWith[api.LoginAnswer](ctx, b, api.PathLogin, body, nil, h)
 }
 
 // LoginTOTP asks the broker for the current TOTP code of the item at the

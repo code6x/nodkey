@@ -881,3 +881,92 @@ func TestLoginPreapproveUsedOnce(t *testing.T) {
 		t.Errorf("%d messages, want 2", n)
 	}
 }
+
+// TestLoginNoTap: with the no-tap header, a login that nothing covers is
+// answered with 428 at once, with no message and an entry with the cause
+// no_tap. A pre-approval or a window grant still covers it.
+func TestLoginNoTap(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	noTap := func() *result {
+		return l.postHeader(api.PathLogin, l.loginReq(itemShop, pageShop), api.NoTapHeader, api.NoTapValue)
+	}
+	l.noMessage(noTap(), http.StatusPreconditionRequired)
+	found := false
+	for _, ev := range l.audit.all() {
+		if d, ok := ev.(audit.Denied); ok && d.Cause == audit.CauseNoTap && d.Item == itemShop {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("no denied entry with the cause no_tap")
+	}
+	// A value other than "1" is refused, and asks nobody either.
+	l.noMessage(l.postHeader(api.PathLogin, l.loginReq(itemShop, pageShop), api.NoTapHeader, "yes"), http.StatusForbidden)
+
+	// The pre-approval covers it, once.
+	mustStatus(t, l.loginPre(itemShop, pageShop), http.StatusOK)
+	res := noTap()
+	mustStatus(t, res, http.StatusOK)
+	if !strings.Contains(string(res.body), `"username":"alice@example.com"`) {
+		t.Error("the answer has no username")
+	}
+	mustStatus(t, noTap(), http.StatusPreconditionRequired)
+	if n := len(l.approver.Asked()); n != 1 {
+		t.Errorf("%d messages, want 1 (the pre-approval)", n)
+	}
+
+	// A window grant covers it too.
+	res = l.approveLogin(itemMail, pageShop, audit.AnswerApproveWindow)
+	mustStatus(t, res, http.StatusOK)
+	mustStatus(t, l.postHeader(api.PathLogin, l.loginReq(itemMail, pageShop), api.NoTapHeader, api.NoTapValue), http.StatusOK)
+	l.vs.checkCleared(t)
+}
+
+// TestLoginNoTapReprompt: an item with a re-prompt needs a tap for each
+// login; with the no-tap header it gets 428, also after a tap on the
+// window button.
+func TestLoginNoTapReprompt(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	l.shop.Reprompt = true
+	l.noMessage(l.postHeader(api.PathLogin, l.loginReq(itemShop, pageShop), api.NoTapHeader, api.NoTapValue),
+		http.StatusPreconditionRequired)
+	n := len(l.approver.Asked()) + 1
+	p := l.start(l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+	pr := l.waitAsked(n)[n-1].Prompt
+	if err := l.approver.Tap(pr.RequestID, audit.AnswerApproveWindow); err == nil {
+		t.Fatal("the message of a re-prompt item offers the window button")
+	}
+	l.tap(pr.RequestID, audit.AnswerApproveOnce)
+	mustStatus(t, p.wait(t), http.StatusOK)
+	mustStatus(t, l.postHeader(api.PathLogin, l.loginReq(itemShop, pageShop), api.NoTapHeader, api.NoTapValue),
+		http.StatusPreconditionRequired)
+}
+
+// TestLoginNoTapHeaderValues: the header twice, empty, or with another
+// value is refused, and asks nobody.
+func TestLoginNoTapHeaderValues(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	for _, values := range [][]string{{"1", "1"}, {""}, {"0"}, {"true"}} {
+		data, err := json.Marshal(l.loginReq(itemShop, pageShop))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+l.addr+api.PathLogin, bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", api.ContentType)
+		req.Header[api.NoTapHeader] = values
+		resp, err := l.laptp.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%q: status %d, want 403", values, resp.StatusCode)
+		}
+	}
+	if n := len(l.approver.Asked()); n != 0 {
+		t.Errorf("%d messages, want 0", n)
+	}
+}

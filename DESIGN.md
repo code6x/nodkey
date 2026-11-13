@@ -104,6 +104,7 @@ One static Go binary holds all parts. The subcommand picks the role:
 | `nodkey update` | both, as root | Install a release in place of this binary, with the install script that is built into it (section 18). |
 | `nodkey doctor` | both | Check the setup, read only, and say how to fix what is wrong (section 15). |
 | `nodkey version` | both | Print the version. On a terminal, also say if a newer release is out. |
+| `nodkey agent-browser-plugin` | agent machine | The credential plugin of agent-browser. agent-browser runs it; a person does not (section 21.10). |
 
 `nodkey try` runs the real broker parts on `127.0.0.1` of one machine,
 but with its own approver (the terminal) and its own store (three fake
@@ -1965,7 +1966,7 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked`, `stopped`, `alarm`, `renewed` or `config_changed`; `uses_left` |
 | `grant_alarm` | the request fields; `grant_id` (none for an unknown token); `cause`: `old_token`, `over_uses`, `outside_window`, `unknown_token` or `missed_window` |
 | `secret_sent`, `signed` | the request fields |
-| `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit` or `error` |
+| `denied` | the request fields; `cause`: `approver`, `expired`, `cancelled`, `not_allowed`, `limit`, `error`, or `no_tap` (a website login with the no-tap header that nothing covered, section 21.10) |
 | `foreign_tap` | Telegram only. `user_id`, `chat_id`, `message_id`, `data`: the button data, at most 64 bytes, and `cause`: why it did not count (section 7). An entry with cause `edited_message` can belong to a Deny that counted: its `data` is `d:` and the request ID, and that request has a `decision` entry with `deny` |
 | `error` | the request fields, if the failure is about one request; `code`: `store_failed`, `sign_failed`, `approver_failed` or `poll_conflict` |
 | `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
@@ -3192,6 +3193,8 @@ nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason 
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
 nodkey preapprove --secret NAME... (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM) --until TIME [--from TIME] [--uses N] --grant-token FILE [--reason TEXT]
 nodkey preapprove --cancel ID
+nodkey preapprove --login ITEM --url URL [--reason TEXT]
+nodkey agent-browser-plugin
 nodkey try
 nodkey try run [--secret VAR=NAME]... [--reason TEXT] -- COMMAND [ARGS...]
 nodkey keygen --out FILE
@@ -4537,9 +4540,10 @@ command of its own.
 
 **What is built.** The broker part of #103 is built: the config, the
 three requests, the URI match, TOTP codes, the messages, the grants, the
-one-use pre-approval and the audit events. Not built yet: standing
-grants for logins (a request with a grant token is refused), a reload
-that changes `[logins.*]`, and the browser plugin (#104).
+one-use pre-approval and the audit events. The agent-browser plugin of
+#104 is built (21.10). Not built yet: standing grants for logins (a
+request with a grant token is refused), and a reload that changes
+`[logins.*]`.
 
 ### 21.1 The owner's setup
 
@@ -4790,3 +4794,103 @@ password, a TOTP seed, a TOTP code or a username.
   limit is refused: the broker never cuts a field. One bad item refuses
   the whole list, so the list fails closed.
 - `reprompt` is read too (21.3).
+
+### 21.10 The agent-browser plugin *(built: `internal/client/abplugin.go`)*
+
+Issue #104. `nodkey agent-browser-plugin` is the credential plugin of
+[agent-browser](https://github.com/vercel-labs/agent-browser). It is a
+subcommand of `nodkey`, so it ships in the same signed release (#104
+open question 4). agent-browser runs it once for each request: it writes
+one JSON request to the plugin's stdin and reads one JSON answer from
+its stdout. This is the protocol `agent-browser.plugin.v1`.
+
+**Tested version: agent-browser 0.38.1** (`PluginVersion`). The tests
+send requests that agent-browser 0.38.1 wrote to a recording plugin on
+2026-11-13 (`internal/client/testdata/agent-browser-0.38.1/`). Another
+version may change the protocol: test it before you use it.
+
+The config of agent-browser (`~/.agent-browser/config.json`) runs it:
+
+```json
+{"plugins": [{"name": "nodkey", "command": "/usr/local/bin/nodkey",
+              "args": ["agent-browser-plugin"],
+              "capabilities": ["credential.read", "command.run"]}]}
+```
+
+agent-browser does not split `command` at spaces: the subcommand goes in
+`args`.
+
+**The flow.** agent-browser waits only 15 seconds for
+`credential.resolve` and 60 seconds for `plugin run`. A tap often takes
+longer. So the tap comes first, in a nodkey command that waits as long
+as any other request (21.7):
+
+1. `nodkey preapprove --login ITEM --url URL`. The person taps Approve.
+2. Within `LoginPreapproveTime` (60 s) after the tap:
+   `agent-browser auth login NAME --credential-provider nodkey --item ITEM --url URL`.
+   The plugin asks the broker for the login with the no-tap header. The
+   pre-approval covers it, and is used up.
+3. If the site asks for a code:
+   `agent-browser plugin run nodkey nodkey.totp --payload '{"itemRef":"ITEM","url":"URL"}'`,
+   within `LoginTOTPTime` (2 minutes) after the login (21.3).
+
+**The no-tap header.** The plugin's login request has the header
+`Nodkey-No-Tap: 1` (`api.NoTapHeader`). The broker runs every check of
+21.3 as for any login. Then, when no `window` grant and no pre-approval
+covers the login, it answers 428 Precondition Required at once, with a
+`denied` entry with the cause `no_tap`. It sends no message, so the
+phone never shows a request that agent-browser has already given up on.
+Another value of the header is refused (403, `not_allowed`). The header
+only takes away the tap: it never allows what a tap would not. Other
+paths ignore it.
+
+**Requests and answers.** Each answer has `"protocol":
+"agent-browser.plugin.v1"` and `success`.
+
+| request `type` | capability | request fields | answer |
+|---|---|---|---|
+| `credential.resolve` | `credential.read` | `itemRef`: the item ID (a UUID); `url`: the page; `profileName` is not used | `credential`: `username`, `password`, and `url` (the page of the request, without its fragment) |
+| `nodkey.list` | `command.run` | `url`: the page | `data.logins`: `id`, `name` and `username` of each item that matches the page (21.3 step 1); never a password |
+| `nodkey.totp` | `command.run` | `itemRef`, `url` | `data.code`: one TOTP code (21.3 step 3) |
+| `plugin.manifest` | any | none | `manifest`: the name `nodkey` and the two capabilities |
+
+- `itemRef` must be an item ID, not an item name: names can repeat
+  (#104 open question 2). `nodkey.list` shows the IDs.
+- A request with no `url`, or `url` null, is refused (#104 open question
+  3): the broker always needs a page to check and to show. agent-browser
+  sends null when the command has no `--url` and its auth profile has
+  none.
+- The plugin checks the page as the broker does (21.4) before it loads
+  the config: an `http` page is refused at once.
+- The plugin waits for the broker at most `PluginResolveTime` (12 s) for
+  `credential.resolve`, and `PluginCommandTime` (50 s) for the others,
+  so its answer comes before agent-browser stops it.
+- **A refusal** is `"success": false` with an `error` that starts with
+  `nodkey: `, and one line on stderr. The error is a fixed text of
+  nodkey, or an error of the client config (with its path, or the
+  broker's address). It never holds a value, the item reference or the
+  page. The
+  exit code is 0 whenever an answer is written, because agent-browser
+  0.38.1 drops the answer of a plugin that exits with another code. For
+  `credential.resolve`, agent-browser shows only "returned
+  success=false", not the error; `plugin run` shows the error.
+- **The password** is written into one buffer of exactly the size of the
+  answer, which is cleared after the write. A password that is not UTF-8
+  text is refused: a JSON string cannot hold it.
+- The plugin reads at most 64 KiB from stdin. It ignores fields of the
+  request that it does not use, so a new optional field of agent-browser
+  does not break it. A field that it uses must have the right type.
+
+**Where the values go.** agent-browser's daemon reads the answer of
+`credential.resolve` and fills the form. agent-browser's normal output
+shows only "Logged in as NAME". The TOTP code of `nodkey.totp` is
+printed by `plugin run`, for the agent to fill: it is good for one
+period, and only one is given for each login. Neither the plugin nor the
+broker writes a password, a seed or a code to a log or the audit log.
+The agent can still read a filled field, and it has the session after
+the login (THREAT-MODEL.md T48).
+
+**Chrome's "Save password?" prompt.** A Chrome that an agent drives
+offers to save a filled password in Chrome's own password manager.
+`docs/agent-browser.md` shows the `agents` Chrome profile that turns it
+off.

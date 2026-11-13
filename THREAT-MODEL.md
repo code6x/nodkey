@@ -1607,6 +1607,48 @@ What nodkey does:
 Risk that remains: low. In its 60 seconds, a pre-approval can be used by
 any process of that client that asks for that item and origin (as T35).
 
+**T48. The agent-browser plugin hands a login to the agent.**
+The credential plugin (DESIGN.md section 21.10) answers agent-browser
+with the username and the password, and `nodkey.totp` prints a TOTP
+code. agent-browser fills the form.
+What nodkey does:
+- The plugin never asks for a tap: its login request has the no-tap
+  header. A login goes out only on a pre-approval that the person
+  tapped for that client, item and page (T47), or a `window` grant of
+  that item. Without one, the broker answers at once and sends no
+  message, so the phone never shows a request that nobody waits for.
+- The header only takes away the tap. Every check of a login runs as
+  before: the client, the item, the collection, the page, the rule.
+- The plugin sends the page of the request to the broker, which checks
+  it against the item's URIs (T43). It answers with that page, without its
+  fragment, as the credential's URL; agent-browser then opens it, or with `--no-navigate`
+  checks that the open page has its origin. This protects an agent that
+  is fooled by a wrong page.
+- A request with no page, an `http` page, or an item name in place of an
+  item ID is refused.
+- The plugin writes the password only into its answer on stdout, in one
+  buffer that it clears after. Its errors are texts of nodkey (with
+  at most the path of the client config or the broker's address), never
+  a value, the item reference or the page. The audit log has no password, username,
+  seed or code (DESIGN.md section 21.8).
+What nodkey does not do:
+- The agent can read a filled field, and it gets the session cookies
+  after the login. The tap is the guard; the password is not secret from
+  the agent.
+- The page in the request is the agent's claim. An agent that attacks
+  can run the plugin, or call the broker, itself, and use the password
+  on another page (T43).
+- A TOTP code passes through the agent's output. It is good for one
+  period, and the broker gives one code for each login.
+- agent-browser's own code is not nodkey's: a bug in it could show the
+  password in its output. The tests pin version 0.38.1.
+- Chrome offers to save the filled password. With a lasting profile, a
+  person who clicks Save leaves the password on the agent machine's
+  disk. The `agents` Chrome profile of docs/agent-browser.md turns the
+  offer off.
+Risk that remains: medium, as for every value that an agent gets (section
+5).
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

@@ -942,9 +942,8 @@ access to it: such an account could read them too.
 
 ### Website logins: a shared collection
 
-> **The browser part is not ready yet.** The broker hands out logins
-> (issue #103). The plugin for agent-browser is issue #104. Until then,
-> only `nodkey preapprove --login` uses logins from the command line.
+> The browser part is the agent-browser plugin: see
+> [docs/agent-browser.md](agent-browser.md) after these steps.
 
 Agents can log in to websites with logins from your own Bitwarden vault.
 You choose the logins: you put them into one shared collection. The
@@ -1027,6 +1026,9 @@ account.
    machine, for that origin, gets the login without a new tap. It works
    once, and only in the 60 seconds after the tap. The rule of the item
    needs `preapprove = true`.
+
+9. **Set up agent-browser** on the client, as
+   [docs/agent-browser.md](agent-browser.md) shows.
 
 **Never unlock your main vault in a browser or an app that an agent can
 drive**: not in agent-browser, not in a browser that an agent reaches
