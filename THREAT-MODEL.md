@@ -1584,6 +1584,25 @@ What nodkey does: the setup guide says it, and the agent-browser how-to
 (#104) uses a separate browser profile with no password manager.
 Risk that remains: real; it depends on the owner.
 
+**T47. A login grant or a pre-approval hands out another login.**
+A `window` grant or a one-use pre-approval (DESIGN.md section 21.7)
+lets a login go out without a new tap. An agent could try to use it for
+another item of the same site, from another client, for another page, or
+later than the person meant.
+What nodkey does:
+- A `window` grant covers (client, item ID), never a config section or a
+  site. A pre-approval covers (client, item ID, page origin).
+- A pre-approval is used at most once, in one atomic step, and ends
+  `LoginPreapproveTime` (60 seconds) after the tap. The message says
+  this. It names no time limit for the tap itself.
+- An item with "Master password re-prompt" needs a tap for each login;
+  no `window` grant hands it out.
+- The broker does not keep the password while the request waits for the
+  tap. After the tap it reads the item again and runs every check again.
+- A reload keeps a login grant only when the item has the same rule.
+Risk that remains: low. In its 60 seconds, a pre-approval can be used by
+any process of that client that asks for that item and origin (as T35).
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

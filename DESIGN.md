@@ -1971,9 +1971,11 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 | `log_recovered` | `torn_length` and `torn_sha256`: the length and the SHA-256 of the torn line |
 
 The request fields are `request_id`, `client`, `kind` (`secrets`,
-`ssh_login`, `ssh_grant`, `preapprove` or `standing`), `secrets`, `key`, `hosts`,
+`ssh_login`, `ssh_grant`, `preapprove`, `standing` or `web_login`), `secrets`, `key`, `hosts`,
 `host_key` (a SHA256 fingerprint), `remote_user`, and the claimed
-`command` and `reason`. A `preapprove` request that was approved also has
+`command` and `reason`. A website login (section 21.8) has `logins` (the
+`[logins.NAME]` section), `item` (the item ID) and the claimed `origin`,
+never a username. `login_list` and `login_totp` are its other entries. A `preapprove` request that was approved also has
 `grant_id`, `uses`, `not_before` and `not_after` (UTC, RFC 3339). A
 `standing` request that was approved also has `windows` (such as
 `daily 03:00-05:00`), and its `uses` are the uses in each window; the
@@ -4533,8 +4535,11 @@ vault. The only browser that nodkey supports is agent-browser, through
 its credential plugin (#104). nodkey has no Chrome DevTools Protocol
 command of its own.
 
-**What is built.** The parts below that are marked *(built)* are in the
-code. The rest is the design that the next pull requests of #103 build.
+**What is built.** The broker part of #103 is built: the config, the
+three requests, the URI match, TOTP codes, the messages, the grants, the
+one-use pre-approval and the audit events. Not built yet: standing
+grants for logins (a request with a grant token is refused), a reload
+that changes `[logins.*]`, and the browser plugin (#104).
 
 ### 21.1 The owner's setup
 
@@ -4595,7 +4600,13 @@ ask = "always"
   or a removed item rule is marked as one that widens: either rule can
   be the looser one.
 
-### 21.3 Requests
+### 21.3 Requests *(built: `internal/broker/logins.go`)*
+
+The paths are `/v1/logins/list`, `/v1/logins/login` and
+`/v1/logins/totp` (`internal/api/logins.go`). The client names the item
+by its ID only. The broker looks for it in the stores of the
+`[logins.*]` sections that may allow the client, and finds the section
+from the item's `collectionIds`.
 
 The client sends a page URL. **The page URL is claimed** (T43): the
 broker cannot check that the browser is on that page.
@@ -4606,7 +4617,7 @@ broker cannot check that the browser is on that page.
    the item name and the username. Never a password or a TOTP seed. A
    tap only to see a list would teach the approver to tap without
    reading, so a list needs none. It has a rate limit per client of
-   `LoginListRate` (planned: 10 lists a minute), and an audit entry.
+   `LoginListRate` (10 lists a minute), and an audit entry.
 2. **Login** (a tap, a grant, or a pre-approval). The client sends a
    page URL and one item ID from the list. The broker runs
    `bw sync --force` and `bw get item ID`, and checks that the item:
@@ -4614,8 +4625,13 @@ broker cannot check that the browser is on that page.
    `collectionIds` that hold the configured collection and no other
    configured collection; and has a URI that matches the page. Each
    check that fails means deny, with an audit entry. Then it applies the
-   item's rule (21.2). On approval the broker returns the username and
-   the password.
+   item's rule (21.2). The broker clears the password and the TOTP seed
+   at once: they are not kept while the request waits for the tap. On
+   approval it runs `bw sync --force` and `bw get item ID` again, runs
+   every check again, and the username must be the same as in the
+   message. Then it returns the username and the password.
+   A request with the header of a standing grant token is refused:
+   standing grants for logins are not built yet.
    An item with Bitwarden's "Master password re-prompt" (`reprompt` is
    1) needs a tap for each login, whatever its rule: no `window` grant
    and no standing grant hands it out. A pre-approval is a tap for that
@@ -4625,11 +4641,12 @@ broker cannot check that the browser is on that page.
    the broker. The client asks for the code after the password step,
    when the site shows its code page. It sends the same page origin and
    item ID.
-   - An approved login (a tap or a pre-approval) covers **one** code, for
-     `LoginTOTPTime` (2 minutes) after the login. The second ask for a
-     code needs a new login.
+   - An approved login (a tap, a window grant or a pre-approval) leaves a
+     ticket for (client, item ID, page origin). It covers **one** code,
+     for `LoginTOTPTime` (2 minutes) after the login. The second ask for
+     a code needs a new login. The broker keeps at most 1024 tickets.
    - A `window` grant covers codes during its window, like logins.
-   - A standing grant covers one login and one code per use.
+   - Standing grants for logins are not built yet (21.7).
 
 Several logins for one site: the list shows them all, and the client
 names one item ID. The page must match that item.
@@ -4689,7 +4706,7 @@ does:
   values of one parameter. The error never holds the field.
 - The tests use the test vectors of RFC 6238, appendix B.
 
-### 21.6 Messages
+### 21.6 Messages *(built)*
 
 The message shows the item name and the username as read from Bitwarden
 (verified), and the page origin as sent by the client (claimed):
@@ -4709,14 +4726,14 @@ as claimed text (section 7): one line, no control characters and no
 characters that change the direction of the text, a length limit, and
 escaped HTML. The claimed origin comes after the verified lines.
 
-### 21.7 Grants and the one-use pre-approval
+### 21.7 Grants and the one-use pre-approval *(built)*
 
 Grants are kept per (client, item ID), and the one-use pre-approval per
 (client, item ID, page origin). They are not kept per config section
 name: a grant must not move to another item through a rename. A grant
 for one login does not hand out another login of the same site. On
 reload, a grant stays only if the new config still gives the same rule
-to that item.
+to that item (`RuleFor` gives the same clients and rule).
 
 **The pre-approval** (step 9 of #103, owner 2026-10-27) is
 `nodkey preapprove --login ITEM --url URL`, on the grant core of
@@ -4737,10 +4754,12 @@ to that item.
 
 ### 21.8 Audit events
 
-New events: `login-list` (client, collection section, page origin, the
-number of items), `login` (client, item ID, page origin, the decision and
-why), `login-totp` (client, item ID, page origin, decision), and the
-`preapprove` events of section 9 with the scope `login`. No event holds a
+*(Built.)* New events: `login_list` (client, collection section, page
+origin, the number of items), `login_totp` (client, section, item ID,
+page origin, the decision and why), the request events of section 9 with
+the kind `web_login` and the subject fields `logins`, `item` and
+`origin`, and the `preapprove` events of section 9 with these subject
+fields. No event holds a
 password, a TOTP seed, a TOTP code or a username.
 
 ### 21.9 What the broker reads from bw *(built)*

@@ -942,10 +942,9 @@ access to it: such an account could read them too.
 
 ### Website logins: a shared collection
 
-> **Not ready yet.** The broker part of website logins (issue #103) is
-> still being built. You can do these Bitwarden steps now. The broker
-> already checks a `[logins.*]` section (DESIGN.md section 21.2), but it
-> does not hand out logins yet.
+> **The browser part is not ready yet.** The broker hands out logins
+> (issue #103). The plugin for agent-browser is issue #104. Until then,
+> only `nodkey preapprove --login` uses logins from the command line.
 
 Agents can log in to websites with logins from your own Bitwarden vault.
 You choose the logins: you put them into one shared collection. The
@@ -992,6 +991,42 @@ account.
    ```
 
    The config names the collection by its `id`, never by its name.
+7. **Add the collection to `broker.toml`** (DESIGN.md section 21.2):
+
+   ```toml
+   [logins.web]
+   store = "vault"
+   collection = "00000000-0000-0000-0000-000000000000"
+   clients = ["laptop"]
+   ask = "window"
+   window = "15m"
+   preapprove = true
+
+   [[logins.web.items]]
+   id = "11111111-1111-1111-1111-111111111111"
+   clients = ["laptop"]
+   ask = "always"
+   preapprove = true
+   ```
+
+   `store` is a store of type `bw`. `ask = "never"` is refused for
+   logins. An item's own rule replaces the rule of the collection
+   completely. A change of `[logins.*]` needs a restart of the broker:
+   a reload refuses it. Putting an item into the collection needs no
+   change of the config.
+
+8. **One login after one tap, for a browser that waits only a short
+   time.** On the client:
+
+   ```sh
+   nodkey preapprove --login 11111111-1111-1111-1111-111111111111 --url https://example.com/sign-in
+   ```
+
+   It waits for your tap as long as any other request (the `timeout`
+   of the broker). After the tap, the next login to that item, from that
+   machine, for that origin, gets the login without a new tap. It works
+   once, and only in the 60 seconds after the tap. The rule of the item
+   needs `preapprove = true`.
 
 **Never unlock your main vault in a browser or an app that an agent can
 drive**: not in agent-browser, not in a browser that an agent reaches
