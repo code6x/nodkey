@@ -220,8 +220,9 @@ func TestCaps(t *testing.T) {
 			&SecretsRequest{Secrets: make([]SecretRef, MaxSecrets+1)}},
 		{"variable name", &SecretsRequest{Secrets: []SecretRef{{Var: long[1:]}}},
 			&SecretsRequest{Secrets: []SecretRef{{Var: long}}}},
-		{"secret name", &SecretsRequest{Secrets: []SecretRef{{Name: long[1:]}}},
-			&SecretsRequest{Secrets: []SecretRef{{Name: long}}}},
+		// A secret name may be SECTION/KEY of a project: 129 bytes.
+		{"secret name", &SecretsRequest{Secrets: []SecretRef{{Name: strings.Repeat("a", MaxSecretName)}}},
+			&SecretsRequest{Secrets: []SecretRef{{Name: strings.Repeat("a", MaxSecretName+1)}}}},
 		{"arguments", &SecretsRequest{Command: make([]string, MaxArgs)},
 			&SecretsRequest{Command: make([]string, MaxArgs+1)}},
 		{"command lines", &SignRequest{Commands: make([][]string, MaxCommands)},
@@ -723,7 +724,8 @@ func TestPreapproveCaps(t *testing.T) {
 	}{
 		{"secrets", &PreapproveRequest{Secrets: make([]string, MaxSecrets+1)}},
 		{"hosts", &PreapproveRequest{Hosts: make([]string, MaxGrantHosts+1)}},
-		{"secret name", &PreapproveRequest{Secrets: []string{long}}},
+		{"secret name", &PreapproveRequest{Secrets: []string{strings.Repeat("a", MaxSecretName+1)}}},
+		{"host name", &PreapproveRequest{Hosts: []string{long}}},
 		{"key", &PreapproveRequest{Key: long}},
 		{"from", &PreapproveRequest{From: strings.Repeat("1", MaxTime+1)}},
 		{"until", &PreapproveRequest{Until: strings.Repeat("1", MaxTime+1)}},

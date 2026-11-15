@@ -74,6 +74,12 @@ func keeps(old, next *config.Broker, sameKey func(string) bool, g *grant) bool {
 			}
 			continue
 		}
+		if r.project {
+			if !keepsProject(old, next, r, g.client) {
+				return false
+			}
+			continue
+		}
 		if !r.key {
 			if !old.SameSecret(next, r.name, g.client) {
 				return false

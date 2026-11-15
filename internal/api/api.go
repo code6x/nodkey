@@ -163,6 +163,10 @@ const (
 	// MaxName is the most bytes of a name: a variable, a secret, a key, a
 	// host or a remote user. Valid names are shorter.
 	MaxName = 64
+	// MaxSecretName is the most bytes of a secret name: a name, or
+	// SECTION/KEY of a project, two names and a "/" (DESIGN.md section
+	// 14, "Projects"). Each part is at most MaxName.
+	MaxSecretName = 2*MaxName + 1
 	// MaxKey is the most bytes of an SSH public key in SSH wire form. An
 	// RSA key of 16384 bits, the largest that OpenSSH accepts, has about
 	// 2 KiB.

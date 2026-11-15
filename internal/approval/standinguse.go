@@ -43,7 +43,9 @@ type Alarmer interface {
 type StandingRequest struct {
 	Client  string
 	Secrets []string
-	Claim   Claim
+	// Projects are as in Request.
+	Projects map[string]ProjectSecret
+	Claim    Claim
 	// Token is the hash of the token that the client sent, or nil when
 	// the header was not a valid token.
 	Token *[32]byte
@@ -81,7 +83,7 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 	}
 	defer c.leave(p)
 	p.deadline = p.start.add(c.timeout(audit.KindSecrets))
-	if !c.check(&Request{Client: r.Client, Kind: audit.KindSecrets, Secrets: r.Secrets, Claim: r.Claim}, p) {
+	if !c.check(&Request{Client: r.Client, Kind: audit.KindSecrets, Secrets: r.Secrets, Projects: r.Projects, Claim: r.Claim}, p) {
 		return c.denied(p, audit.CauseNotAllowed)
 	}
 	tok, err := grantkey.New()

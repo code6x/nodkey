@@ -100,7 +100,7 @@ func (r *SecretsRequest) Check() error {
 		return errTooMany
 	}
 	for _, s := range r.Secrets {
-		if len(s.Var) > MaxName || len(s.Name) > MaxName {
+		if len(s.Var) > MaxName || len(s.Name) > MaxSecretName {
 			return errTooLong
 		}
 	}
@@ -582,7 +582,12 @@ func (r *PreapproveRequest) Check() error {
 	if len(r.Key) > MaxName || len(r.User) > MaxName || len(r.From) > MaxTime || len(r.Until) > MaxTime {
 		return errTooLong
 	}
-	for _, s := range append(append([]string(nil), r.Secrets...), r.Hosts...) {
+	for _, s := range r.Secrets {
+		if len(s) > MaxSecretName {
+			return errTooLong
+		}
+	}
+	for _, s := range r.Hosts {
 		if len(s) > MaxName {
 			return errTooLong
 		}

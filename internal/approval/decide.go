@@ -43,6 +43,10 @@ type pending struct {
 	items    []item // the secrets, or the one key
 	subject  audit.Subject
 	claim    Claim
+	// labels are the texts of the message for the names in
+	// subject.Secrets, in the same order: the name, and for a project
+	// secret its rule and the end of its ID.
+	labels []string
 
 	hostKey       string   // KindSSHLogin: the host key in SSH wire form
 	user          string   // KindSSHLogin, KindSSHGrant: the remote user
@@ -108,7 +112,7 @@ func (p *pending) prompt(now moment) Prompt {
 		ShortCode:     p.code,
 		Kind:          p.kind,
 		Client:        p.client,
-		Secrets:       slices.Clone(p.subject.Secrets),
+		Secrets:       slices.Clone(p.labels),
 		Key:           p.subject.Key,
 		Hosts:         slices.Clone(p.subject.Hosts),
 		HostKey:       p.subject.HostKey,
@@ -720,6 +724,7 @@ func (c *Core) newResult(p *pending) *Result {
 	s := p.subject
 	s.RequestID = p.id
 	s.Secrets = slices.Clone(s.Secrets)
+	s.ProjectSecrets = slices.Clone(s.ProjectSecrets)
 	s.Hosts = slices.Clone(s.Hosts)
 	return &Result{
 		RequestID: p.id,

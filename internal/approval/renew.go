@@ -81,7 +81,7 @@ func (c *Core) scanWarnings(now moment) {
 		w := Warning{RequestID: g.reqID, ShortCode: g.code, Client: g.client, Uses: g.perWindow,
 			GrantID: g.id, End: g.end.wall.In(loc)}
 		for _, r := range g.refs {
-			w.Secrets = append(w.Secrets, r.name)
+			w.Secrets = append(w.Secrets, r.text())
 		}
 		for _, x := range g.windows {
 			w.Windows = append(w.Windows, windowText(x))

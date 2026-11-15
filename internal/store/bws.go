@@ -54,19 +54,11 @@ func (s *bwsStore) Start(context.Context) error {
 // in BWS_ACCESS_TOKEN, and returns the field "value" of the answer. bws
 // gets no PATH: it starts no other program.
 func (s *bwsStore) Fetch(ctx context.Context, id string) (Value, error) {
-	const step = "bws secret get"
+	const step = stepGetSecret
 	if !isUUID(id) {
 		return Value{}, stepError(s.run.store, step, ErrBadID)
 	}
-	if err := acquire(ctx, s.slots); err != nil {
-		return Value{}, stepError(s.run.store, step, err)
-	}
-	defer func() { <-s.slots }()
-	env, err := s.tokenEnv()
-	if err != nil {
-		return Value{}, stepError(s.run.store, step, err)
-	}
-	out, err := s.run.run(ctx, step, []string{"secret", "get", id, "--output", "json", "--color", "no"}, env)
+	out, err := s.bws(ctx, step, "secret", "get", id, "--output", "json", "--color", "no")
 	if err != nil {
 		return Value{}, err
 	}

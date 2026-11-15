@@ -75,15 +75,17 @@ func (c *Core) checkStanding(r *Request, p *pending) bool {
 			continue
 		}
 		seen[name] = true
-		s, known := p.cfg.Secrets[name]
-		if !known || p.client == "" || !slices.Contains(s.Clients, p.client) ||
-			!s.Rule.Standing || s.Rule.Ask == config.AskNever || !validRule(s.Rule, s.Clients) {
+		it, clients, label, known := secretItem(p, name, r.Projects)
+		if !known || p.client == "" || !slices.Contains(clients, p.client) ||
+			!it.rule.Standing || it.rule.Ask == config.AskNever || !validRule(it.rule, clients) {
 			ok = false
 			continue
 		}
-		p.items = append(p.items, item{ref: ref{name: name}, rule: s.Rule})
-		p.subject.Secrets = append(p.subject.Secrets, name)
-		refs = append(refs, ref{name: name})
+		if !p.addSecret(name, label, it, r.Projects) {
+			ok = false
+			continue
+		}
+		refs = append(refs, it.ref)
 	}
 	if len(refs) > MaxPreapproveSecrets {
 		ok = false

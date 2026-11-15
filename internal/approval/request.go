@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"slices"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -21,6 +22,10 @@ type Request struct {
 	// Secrets are the secret names of a KindSecrets request. A name may
 	// be there more than once, such as for two variables; it counts once.
 	Secrets []string
+	// Projects are the secrets of the names SECTION/KEY in Secrets, by
+	// name, as the broker found them in their project (DESIGN.md section
+	// 14, "Projects"). A name SECTION/KEY that is not here is denied.
+	Projects map[string]ProjectSecret
 
 	// Key is the key name of a KindSSHLogin or KindSSHGrant request.
 	Key string
@@ -226,6 +231,12 @@ func (r *Result) mainEvents() []audit.Event {
 			s := r.Subject
 			if s.Kind == audit.KindSecrets {
 				s.Secrets = secrets
+				s.ProjectSecrets = slices.DeleteFunc(slices.Clone(s.ProjectSecrets), func(ps audit.ProjectSecret) bool {
+					return !slices.Contains(secrets, ps.Name)
+				})
+				if len(s.ProjectSecrets) == 0 {
+					s.ProjectSecrets = nil
+				}
 			}
 			gu := audit.GrantUsed{Subject: s, Via: via}
 			if via == audit.ViaScheduled || via == audit.ViaStanding {

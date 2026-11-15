@@ -20,7 +20,12 @@ type ref struct {
 	// login ref is never equal to a secret or key ref, so a grant for one
 	// never covers the other.
 	login bool
-	name  string
+	// project says that name is SECTION/ID: a secret of the [project.*]
+	// section SECTION, by its ID in lower case (DESIGN.md section 14,
+	// "Projects"). A grant for it covers that one secret, whatever its key
+	// is now. It is never set together with key or login.
+	project bool
+	name    string
 }
 
 // grantKey is the scope of a grant (DESIGN.md section 8): a client and a

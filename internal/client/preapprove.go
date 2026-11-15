@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/code6x/nodkey/internal/api"
+	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/loginmatch"
 	"github.com/code6x/nodkey/internal/sshauth"
@@ -486,10 +487,18 @@ func checkPreapproveGiven(o *preapproveOptions, given map[string]bool) error {
 
 // addSecret adds the value of one --secret to o. seen holds the secrets
 // that o has already.
+// validSecretName reports whether name is a secret name: a name, or
+// PROJECT/KEY of a project (DESIGN.md section 14, "Projects").
+func validSecretName(name string) bool {
+	_, _, ok := config.ParseSecretName(name)
+	return ok
+}
+
 func addSecret(o *preapproveOptions, seen map[string]bool, name string) error {
 	switch {
-	case !grantNamePattern.MatchString(name):
-		return fmt.Errorf("--secret: %.64q is not a secret name: it is %s", name, grantNameRule)
+	case !validSecretName(name):
+		return fmt.Errorf("--secret: %.140q is not a secret name: it is %s, or PROJECT/KEY with each part so",
+			name, grantNameRule)
 	case seen[name]:
 		return fmt.Errorf("--secret: the secret %s is given twice", name)
 	case len(o.secrets) == api.MaxSecrets:

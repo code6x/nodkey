@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
@@ -302,10 +303,17 @@ type fakeStore struct {
 	fetches int
 	given   [][]byte
 	started chan struct{} // gets a value when a Fetch starts
+	// projects are the secrets of each project for ListSecrets, by
+	// project ID; getAs is the key and project that FetchListed finds for
+	// an ID, when they differ from the list. lists counts ListSecrets.
+	projects map[string][]store.ProjectSecret
+	getAs    map[string]store.ProjectSecret
+	lists    int
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{items: make(map[string]string), started: make(chan struct{}, 64)}
+	return &fakeStore{items: make(map[string]string), started: make(chan struct{}, 64),
+		projects: make(map[string][]store.ProjectSecret), getAs: make(map[string]store.ProjectSecret)}
 }
 
 func (f *fakeStore) Start(context.Context) error { return nil }
@@ -339,6 +347,29 @@ func (f *fakeStore) Fetch(ctx context.Context, id string) (store.Value, error) {
 }
 
 func (f *fakeStore) Close() {}
+
+// ListSecrets acts as store.ProjectStore.
+func (f *fakeStore) ListSecrets(_ context.Context, project string) ([]store.ProjectSecret, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lists++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return slices.Clone(f.projects[project]), nil
+}
+
+// FetchListed acts as store.ProjectStore: the value of the ID, when the
+// store has the secret with the listed key and project now.
+func (f *fakeStore) FetchListed(ctx context.Context, ps store.ProjectSecret) (store.Value, error) {
+	f.mu.Lock()
+	now, moved := f.getAs[ps.ID]
+	f.mu.Unlock()
+	if moved && (now.Key != ps.Key || now.Project != ps.Project) {
+		return store.Value{}, store.ErrOtherSecret
+	}
+	return f.Fetch(ctx, ps.ID)
+}
 
 // set changes the store under its lock, after the broker started.
 func (f *fakeStore) set(change func(*fakeStore)) {
@@ -414,6 +445,9 @@ type envOptions struct {
 	clients []string
 	// vault, if set, is the store "vault" instead of the fake one.
 	vault store.Store
+	// stores are more stores, by name. The config needs a [store.*]
+	// section for each.
+	stores map[string]store.Store
 }
 
 // newEnv starts a broker with this config:
@@ -531,10 +565,12 @@ func newEnv(t *testing.T, opts envOptions) *env {
 	if opts.vault != nil {
 		vaultStore = opts.vault
 	}
+	stores := map[string]store.Store{"main": e.main, "vault": vaultStore}
+	maps.Copy(stores, opts.stores)
 	svc, err := New(Parts{
 		Config:  e.cfg,
 		Audit:   e.audit,
-		Stores:  map[string]store.Store{"main": e.main, "vault": vaultStore},
+		Stores:  stores,
 		Keys:    keys,
 		Logger:  NewLogger(e.logs),
 		Version: opts.version,

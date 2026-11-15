@@ -43,7 +43,7 @@ func (c Change) String() string {
 }
 
 // groups is the order of the groups in the output.
-var groups = []string{"broker", "client", "store", "secret", "logins", "key", "known_hosts"}
+var groups = []string{"broker", "client", "store", "secret", "logins", "project", "key", "known_hosts"}
 
 // Diff returns the changes from old to next, by group and then by name,
 // in a fixed order. No change means the two configs mean the same.
@@ -54,6 +54,7 @@ func Diff(old, next *Broker) []Change {
 	d.stores(old, next)
 	d.secrets(old, next)
 	d.logins(old, next)
+	d.projects(old, next)
 	d.keys(old, next)
 	d.knownHosts(old.KnownHosts, next.KnownHosts)
 	d.unknown(old, next)
@@ -273,6 +274,39 @@ func (d *differ) secrets(old, next *Broker) {
 		}
 		d.clientList("secret", name, what, "ask for it", o.Clients, n.Clients)
 		d.rule("secret", name, what, o.Rule, n.Rule)
+	}
+}
+
+// projects compares the [project.*] sections. A [secret.*] entry with the
+// ID of a project secret wins over the project's rule; secrets lists
+// those changes.
+func (d *differ) projects(old, next *Broker) {
+	for _, name := range sortedUnion(old.Projects, next.Projects) {
+		o, inOld := old.Projects[name]
+		n, inNew := next.Projects[name]
+		what := "project " + q(name)
+		switch {
+		case !inOld:
+			d.add("project", name, true, "%s: new: every secret of project %s in store %s, %s",
+				what, q(n.Project), q(n.Store), ruleText(n.Rule))
+			for _, c := range n.Clients {
+				d.add("project", name, true, "%s: client %s may now ask for its secrets", what, q(c))
+			}
+			continue
+		case !inNew:
+			d.add("project", name, false, "%s: removed", what)
+			continue
+		}
+		for _, p := range []struct{ key, old, new string }{
+			{"store", o.Store, n.Store},
+			{"project", o.Project, n.Project},
+		} {
+			if p.old != p.new {
+				d.add("project", name, true, "%s: now other secrets: %s changed from %s to %s", what, p.key, q(p.old), q(p.new))
+			}
+		}
+		d.clientList("project", name, what, "ask for its secrets", o.Clients, n.Clients)
+		d.rule("project", name, what, o.Rule, n.Rule)
 	}
 }
 
@@ -573,6 +607,7 @@ func (d *differ) unknown(old, next *Broker) {
 	x.Secrets, y.Secrets = common(old.Secrets, next.Secrets)
 	x.Keys, y.Keys = common(old.Keys, next.Keys)
 	x.Logins, y.Logins = common(old.Logins, next.Logins)
+	x.Projects, y.Projects = common(old.Projects, next.Projects)
 	for name, l := range x.Logins {
 		// Item rules that only one side has are compared in logins.
 		m := y.Logins[name]
@@ -608,6 +643,7 @@ var compared = map[reflect.Type][]string{
 	reflect.TypeFor[Key]():           {"Name", "File", "Clients", "Hosts"},
 	reflect.TypeFor[Logins]():        {"Name", "Store", "Collection", "Clients"},
 	reflect.TypeFor[LoginItemRule](): {"ID", "Clients"},
+	reflect.TypeFor[Project]():       {"Name", "Store", "Project", "Clients"},
 	reflect.TypeFor[Rule]():          {"Ask", "Window", "Preapprove", "Standing", "Notify", "MaxPerDay", "Hours"},
 }
 

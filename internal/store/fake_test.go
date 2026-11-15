@@ -76,7 +76,7 @@ type fakeScenario struct {
 	Password string              `json:"password"` // bw: the master password, the first line of the password file
 	Session  string              `json:"session"`  // bw: the session key that unlock makes; random if empty
 	Items    map[string]string   `json:"items"`    // the answer for each item ID, in lower case
-	Lists    map[string]string   `json:"lists"`    // bw: the answer of "list items" for each collection ID, in lower case
+	Lists    map[string]string   `json:"lists"`    // bw: the answer of "list items" for each collection ID; bws: of "secret list" for each project ID; in lower case
 	Steps    map[string]fakeStep `json:"steps"`    // what a step does instead of its usual work
 	Pause    time.Duration       `json:"pause"`    // each run waits this long first
 }
@@ -164,16 +164,20 @@ func runFake(program string) int {
 // fakeBWS acts as bws.
 func fakeBWS(home string, sc *fakeScenario) int {
 	args := os.Args[1:]
-	if len(args) < 3 || args[0] != "secret" || args[1] != "get" {
+	if len(args) < 3 || args[0] != "secret" || (args[1] != "get" && args[1] != "list") {
 		return fakeFail("error: unexpected arguments", 2)
 	}
-	if step, ok := sc.Steps["secret get"]; ok {
+	if step, ok := sc.Steps["secret "+args[1]]; ok {
 		return fakeOverride(home, step)
 	}
 	if os.Getenv("BWS_ACCESS_TOKEN") != sc.Token || sc.Token == "" {
 		return fakeFail("Error: \n   0: Access token is not in a valid format", 1)
 	}
-	item, ok := sc.Items[strings.ToLower(args[2])]
+	answers := sc.Items
+	if args[1] == "list" {
+		answers = sc.Lists
+	}
+	item, ok := answers[strings.ToLower(args[2])]
 	if !ok {
 		return fakeFail("Error: \n   0: Received error message from server: [404 Not Found]", 1)
 	}

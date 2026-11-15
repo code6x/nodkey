@@ -69,6 +69,12 @@ const maxWindowMinutes = int(config.MaxWindow / time.Minute)
 // Patterns for the checked fields of a prompt, as in package audit.
 var (
 	namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	// secretPattern is a secret in a message: a name of a [secret.*]
+	// section; or SECTION/KEY of a [project.*] section, perhaps with its
+	// rule and the end of its ID; or a project section with its rule and
+	// the end of an ID, in a list of grants (DESIGN.md section 14,
+	// "Projects").
+	secretPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(/[A-Za-z0-9][A-Za-z0-9._-]{0,63})?( \((project rule|rule of secret [A-Za-z0-9][A-Za-z0-9._-]{0,63}), ID …[0-9a-f]{8}\))?$`)
 	// windowPattern is the form of a window of a standing grant, as
 	// the core shows it: "daily 03:00-05:00" or "mon,thu 03:00-05:00".
 	windowPattern     = regexp.MustCompile(`^(daily|(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun)){0,6}) ([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$`)
@@ -276,7 +282,7 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 			return bad("the fields of a website login")
 		}
 	case audit.KindSecrets:
-		if len(p.Secrets) == 0 || !allNames(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 || p.HostKey != "" ||
+		if len(p.Secrets) == 0 || !allSecrets(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 || p.HostKey != "" ||
 			p.RemoteUser != "" || !p.GrantEnds.IsZero() {
 			return bad("the fields of a secrets request")
 		}
@@ -304,7 +310,7 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 			}
 			break
 		}
-		named := len(p.Secrets) > 0 && allNames(p.Secrets) && p.Key == "" && len(p.Hosts) == 0 && p.RemoteUser == ""
+		named := len(p.Secrets) > 0 && allSecrets(p.Secrets) && p.Key == "" && len(p.Hosts) == 0 && p.RemoteUser == ""
 		keyed := len(p.Secrets) == 0 && namePattern.MatchString(p.Key) && len(p.Hosts) > 0 &&
 			len(p.Hosts) <= approval.MaxGrantHosts && allNames(p.Hosts) && remoteUserPattern.MatchString(p.RemoteUser)
 		if (!named && !keyed) || p.HostKey != "" || !p.GrantEnds.IsZero() || p.WindowMinutes != 0 ||
@@ -318,7 +324,7 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 			return bad("the fields of a scheduled grant")
 		}
 	case audit.KindStanding:
-		if notice || len(p.Secrets) == 0 || !allNames(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 ||
+		if notice || len(p.Secrets) == 0 || !allSecrets(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 ||
 			p.RemoteUser != "" || p.HostKey != "" || !p.GrantEnds.IsZero() || p.WindowMinutes != 0 ||
 			p.Uses < 1 || p.From.IsZero() || !p.From.Before(p.Until) || p.Via != "" ||
 			p.GrantID != "" || p.UsesLeft != 0 || !p.Once || len(p.Windows) < 1 ||
@@ -380,6 +386,18 @@ func checkLoginPrompt(p approval.Prompt, notice bool) error {
 	return nil
 }
 
+// allSecrets reports whether each of names is a secret as a message shows
+// it (secretPattern).
+func allSecrets(names []string) bool {
+	for _, n := range names {
+		if !secretPattern.MatchString(n) {
+			return false
+		}
+	}
+	return true
+}
+
+// allNames reports whether each of names follows the name rule.
 func allNames(names []string) bool {
 	for _, n := range names {
 		if !namePattern.MatchString(n) {
@@ -759,7 +777,7 @@ func alarmText(a approval.Alarm) (*text, error) {
 		return nil, bad("the short code")
 	case !namePattern.MatchString(a.Client):
 		return nil, bad("the client name")
-	case len(a.Secrets) > 0 && !allNames(a.Secrets):
+	case len(a.Secrets) > 0 && !allSecrets(a.Secrets):
 		return nil, bad("the secrets")
 	case (a.GrantID == "") != (a.Cause == audit.AlarmUnknownToken) || (a.GrantID != "" && !validRequestID(a.GrantID)):
 		return nil, bad("the grant ID")

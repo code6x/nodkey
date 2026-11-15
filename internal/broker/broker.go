@@ -373,6 +373,11 @@ func checkStores(cfg *config.Broker, stores map[string]store.Store) error {
 			return fmt.Errorf("broker: [secret.%s]: its store has no store", name)
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
+		if _, ok := stores[cfg.Projects[name].Store].(store.ProjectStore); !ok {
+			return fmt.Errorf("broker: [project.%s]: its store cannot list the secrets of a project", name)
+		}
+	}
 	return nil
 }
 

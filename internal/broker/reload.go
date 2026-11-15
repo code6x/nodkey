@@ -103,7 +103,11 @@ func (rq *request) stillAllowed(decided *config.Broker, secrets []string, key st
 		}
 		ok = from.SameClient(cur.cfg, rq.client)
 		for _, name := range secrets {
-			ok = ok && from.SameSecret(cur.cfg, name, rq.client)
+			if ps, isProject := rq.projects[name]; isProject {
+				ok = ok && from.SameProjectSecret(cur.cfg, ps.Section, ps.ID, rq.client)
+			} else {
+				ok = ok && from.SameSecret(cur.cfg, name, rq.client)
+			}
 		}
 		if key != "" {
 			ok = ok && from.SameKey(cur.cfg, key, rq.client) && cur.cfg.KeyHost(key, hostKey)

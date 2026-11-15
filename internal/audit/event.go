@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -150,6 +151,13 @@ const (
 // holds checked data: the request ID that the broker made, and names from
 // the broker's own config and known_hosts file. A name that failed the
 // broker's checks is left out, so a denied request may have no names.
+// ProjectSecret is the ID of a secret of a [project.*] section that a
+// request named as SECTION/KEY (DESIGN.md section 14, "Projects").
+type ProjectSecret struct {
+	Name string `json:"name"` // SECTION/KEY
+	ID   string `json:"id"`   // the secret's ID, in lower case
+}
+
 type Subject struct {
 	// RequestID is the request's random ID: 16 bytes in base64url without
 	// padding (22 characters). It is required.
@@ -161,6 +169,9 @@ type Subject struct {
 	Kind Kind `json:"kind,omitempty"`
 	// Secrets are secret names from the config, for KindSecrets.
 	Secrets []string `json:"secrets,omitempty"`
+	// ProjectSecrets are the IDs of the names in Secrets of the form
+	// SECTION/KEY: secrets of a [project.*] section.
+	ProjectSecrets []ProjectSecret `json:"project_secrets,omitempty"`
 	// Key is the key name from the config, for an SSH request.
 	Key string `json:"key,omitempty"`
 	// Hosts are host names from the broker's known_hosts file: the one host
@@ -464,6 +475,11 @@ var (
 	// namePattern is the name rule of DESIGN.md section 14, for clients,
 	// secrets, keys and known hosts.
 	namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	// projectNamePattern is SECTION/KEY: a secret of a [project.*]
+	// section, each part by the name rule.
+	projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	// secretIDPattern is the ID of a project secret, in lower case.
+	secretIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 	// windowPattern is the form of a window in a standing request:
 	// "daily 03:00-05:00" or "mon,thu 03:00-05:00".
@@ -573,8 +589,13 @@ func (s *Subject) validate(needRequest bool) error {
 		return errors.New("uses must not be negative")
 	}
 	for _, name := range s.Secrets {
-		if !namePattern.MatchString(name) {
-			return errors.New("secrets must be names from the config")
+		if !namePattern.MatchString(name) && !projectNamePattern.MatchString(name) {
+			return errors.New("secrets must be names from the config, or SECTION/KEY of a project")
+		}
+	}
+	for _, ps := range s.ProjectSecrets {
+		if !projectNamePattern.MatchString(ps.Name) || !slices.Contains(s.Secrets, ps.Name) || !secretIDPattern.MatchString(ps.ID) {
+			return errors.New("project_secrets must name a secret SECTION/KEY of secrets, with an ID in lower case")
 		}
 	}
 	if s.Key != "" && !namePattern.MatchString(s.Key) {
