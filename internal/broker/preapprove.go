@@ -14,6 +14,7 @@ import (
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
+	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/sshauth"
 	"github.com/code6x/nodkey/internal/transport"
@@ -50,13 +51,26 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 	}
 	sub.Reason = cl.Reason
 	rq.pre = sub
-	rq.releaseBody()
 	if !ok {
+		rq.releaseBody()
 		rq.deny(sub, audit.CauseNotAllowed, "", http.StatusForbidden)
 		return
 	}
+	var names []string // each once, in order; each passed secretAllowed
+	for _, n := range req.Secrets {
+		if !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	// The place of the body is held while the stores list the projects.
+	resolved := rq.resolveProjects(ctx, names)
+	rq.releaseBody()
+	if !resolved {
+		return
+	}
+	sub = rq.pre
 	ar := &approval.Request{
-		Client: rq.client, Kind: audit.KindPreapprove, Secrets: sub.Secrets, Key: sub.Key,
+		Client: rq.client, Kind: audit.KindPreapprove, Secrets: names, Projects: rq.projects, Key: sub.Key,
 		RemoteUser: sub.RemoteUser, Hosts: sub.Hosts, Uses: int(req.Uses), NotBefore: from, NotAfter: until, Claim: cl,
 	}
 	var token grantkey.Token
@@ -157,12 +171,13 @@ func (s *Service) checkStanding(client string, req *api.PreapproveRequest) (sub 
 			continue
 		}
 		seen[name] = true
-		sec, known := s.view().cfg.Secrets[name]
-		if !known || !slices.Contains(sec.Clients, client) {
+		if !secretAllowed(s.view().cfg, client, name) {
 			ok = false
 			continue
 		}
-		sub.Secrets = append(sub.Secrets, sec.Name)
+		if _, isProject, _ := config.ParseSecretName(name); !isProject {
+			sub.Secrets = append(sub.Secrets, name) // a project secret: once it is found
+		}
 	}
 	for _, w := range req.Windows {
 		spec, valid := windowSpec(w)
@@ -234,12 +249,13 @@ func (s *Service) checkPreapprove(client string, req *api.PreapproveRequest) (su
 				continue
 			}
 			seen[name] = true
-			sec, known := s.view().cfg.Secrets[name]
-			if !known || !slices.Contains(sec.Clients, client) {
+			if !secretAllowed(s.view().cfg, client, name) {
 				ok = false
 				continue
 			}
-			sub.Secrets = append(sub.Secrets, sec.Name)
+			if _, isProject, _ := config.ParseSecretName(name); !isProject {
+				sub.Secrets = append(sub.Secrets, name) // a project secret: once it is found
+			}
 		}
 		return sub, from, until, ok
 	}

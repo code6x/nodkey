@@ -698,6 +698,66 @@ in the example config, `[store.backup-job]` with the credential
 another secret through that store. Its token can read only that one
 project.
 
+### bws: allow a whole project
+
+A `[project.NAME]` section allows every secret of one Secrets Manager
+project, with one rule
+([DESIGN.md section 14, "Projects"](../DESIGN.md#projects)). To let agents
+use a new secret, you then put it into the project. You do not edit the
+config, and you do not reload the broker.
+
+So anyone who can write to the project decides what agents can get
+([THREAT-MODEL.md T49](../THREAT-MODEL.md#6-threats-and-answers)). In the
+web app of Secrets Manager:
+
+1. Make a project only for the secrets that agents may get. Keep it
+   small: the broker reads the list of the whole project, with all
+   values, for each request, and it refuses a list of more than 1 MiB.
+   Split a big project into two.
+2. Give the broker's machine account **"Can read"** on this project, and
+   nothing more. Never "Can read, write".
+3. Only you may write to the project. Do not give another person or
+   machine account write access to it.
+4. Give each secret a **key** of letters, digits, `.`, `_` and `-`, at
+   most 64 characters, such as `GITHUB_TOKEN`. A secret with another key
+   cannot be asked for. Give each secret its own key: when two secrets of
+   the project have one key, the broker refuses both.
+5. Copy the ID of the project, a UUID. It goes into `project` in the
+   config.
+
+In the config:
+
+```toml
+[project.ci]
+store = "main"
+project = "00000000-0000-0000-0000-000000000000"
+clients = ["laptop"]
+ask = "window"
+window = "15m"
+```
+
+- `store` must be a store of type `bws`.
+- `ask = "never"` is not allowed here. For a job without a tap, use a
+  `[secret.*]` section for that one secret.
+- One project may be in one `[project.*]` section only.
+
+A client asks for a secret of the project as `SECTION/KEY`:
+
+```sh
+nodkey run --secret GH_TOKEN=ci/GITHUB_TOKEN -- gh pr list
+```
+
+The key must be written exactly as in Bitwarden, also in upper and lower
+case. The tap message shows `ci/GITHUB_TOKEN (project rule, ID …1a2b3c4d)`:
+the end of the secret's ID tells you which secret it is.
+
+**A different rule for one secret.** Give the secret a `[secret.*]`
+section with its ID, in any store of type `bws`. That section's rule then
+applies to the secret completely, also when a client asks for
+`ci/GITHUB_TOKEN`. It may be stricter or looser than the project's rule.
+Do not give one secret two `[secret.*]` sections: the broker then refuses
+it.
+
 ### 1password: a vault only for nodkey
 
 The `1password` store uses the official 1Password SDK inside the broker.
@@ -1806,7 +1866,7 @@ To check a config before you use it, run `nodkey broker check`
   The command prints why, and exits with 1. The journal says why too. Fix
   the config, and run the command again.
 
-A reload can change `[client.*]`, `[secret.*]`, `[key.*]` and
+A reload can change `[client.*]`, `[secret.*]`, `[key.*]`, `[project.*]` and
 `known_hosts`. A change of `listen`, `tls_key`, `audit_log`,
 `[telegram]`, `[ntfy]`, `[updates]`, `[preapprove]`, `[standing]` or a
 `[store.*]` section needs a restart: the reload refuses it, and says so.

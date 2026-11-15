@@ -5,12 +5,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"slices"
 
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/claim"
+	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/store"
 	"github.com/code6x/nodkey/internal/transport"
@@ -33,13 +33,20 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 		Reason:  freeText(req.Reason, maxReasonRunes),
 	}
 	rq.pre.Command, rq.pre.Reason = cl.Command, cl.Reason
-	rq.releaseBody()
 	if !ok {
+		rq.releaseBody()
 		// No message for a name the client may not use, or for a
 		// variable on the deny list (DESIGN.md section 5). The audit log
 		// gets only the names that passed.
 		rq.deny(rq.pre, audit.CauseNotAllowed, "", http.StatusForbidden)
 		rq.logDeniedVar(req.Secrets)
+		return
+	}
+	// The place of the body is held while the stores list the projects,
+	// so one client cannot keep the stores busy with many requests.
+	resolved := rq.resolveProjects(ctx, names)
+	rq.releaseBody()
+	if !resolved {
 		return
 	}
 	var res *approval.Result
@@ -49,7 +56,7 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 		res, rc, ok = rq.decideStanding(ctx, names, cl, tokens)
 	} else {
 		res, rc, ok = rq.decide(ctx, &approval.Request{
-			Client: rq.client, Kind: audit.KindSecrets, Secrets: names, Claim: cl,
+			Client: rq.client, Kind: audit.KindSecrets, Secrets: names, Projects: rq.projects, Claim: cl,
 		})
 	}
 	if !ok {
@@ -127,15 +134,17 @@ func (s *Service) checkSecrets(client string, req *api.SecretsRequest) (names, p
 			ok = false
 		}
 		vars[ref.Var] = true
-		sec, known := s.view().cfg.Secrets[ref.Name]
-		if !known || !slices.Contains(sec.Clients, client) {
+		if !secretAllowed(s.view().cfg, client, ref.Name) {
 			ok = false
 			continue
 		}
-		names = append(names, sec.Name)
-		if !seen[sec.Name] {
-			seen[sec.Name] = true
-			passed = append(passed, sec.Name)
+		names = append(names, ref.Name)
+		if _, isProject, _ := config.ParseSecretName(ref.Name); isProject {
+			continue // the audit log gets it once it is found (resolveProjects)
+		}
+		if !seen[ref.Name] {
+			seen[ref.Name] = true
+			passed = append(passed, ref.Name)
 		}
 	}
 	return names, passed, ok
@@ -190,17 +199,9 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 			rq.cancelled()
 			return nil, false
 		}
-		sec := rq.v.cfg.Secrets[name]
+		storeName, fetch := rq.fetcher(name)
 		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
-		ref := sec.ID
-		switch {
-		case sec.Field != "":
-			ref += "/" + sec.Field // a 1password store: the item and its field
-		case sec.SecretName != "":
-			// An infisical store: the project, environment, path and name.
-			ref = store.InfisicalRef(sec.Project, sec.Environment, sec.Path, sec.SecretName)
-		}
-		v, err := rq.s.stores[sec.Store].Fetch(fctx, ref)
+		v, err := fetch(fctx)
 		cancel()
 		if err != nil {
 			v.Clear()
@@ -211,10 +212,10 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 			// Store errors are fixed texts: the store, the step, a reason
 			// and an exit code, never the program's output.
 			rq.s.log.Warn("broker: a store failed; the request is denied",
-				slog.String("request_id", rq.sub.RequestID), slog.String("store", sec.Store),
+				slog.String("request_id", rq.sub.RequestID), slog.String("store", storeName),
 				slog.String("error", errorText(err)))
 			if errors.Is(err, store.ErrRateLimited) {
-				rq.s.rateLimited(sec.Store)
+				rq.s.rateLimited(storeName)
 			}
 			rq.fail(audit.CodeStoreFailed)
 			return nil, false
@@ -223,6 +224,35 @@ func (rq *request) fetch(ctx context.Context, rc receipt, names []string) (map[s
 		values[name] = v
 	}
 	return values, true
+}
+
+// fetcher returns the store of the secret name and the function that
+// gets its value. A project secret is got by its ID from the store of its
+// project, and the answer must have the key and the project of the list
+// (DESIGN.md section 14, "Projects"). A name that the request did not
+// resolve gets a function that fails.
+func (rq *request) fetcher(name string) (string, func(context.Context) (store.Value, error)) {
+	if pn, isProject, _ := config.ParseSecretName(name); isProject {
+		p := rq.v.cfg.Projects[pn.Section]
+		ps, isPS := rq.s.stores[p.Store].(store.ProjectStore)
+		listed, found := rq.listed[name]
+		return p.Store, func(ctx context.Context) (store.Value, error) {
+			if !isPS || !found {
+				return store.Value{}, store.ErrBadID
+			}
+			return ps.FetchListed(ctx, listed)
+		}
+	}
+	sec := rq.v.cfg.Secrets[name]
+	ref := sec.ID
+	switch {
+	case sec.Field != "":
+		ref += "/" + sec.Field // a 1password store: the item and its field
+	case sec.SecretName != "":
+		// An infisical store: the project, environment, path and name.
+		ref = store.InfisicalRef(sec.Project, sec.Environment, sec.Path, sec.SecretName)
+	}
+	return sec.Store, func(ctx context.Context) (store.Value, error) { return rq.s.stores[sec.Store].Fetch(ctx, ref) }
 }
 
 // decideStanding decides a request that has the header of a standing grant
@@ -240,7 +270,9 @@ func (rq *request) decideStanding(ctx context.Context, names []string, cl approv
 		}
 	}
 	rq.failCode = audit.CodeApproverFailed
-	res := rq.core.UseStanding(approval.StandingRequest{Client: rq.client, Secrets: names, Claim: cl, Token: hash})
+	res := rq.core.UseStanding(approval.StandingRequest{
+		Client: rq.client, Secrets: names, Projects: rq.projects, Claim: cl, Token: hash,
+	})
 	res, rc, ok := rq.settle(res)
 	if !ok {
 		if res.Allowed {

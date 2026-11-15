@@ -38,9 +38,14 @@ func TestRunUsage(t *testing.T) {
 		{"a dash", []string{"--secret", "gh-token=github-token", "--", "gh"}, `the variable name "gh-token" must match`},
 		{"digit first", []string{"--secret", "1TOKEN=github-token", "--", "gh"}, `the variable name "1TOKEN" must match`},
 		{"variable too long", []string{"--secret", strings.Repeat("A", 65) + "=x", "--", "gh"}, "must match"},
-		{"no secret name", []string{"--secret", "GH_TOKEN=", "--", "gh"}, "the secret name must have 1 to 64 bytes"},
+		{"no secret name", []string{"--secret", "GH_TOKEN=", "--", "gh"}, "the secret name must be NAME or PROJECT/KEY"},
 		{"secret name too long", []string{"--secret", "GH_TOKEN=" + strings.Repeat("n", 65), "--", "gh"},
-			"the secret name must have 1 to 64 bytes"},
+			"the secret name must be NAME or PROJECT/KEY"},
+		{"project secret name too long", []string{"--secret", "GH_TOKEN=" + strings.Repeat("n", 64) + "/" + strings.Repeat("k", 65), "--", "gh"},
+			"the secret name must be NAME or PROJECT/KEY"},
+		{"project section too long", []string{"--secret", "GH_TOKEN=" + strings.Repeat("n", 65) + "/" + strings.Repeat("k", 63), "--", "gh"},
+			"the secret name must be NAME or PROJECT/KEY"},
+		{"two slashes", []string{"--secret", "GH_TOKEN=a/b/c", "--", "gh"}, "the secret name must be NAME or PROJECT/KEY"},
 		{"a variable twice", []string{"--secret", "GH_TOKEN=a", "--secret", "GH_TOKEN=b", "--", "gh"},
 			"the variable GH_TOKEN is given twice"},
 		{"too many", append(thirtyThree, "--", "gh"), "at most 32 --secret options"},
@@ -137,11 +142,11 @@ func TestRunDeniedVars(t *testing.T) {
 // them. Everything after "--" is the command, also its own options.
 func TestParseArgs(t *testing.T) {
 	t.Parallel()
-	o, err := parseArgs([]string{"-secret", "A=a", "--secret=B=b=c", "-reason=why", "--", "gh", "--secret", "--", "x"})
+	o, err := parseArgs([]string{"-secret", "A=a", "--secret=B=ci/b", "-reason=why", "--", "gh", "--secret", "--", "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []api.SecretRef{{Var: "A", Name: "a"}, {Var: "B", Name: "b=c"}}
+	want := []api.SecretRef{{Var: "A", Name: "a"}, {Var: "B", Name: "ci/b"}}
 	if !slices.Equal(o.secrets, want) || o.reason != "why" || !o.reasonSet ||
 		!slices.Equal(o.command, []string{"gh", "--secret", "--", "x"}) {
 		t.Errorf("parseArgs = %+v", o)

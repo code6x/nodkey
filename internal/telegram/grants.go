@@ -101,7 +101,7 @@ func grantsText(list []approval.GrantInfo, weekly bool) (*text, error) {
 		return t, nil
 	}
 	for _, g := range list {
-		if !namePattern.MatchString(g.Client) || !allNames(g.Secrets) || len(g.Secrets) == 0 ||
+		if !namePattern.MatchString(g.Client) || !allSecrets(g.Secrets) || len(g.Secrets) == 0 ||
 			g.End.IsZero() {
 			return nil, errors.New("telegram: a standing grant in the list is not valid")
 		}

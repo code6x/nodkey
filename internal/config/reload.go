@@ -23,7 +23,7 @@ func (b *Broker) ReloadFixed(next *Broker) error {
 	x, y := *b, *next
 	for _, c := range []*Broker{&x, &y} {
 		c.Path, c.Sum, c.KnownHostsFile, c.KnownHosts = "", "", "", nil
-		c.Clients, c.Secrets, c.Keys = nil, nil, nil
+		c.Clients, c.Secrets, c.Keys, c.Projects = nil, nil, nil, nil
 	}
 	type part struct {
 		name     string

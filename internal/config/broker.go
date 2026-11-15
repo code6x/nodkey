@@ -69,6 +69,9 @@ type Broker struct {
 	Secrets    map[string]Secret // by name
 	Keys       map[string]Key    // by name
 	Logins     map[string]Logins // by name: the [logins.*] sections (DESIGN.md section 21)
+	// Projects are the [project.*] sections, by name (DESIGN.md section
+	// 14, "Projects").
+	Projects map[string]Project
 }
 
 // Telegram is the [telegram] section.
@@ -277,20 +280,21 @@ type Key struct {
 // in the file.
 type (
 	brokerFile struct {
-		Listen     string                   `toml:"listen"`
-		TLSKey     string                   `toml:"tls_key"`
-		AuditLog   string                   `toml:"audit_log"`
-		KnownHosts string                   `toml:"known_hosts"`
-		Telegram   *telegramSection         `toml:"telegram"`
-		Ntfy       *ntfySection             `toml:"ntfy"`
-		Updates    updatesSection           `toml:"updates"`
-		Preapprove preapproveSection        `toml:"preapprove"`
-		Standing   *standingSection         `toml:"standing"`
-		Client     map[string]clientSection `toml:"client"`
-		Store      map[string]storeSection  `toml:"store"`
-		Secret     map[string]secretSection `toml:"secret"`
-		Key        map[string]keySection    `toml:"key"`
-		Logins     map[string]loginsSection `toml:"logins"`
+		Listen     string                    `toml:"listen"`
+		TLSKey     string                    `toml:"tls_key"`
+		AuditLog   string                    `toml:"audit_log"`
+		KnownHosts string                    `toml:"known_hosts"`
+		Telegram   *telegramSection          `toml:"telegram"`
+		Ntfy       *ntfySection              `toml:"ntfy"`
+		Updates    updatesSection            `toml:"updates"`
+		Preapprove preapproveSection         `toml:"preapprove"`
+		Standing   *standingSection          `toml:"standing"`
+		Client     map[string]clientSection  `toml:"client"`
+		Store      map[string]storeSection   `toml:"store"`
+		Secret     map[string]secretSection  `toml:"secret"`
+		Key        map[string]keySection     `toml:"key"`
+		Logins     map[string]loginsSection  `toml:"logins"`
+		Project    map[string]projectSection `toml:"project"`
 	}
 	telegramSection struct {
 		TokenFile    string  `toml:"token_file"`
@@ -421,7 +425,7 @@ func loadBroker(path, filesDir string) (*Broker, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	var f brokerFile
-	if err := decode(data, &f, "client", "store", "secret", "key", "logins"); err != nil {
+	if err := decode(data, &f, "client", "store", "secret", "key", "logins", "project"); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	b, err := newBroker(&f, filesDir)
@@ -436,11 +440,12 @@ func loadBroker(path, filesDir string) (*Broker, error) {
 
 func newBroker(f *brokerFile, filesDir string) (*Broker, error) {
 	b := &Broker{
-		Clients: make(map[string]Client),
-		Stores:  make(map[string]Store),
-		Secrets: make(map[string]Secret),
-		Logins:  make(map[string]Logins),
-		Keys:    make(map[string]Key),
+		Clients:  make(map[string]Client),
+		Stores:   make(map[string]Store),
+		Secrets:  make(map[string]Secret),
+		Logins:   make(map[string]Logins),
+		Projects: make(map[string]Project),
+		Keys:     make(map[string]Key),
 	}
 	var err error
 	if b.Listen, err = parseListen(f.Listen); err != nil {
@@ -496,6 +501,9 @@ func newBroker(f *brokerFile, filesDir string) (*Broker, error) {
 		return nil, err
 	}
 	if err := b.addLogins(f.Logins); err != nil {
+		return nil, err
+	}
+	if err := b.addProjects(f.Project); err != nil {
 		return nil, err
 	}
 	knownHosts := b.KnownHostsFile

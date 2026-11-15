@@ -45,7 +45,13 @@ const (
 )
 
 var (
-	namePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	// secretPattern is a secret in a message: a name of a [secret.*]
+	// section; or SECTION/KEY of a [project.*] section, perhaps with its
+	// rule and the end of its ID; or a project section with its rule and
+	// the end of an ID, in a list of grants (DESIGN.md section 14,
+	// "Projects").
+	secretPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(/[A-Za-z0-9][A-Za-z0-9._-]{0,63})?( \((project rule|rule of secret [A-Za-z0-9][A-Za-z0-9._-]{0,63}), ID …[0-9a-f]{8}\))?$`)
 	remoteUserPattern = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$`)
 	hostKeyPattern    = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 	shortCodePattern  = regexp.MustCompile(`^[2-9a-hjkmnp-z]{4}$`)
@@ -83,7 +89,7 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 		return bad("the short code")
 	case !namePattern.MatchString(p.Client):
 		return bad("the client name")
-	case !allNames(p.Secrets, namePattern), !allNames(p.Hosts, namePattern), !allNames(p.Windows, windowPattern):
+	case !allNames(p.Secrets, secretPattern), !allNames(p.Hosts, namePattern), !allNames(p.Windows, windowPattern):
 		return bad("a name")
 	case p.Key != "" && !namePattern.MatchString(p.Key):
 		return bad("the key")

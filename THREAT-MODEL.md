@@ -1649,6 +1649,76 @@ What nodkey does not do:
 Risk that remains: medium, as for every value that an agent gets (section
 5).
 
+**T49. Anyone who can write to a Secrets Manager project changes what
+agents can get.**
+A `[project.*]` section allows every secret of one project (DESIGN.md
+section 14, "Projects"). A person or a machine account that can write to
+the project can add a secret, or give the key of a secret to another
+secret, with no change of the config.
+What nodkey does:
+- `ask = "never"` is an error in a `[project.*]` section, so a secret that
+  is added to the project always needs a tap or a grant from one.
+- Grants, pre-approvals and standing grants of a project secret are kept
+  per secret ID, not per name. When a key moves to another secret, a
+  grant for `SECTION/KEY` does not hand out the other secret: the broker
+  asks again.
+- The tap message shows the name, that a project rule applies, and the
+  last 8 characters of the secret's ID, so the person can see that it is
+  another secret.
+- Two secrets with the same key in the project are refused, with an audit
+  entry: the broker never guesses which one is meant.
+- After the tap, the answer of `bws secret get` must have the key and the
+  project of the list; a rename or a move in between denies the request.
+- One project may be in one section only, and a `[secret.*]` entry with
+  the same ID wins completely, so one secret never has two rules that
+  could both apply.
+- docs/setup.md says: the broker's machine account gets "Can read" on the
+  project and nothing more, and only the owner may write to the project.
+What nodkey does not do:
+- It cannot see who wrote to the project. A person with write access to
+  the project can put any secret there, and a client of the section can
+  then ask for it with a tap.
+Risk that remains: medium while others can write to the project; low when
+only the owner can.
+
+**T50. A key from Bitwarden is shown in the tap message.**
+The key of a project secret is typed by whoever can write to the project,
+and the message shows it.
+What nodkey does:
+- Only a key that follows the name rule (letters, digits, `.`, `_` and
+  `-`, at most 64) can be asked for or shown. The broker skips other
+  secrets of the project, and never keeps or shows their keys.
+- The key is matched exactly; a client cannot reach another secret with
+  another case.
+- Telegram and ntfy check the form of the secret text again before they
+  send a message.
+Risk that remains: low. A key can still be a misleading word, such as
+the name of another secret; the end of the ID in the message helps here.
+
+**T51. `bws secret list` brings every value of the project into the
+broker's memory.**
+The answer of `bws secret list` holds the values of all secrets of the
+project, also secrets that no request asks for.
+What nodkey does:
+- The broker reads only `id`, `key` and `projectId` of each secret, never
+  keeps a value or a note from the list, and clears the whole answer
+  right after reading it.
+- The answer is capped at 1 MiB, as every answer of a store. A project
+  too big for that is refused; the setup guide says to keep a project
+  small, or to split it.
+- The list runs only for a client that the section, or an entry of a
+  `bws` store, lists, and only once for each project of a request. The
+  request keeps its place for a request body while the list runs, so the
+  cap per client of bodies in progress also caps its lists.
+What nodkey does not do:
+- A client that a section lists can make the broker list the project
+  without a tap, as often as its caps allow. Each list is denied if the
+  key is wrong, but it uses the machine account's API limits.
+- Go keeps copies that nodkey cannot clear, such as in the buffers of
+  the pipe from bws (section 5). For a short time, more values are in the
+  broker's memory than for one `bws secret get`.
+Risk that remains: low, for a broker host that is safe (section 7).
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

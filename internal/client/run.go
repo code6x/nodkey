@@ -48,7 +48,8 @@ environment variable VAR. nodkey never prints a value.
                      [A-Za-z_][A-Za-z0-9_]{0,63}, and must not be a name
                      whose value programs show or run, such as PATH,
                      LD_PRELOAD or GIT_SSH_COMMAND, in any case. NAME is
-                     a secret of the broker.
+                     a secret of the broker, or PROJECT/KEY for the
+                     secret KEY of a project of the broker.
   --grant-token FILE the token file of a standing grant (nodkey preapprove).
                      With it, no tap is needed inside a window of the grant.
                      nodkey replaces the token in FILE with a new one before
@@ -517,9 +518,9 @@ func parseSecret(value string) (api.SecretRef, error) {
 	case denied:
 		return api.SecretRef{}, fmt.Errorf("--secret %s=...: nodkey refuses the variable %s, "+
 			"because programs show or run its value", v, v)
-	case name == "" || len(name) > api.MaxName:
-		return api.SecretRef{}, fmt.Errorf("--secret %s=...: the secret name must have 1 to %d bytes",
-			v, api.MaxName)
+	case len(name) > api.MaxSecretName || !validSecretName(name):
+		return api.SecretRef{}, fmt.Errorf("--secret %s=...: the secret name must be NAME or PROJECT/KEY, "+
+			"each part %s", v, grantNameRule)
 	}
 	return api.SecretRef{Var: v, Name: name}, nil
 }

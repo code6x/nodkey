@@ -1974,7 +1974,9 @@ The fields of each event, after `seq`, `time`, `event` and `prev`:
 The request fields are `request_id`, `client`, `kind` (`secrets`,
 `ssh_login`, `ssh_grant`, `preapprove`, `standing` or `web_login`), `secrets`, `key`, `hosts`,
 `host_key` (a SHA256 fingerprint), `remote_user`, and the claimed
-`command` and `reason`. A website login (section 21.8) has `logins` (the
+`command` and `reason`. A secret of a project is `SECTION/KEY` in
+`secrets`, and `project_secrets` lists its `name` and `id` (section 14,
+"Projects"). A website login (section 21.8) has `logins` (the
 `[logins.NAME]` section), `item` (the item ID) and the claimed `origin`,
 never a username. `login_list` and `login_totp` are its other entries. A `preapprove` request that was approved also has
 `grant_id`, `uses`, `not_before` and `not_after` (UTC, RFC 3339). A
@@ -2426,8 +2428,9 @@ a path, a query, `OPTIONS *` or `PRI *` gets 404. The types are in
     gets `503` too, also when the audit log says `cancelled`: the client
     did not get a deny.
 - More caps, besides those above: at most 32 variables in a request; each
-  name (of a variable, a secret, a key, a host or a remote user) at most 64
-  bytes; a public key at most 4 KiB; the data to sign and each
+  name (of a variable, a key, a host or a remote user) at most 64
+  bytes; a secret name at most 129 bytes, for `SECTION/KEY` of a project
+  (section 14, "Projects"); a public key at most 4 KiB; the data to sign and each
   session-bind at most 8 KiB; at most 2 session-binds; at most 20 hosts in
   an SSH grant (a host listed twice counts twice here). The answer is at
   most 2 MiB: each value is at most 64 KiB, and the values of one request
@@ -3122,6 +3125,108 @@ write to, below directories that pass the same checks. It may be a
 symbolic link. `broker_pin` is the client's only trust in the broker, so
 other users must not be able to change it.
 
+### Projects
+
+*(issue 177; built: `internal/config/project.go`,
+`internal/broker/projects.go`, `internal/store/bwsproject.go`)*
+
+A `[project.NAME]` section allows every secret of one Bitwarden Secrets
+Manager project, with one rule. Putting a secret into the project is then
+the "allow" step, with no config edit and no reload.
+
+```toml
+[project.ci]
+store = "main"                                  # a store of type "bws"
+project = "00000000-0000-0000-0000-000000000000"
+clients = ["laptop"]
+ask = "window"                                  # "always" or "window"
+window = "15m"
+# preapprove and standing as for [secret.*]
+```
+
+- `store` must name a store of type `bws`. `project` is the project's
+  UUID; the broker keeps it in lower case.
+- `ask = "never"` is an error. It would make every secret of the project
+  tap-free, also secrets added later, and the "one `never` per `id`" check
+  cannot run for secrets the broker has not seen.
+- One project may be in one `[project.*]` section only, in one store or
+  in two. Project UUIDs are compared in lower case. A second section is an
+  error at the start and at a reload: one secret would get two rules.
+
+**Names.** A client asks for a project secret as `SECTION/KEY`, where
+`KEY` is the secret's `key` in Bitwarden, for example
+`nodkey run --secret GH_TOKEN=ci/GITHUB_TOKEN -- ...`. A name without `/`
+is always a `[secret.*]` section, so the two kinds cannot clash. A name
+with two or more `/` is refused. Each part follows the name rule, so it
+has at most 64 bytes, and `SECTION/KEY` at most 129 (`api.MaxSecretName`).
+The key is matched exactly, also in upper and lower case. Only a key that
+follows the name rule can be asked for; other secrets of the project are
+skipped, and their key is never shown.
+
+**Lookup.** The broker first checks the name, that the section exists,
+and that the client is in its `clients` or in the `clients` of a
+`[secret.*]` entry of a `bws` store. Then, before the core decides, it
+runs `bws secret list PROJECT` once for each project of the request
+(section 16) and finds the secret by its key:
+
+- no secret has the key: denied (`not_allowed`); the audit entry does not
+  name the key, which the client chose;
+- two or more secrets have the key: denied (`not_allowed`). Bitwarden does
+  not keep keys unique, even in one project, and the broker cannot tell
+  which one is meant. The denied entry names `SECTION/KEY`, and a line in
+  the journal says why; never a value;
+- one secret: the broker has its ID.
+
+The request keeps its place for a request body (section 8) while the
+lists run. A `SECTION/KEY` goes into the audit subject only once it is
+found, so a key that the client made up is never in the audit log. Two
+names of one request that are the same secret, such as an entry's name
+and `SECTION/KEY` with its ID, deny the request.
+
+After the tap, the broker gets the secret by its ID with `bws secret
+get`, from the store of the project, and checks that the `key` and the
+`projectId` of that answer are those of the list. If not, such as for a
+rename between the two runs, the request is denied.
+
+**Which rule wins.** With the ID, the broker looks for a `[secret.*]`
+entry with that ID in any store of type `bws`. Two stores can use the
+same machine account, so the store is not part of the match.
+
+- One entry: **the entry wins, completely.** Its `clients`, `ask`,
+  `window`, `preapprove` and `standing` apply, and the project's rule is
+  not used. Nothing is merged. A client in the project's `clients` but not
+  in the entry's is refused. The entry may be looser than the project
+  (`window` when the project says `always`): the owner wrote it for that
+  one secret. The entry's own grants are used, as for its own name.
+- Two or more entries: denied. There is no clear winner.
+- No entry: the project's rule applies.
+
+The broker applies this on each request, after it has found the secret.
+The approval core checks it again with the config that it decides with
+(`config.Broker.RuleFor`).
+
+**Grants are for one secret ID, not for a name.** A grant, a pre-approval
+and a standing grant of a project secret are kept per (client, project
+section, secret ID). The key becomes an ID when the grant is made, and
+each use is checked against that ID. So when someone gives the key of a
+granted secret to another secret, a request for `SECTION/KEY` finds the
+other ID, and the grant does not cover it: the broker asks again. A
+grant covers its secret under a new key too. A secret that leaves the
+project is not found by `SECTION/KEY` any more; a `[secret.*]` entry for
+it still works while the machine account can read it.
+
+**Message.** The verified part shows the secret as
+`ci/GITHUB_TOKEN (project rule, ID …1a2b3c4d)`: the name, that the
+project's rule applies, and the last 8 characters of the ID. When an entry
+wins, it shows `ci/GITHUB_TOKEN (rule of secret NAME, ID …1a2b3c4d)`. The
+key in it was read from Bitwarden; the client sent the same key, and only
+a key that follows the name rule gets here. A list of standing grants
+shows a project grant as `ci (project rule, ID …1a2b3c4d)`.
+
+**Audit.** The entries name the secret as `SECTION/KEY` in `secrets`,
+and `project_secrets` holds its ID: `[{"name": "ci/GITHUB_TOKEN", "id":
+"…"}]`.
+
 ### Reload
 
 A change of the config needs no restart (issue 29). `SIGHUP` asks the
@@ -3132,8 +3237,10 @@ the grants that the new config takes away.
 1. The broker loads the config file, `known_hosts` and the SSH keys with
    the same code and the same checks as a start (`config.LoadBroker`, then
    the keys). A config that fails any check is refused.
-2. A reload may change only `[client.*]`, `[secret.*]`, `[key.*]`, the
-   `known_hosts` path and its hosts. Every other part must be equal, also
+2. A reload may change only `[client.*]`, `[secret.*]`, `[key.*]`,
+   `[project.*]`, the `known_hosts` path and its hosts. It runs the checks
+   of `[project.*]` again: `ask = "never"` and one project in two
+   sections refuse the reload. Every other part must be equal, also
    a part that a later version adds, until it is decided otherwise. A change of `listen`, `tls_key`,
    `audit_log`, `[telegram]`, `[ntfy]`, `[updates]`, `[preapprove]`,
    `[standing]` or any `[store.*]` is refused with "needs a restart".
@@ -3150,6 +3257,10 @@ the grants that the new config takes away.
    - its client is still there, with the same pin;
    - each of its secrets is still there, still lists the client, and has
      the same store, item and rule (other clients in the list may change);
+   - a grant of a project secret: the section is still there, with the
+     same store and project, and the same rule applies to the secret ID,
+     with the client in its `clients`. A project grant for a secret that
+     now has its own `[secret.*]` entry ends;
    - its key is still there, still lists the client, has the same file,
      the same public key in it and the same rule, and each host of the
      grant is still in `known_hosts` and still allowed by `hosts`.
@@ -4101,6 +4212,8 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
 | when | command | what the broker reads |
 |---|---|---|
 | a `bws` fetch | `bws secret get ID --output json --color no` | stdout: one JSON object with `id`, `organizationId`, `projectId`, `key`, `value`, `note`, `creationDate` and `revisionDate`. The broker reads only `id` and `value`. |
+| a project secret, first (section 14, "Projects") | `bws secret list PROJECT --output json --color no` | stdout: one JSON array of such objects, with the values of all secrets of the project. The broker reads only `id`, `key` and `projectId` of each, and clears the whole answer. `PROJECT` must be a UUID. |
+| a project secret, then | `bws secret get ID --output json --color no` | as a `bws` fetch, and also `key` and `projectId`: they must be the key and the project of the list, else the request is denied. |
 | a `bw` unlock | `bw unlock --passwordfile FILE --raw --nointeraction` | stdout: only the session key, in base64. |
 | a `bw` fetch, first | `bw sync --force --nointeraction` | only the exit code. |
 | a `bw` fetch, then | `bw get item ID --nointeraction` | stdout: one JSON object, the item. The broker reads only `id`, `login.password`, `deletedDate` and `archivedDate`. |
@@ -4118,6 +4231,12 @@ bws 2.1.0 and bw 2026.9.1 on 2026-10-14
   still works. Any other answer is refused, and the request is denied.
 - `id` must be the asked ID, in upper or lower case. An answer without
   it, or for another item, is refused.
+- The answer of `bws secret list` is one JSON array, not one object, with
+  the same rules for each element. Each must have a UUID `id`, a `key`
+  and the `projectId` of the asked project, else the whole answer is
+  refused. A secret whose `key` breaks the name rule is skipped, and its
+  key is never kept or shown. The answer is capped at 1 MiB, as every
+  answer: a project too big for that is refused.
 - A value that is missing, `null` or empty is refused. So is a value with
   a NUL byte: the environment of a command cannot hold it. So is an item
   that is not a login item, an item in the trash (`deletedDate` is not

@@ -27,7 +27,7 @@ func warningText(w approval.Warning) (*text, error) {
 		return nil, bad("the short code")
 	case !namePattern.MatchString(w.Client):
 		return nil, bad("the client name")
-	case len(w.Secrets) == 0 || !allNames(w.Secrets):
+	case len(w.Secrets) == 0 || !allSecrets(w.Secrets):
 		return nil, bad("the secrets")
 	case len(w.Windows) == 0 || len(w.Windows) > 7:
 		return nil, bad("the windows")

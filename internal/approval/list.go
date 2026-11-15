@@ -35,7 +35,7 @@ func (c *Core) ListStanding() []GrantInfo {
 		}
 		gi := GrantInfo{Client: g.client, LastUse: g.lastUse, End: g.end.wall}
 		for _, r := range g.refs {
-			gi.Secrets = append(gi.Secrets, r.name)
+			gi.Secrets = append(gi.Secrets, r.text())
 		}
 		for _, w := range g.windows {
 			gi.Windows = append(gi.Windows, windowText(w))

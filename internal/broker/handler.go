@@ -236,6 +236,11 @@ type request struct {
 	// values are the values fetched so far; they are cleared on every
 	// path.
 	values []store.Value
+	// projects and listed hold the secrets of the names SECTION/KEY, by
+	// name, as resolveProjects found them (DESIGN.md section 14,
+	// "Projects"). They hold no value.
+	projects map[string]approval.ProjectSecret
+	listed   map[string]store.ProjectSecret
 	// body is set while the request holds a place to read and decode its
 	// body; calling it gives the place back.
 	body func()
