@@ -21,22 +21,25 @@ func TestSSHDMatrix(t *testing.T) {
 		user      keyKind
 		host      keyKind
 		sshOpts   []string
-		sidLen    int    // the length of the session identifier; 0 = any
-		algorithm string // the user signature algorithm; "" = the key type
+		sshdOpts  []string // sshd_config lines, for a key exchange that sshd does not offer by default
+		sidLen    int      // the length of the session identifier; 0 = any
+		algorithm string   // the user signature algorithm; "" = the key type
 	}{
-		{"ed25519 user, ed25519 host, default kex", ed25519Kind, ed25519Kind, nil, 0, ""},
-		{"ecdsa256 user, ecdsa256 host", ecdsa256, ecdsa256, nil, 0, ""},
-		{"ecdsa384 user, ecdsa384 host", ecdsa384, ecdsa384, nil, 0, ""},
-		{"ecdsa521 user, ecdsa521 host", ecdsa521, ecdsa521, nil, 0, ""},
-		{"rsa user sha512, rsa host sha512", rsaKind, rsaKind, []string{"HostKeyAlgorithms=rsa-sha2-512"}, 0, ssh.KeyAlgoRSASHA512},
+		{"ed25519 user, ed25519 host, default kex", ed25519Kind, ed25519Kind, nil, nil, 0, ""},
+		{"ecdsa256 user, ecdsa256 host", ecdsa256, ecdsa256, nil, nil, 0, ""},
+		{"ecdsa384 user, ecdsa384 host", ecdsa384, ecdsa384, nil, nil, 0, ""},
+		{"ecdsa521 user, ecdsa521 host", ecdsa521, ecdsa521, nil, nil, 0, ""},
+		{"rsa user sha512, rsa host sha512", rsaKind, rsaKind, []string{"HostKeyAlgorithms=rsa-sha2-512"}, nil, 0, ssh.KeyAlgoRSASHA512},
 		{"rsa user sha256, rsa host sha256", rsaKind, rsaKind,
-			[]string{"HostKeyAlgorithms=rsa-sha2-256", "PubkeyAcceptedAlgorithms=rsa-sha2-256"}, 0, ssh.KeyAlgoRSASHA256},
-		{"kex curve25519-sha256 (32)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=curve25519-sha256"}, 32, ""},
-		{"kex ecdh-sha2-nistp384 (48)", ed25519Kind, ecdsa384, []string{"KexAlgorithms=ecdh-sha2-nistp384"}, 48, ""},
-		{"kex ecdh-sha2-nistp521 (64)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=ecdh-sha2-nistp521"}, 64, ""},
-		{"kex sntrup761x25519-sha512 (64)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=sntrup761x25519-sha512@openssh.com"}, 64, ""},
-		{"kex group16-sha512 (64)", rsaKind, rsaKind, []string{"KexAlgorithms=diffie-hellman-group16-sha512"}, 64, ssh.KeyAlgoRSASHA512},
-		{"kex group-exchange-sha256 (32)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=diffie-hellman-group-exchange-sha256"}, 32, ""},
+			[]string{"HostKeyAlgorithms=rsa-sha2-256", "PubkeyAcceptedAlgorithms=rsa-sha2-256"}, nil, 0, ssh.KeyAlgoRSASHA256},
+		{"kex curve25519-sha256 (32)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=curve25519-sha256"}, nil, 32, ""},
+		{"kex ecdh-sha2-nistp384 (48)", ed25519Kind, ecdsa384, []string{"KexAlgorithms=ecdh-sha2-nistp384"}, nil, 48, ""},
+		{"kex ecdh-sha2-nistp521 (64)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=ecdh-sha2-nistp521"}, nil, 64, ""},
+		{"kex sntrup761x25519-sha512 (64)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=sntrup761x25519-sha512@openssh.com"}, nil, 64, ""},
+		{"kex group16-sha512 (64)", rsaKind, rsaKind, []string{"KexAlgorithms=diffie-hellman-group16-sha512"},
+			[]string{"KexAlgorithms +diffie-hellman-group16-sha512"}, 64, ssh.KeyAlgoRSASHA512},
+		{"kex group-exchange-sha256 (32)", ed25519Kind, ed25519Kind, []string{"KexAlgorithms=diffie-hellman-group-exchange-sha256"},
+			[]string{"KexAlgorithms +diffie-hellman-group-exchange-sha256"}, 32, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -44,7 +47,7 @@ func TestSSHDMatrix(t *testing.T) {
 			key := newKey(t, "deploy", tt.user, 0)
 			host := hostSigner(t, tt.host, 1)
 			hosts := knownHosts(t, map[string]ssh.PublicKey{"web-1": host.PublicKey()})
-			addr := startSSHD(t, sshdPath, dir, tt.host, key.PublicKey())
+			addr := startSSHD(t, sshdPath, dir, tt.host, key.PublicKey(), tt.sshdOpts...)
 			a := startTestAgent(t, key, hosts, dir)
 			out, err := runSSH(t, sshPath, a.socket, addr, name, host.PublicKey(), dir, tt.sshOpts...)
 			reqs, logins, errs := a.results()
