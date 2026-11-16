@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/config"
@@ -57,6 +58,11 @@ func (s *Service) Reload(cfg *config.Broker, keys map[string]sshauth.Key, sum st
 	// after this is checked again against the new one (stillAllowed).
 	ended := core.Reload(cfg, func(name string) bool { return sameKey(old, next, name) })
 	s.cur.Store(next)
+	if !reflect.DeepEqual(old.cfg.Logins, cfg.Logins) {
+		// The logins of login pre-approvals were checked with the old
+		// [logins.*]: they go (DESIGN.md section 21.3).
+		s.forgetLogins()
+	}
 	if _, err := s.append(audit.ConfigReloaded{ConfigSHA256: sum, GrantsEnded: ended}); err != nil {
 		// The new config is in use already; the failed write is logged,
 		// and after audit.ErrBroken every request is denied.

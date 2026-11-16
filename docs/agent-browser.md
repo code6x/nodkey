@@ -110,6 +110,30 @@ the seed never leaves it. You get one code for each login.
 | `nodkey: the request has no page URL` | no `--url` | Give `--url` with the page of the login |
 | `nodkey: the page URL: ... not https` | the page is `http` | nodkey hands out logins only for `https` pages |
 | `nodkey: totp: denied` | no login in the last 2 minutes, or the code was already given | Log in again, then ask for the code |
+| `nodkey: login: no answer from the broker in time` | the broker did not answer in 12 seconds. Most often a slow store on a small broker host; see "A slow store" below | Check the broker's journal |
+
+### A slow store
+
+On a small broker host (for example 1 CPU and 1 GB of memory), one run
+of `bw` can take 5 seconds or more. agent-browser waits only 15 seconds
+for the login, and the plugin 12 seconds. So the broker does the slow
+work at the tap of `nodkey preapprove --login`: it runs `bw` there, and
+keeps the login in memory for the one login that follows, for at most
+60 seconds. The login itself runs no `bw`, and answers in well under a
+second. `nodkey preapprove --login` and `nodkey.list` can still take
+10 to 20 seconds on such a host; they have no short limit.
+
+The broker's journal shows a slow store. Each run of `bw` of 2 seconds
+or more gives a line like this one (the names and times are examples):
+
+```text
+level=INFO msg="broker: a store step was slow; ..." client=laptop store=vault step="bw sync" took=6.1s failed=false
+```
+
+If `auth login` still fails with "no answer from the broker in time":
+run `nodkey preapprove --login` again, then `auth login` at once, in
+the same 60 seconds. A login without a pre-approval, by a `window`
+grant, still runs `bw` and can be too slow on such a host.
 
 ## 3. Stop Chrome from saving passwords: the `agents` profile
 

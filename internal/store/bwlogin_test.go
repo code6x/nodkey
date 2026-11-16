@@ -2,10 +2,13 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/code6x/nodkey/internal/config"
 )
@@ -166,6 +169,83 @@ func TestBWFetchLogin(t *testing.T) {
 		if c != 0 {
 			t.Fatal("Clear left the password")
 		}
+	}
+}
+
+// TestBWFetchLoginNoSync: FetchLoginNoSync runs "bw get item" with no
+// "bw sync" (issue #190). It unlocks first, as every run does, and it
+// refuses what FetchLogin refuses.
+func TestBWFetchLoginNoSync(t *testing.T) {
+	t.Parallel()
+	pw, seed, other := madeUp("password"), madeUp("totp"), madeUp("other")
+	sc := bwScenario(madeUp("password"), "", madeUp("value"), other)
+	sc.Items[testItemID] = loginJSON(testItemID, 1, []string{testCollection}, pw, seed, other, nil)
+	sc.Items[testItemID2] = loginJSON(testItemID2, 2, []string{testCollection}, pw, seed, other, nil)
+	f := newTestFake(t, config.StoreBW, sc, testDeps())
+	ls := f.store.(LoginStore)
+	l, err := ls.FetchLoginNoSync(t.Context(), testItemID)
+	if err != nil {
+		t.Fatalf("FetchLoginNoSync: %v", err)
+	}
+	checkValue(t, l.Password, pw)
+	l.Clear()
+	if _, err := ls.FetchLoginNoSync(t.Context(), testItemID2); !errors.Is(err, ErrNotLogin) {
+		t.Errorf("a note: %v, want ErrNotLogin", err)
+	}
+	if _, err := ls.FetchLoginNoSync(t.Context(), "not-an-id"); !errors.Is(err, ErrBadID) {
+		t.Errorf("a bad ID: %v, want ErrBadID", err)
+	}
+	if got, want := f.steps(), []string{"unlock", "get item", "get item"}; !slices.Equal(got, want) {
+		t.Errorf("steps = %q, want %q", got, want)
+	}
+}
+
+// TestStepTimer: each run of bw gives its step and its time to the
+// StepTimer of the context, also a run that fails. The timer gets no
+// argument and no output.
+func TestStepTimer(t *testing.T) {
+	t.Parallel()
+	pw, seed, other := madeUp("password"), madeUp("totp"), madeUp("other")
+	sc := bwScenario(madeUp("password"), "", madeUp("value"), other)
+	sc.Items[testItemID] = loginJSON(testItemID, 1, []string{testCollection}, pw, seed, other, nil)
+	sc.Pause = 50 * time.Millisecond
+	f := newTestFake(t, config.StoreBW, sc, testDeps())
+	type step struct {
+		store, step string
+		took        time.Duration
+		failed      bool
+	}
+	var mu sync.Mutex
+	var got []step
+	ctx := WithStepTimer(t.Context(), func(store, name string, took time.Duration, failed bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, step{store, name, took, failed})
+	})
+	l, err := f.store.(LoginStore).FetchLogin(ctx, testItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Clear()
+	if _, err := f.store.(LoginStore).FetchLoginNoSync(ctx, testItemID2); err == nil {
+		t.Fatal("an item that bw does not have was found")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var names []string
+	for _, s := range got {
+		names = append(names, s.step)
+		if s.store != f.cfg.Name || s.took < sc.Pause {
+			t.Errorf("step %+v: want store %q and at least %s", s, f.cfg.Name, sc.Pause)
+		}
+	}
+	// After a failed run, bw status tells a locked vault from a missing
+	// item; it is timed too.
+	if want := []string{"bw unlock", "bw sync", "bw get item", "bw get item", "bw status"}; !slices.Equal(names, want) {
+		t.Errorf("steps %q, want %q", names, want)
+	}
+	if len(got) == 5 && (got[2].failed || !got[3].failed) {
+		t.Errorf("failed: %v and %v, want false and true", got[2].failed, got[3].failed)
 	}
 }
 

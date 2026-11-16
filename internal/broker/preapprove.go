@@ -94,13 +94,14 @@ func (rq *request) preapprove(ctx context.Context, r *http.Request) {
 }
 
 // startedGrant starts the grant of an approved request for a scheduled or
-// standing grant, and answers it.
-func (rq *request) startedGrant(ctx context.Context, res *approval.Result, standing bool, token grantkey.Token) {
+// standing grant, and answers it. It reports whether the grant started
+// and the answer was written; when not, no grant is left.
+func (rq *request) startedGrant(ctx context.Context, res *approval.Result, standing bool, token grantkey.Token) bool {
 	// The grant is all that an approval gives. When the client has hung
 	// up, no grant starts.
 	if ctx.Err() != nil {
 		rq.cancelled()
-		return
+		return false
 	}
 	if rq.s.startHook != nil {
 		rq.s.startHook("before")
@@ -113,7 +114,7 @@ func (rq *request) startedGrant(ctx context.Context, res *approval.Result, stand
 		// The approver stopped while the request waited: as for any
 		// request that the stop meets after the tap.
 		rq.fail(audit.CodeApproverFailed)
-		return
+		return false
 	}
 	if !res.GrantStarted() {
 		// The end came, a later Deny came, or the client has too many
@@ -121,7 +122,7 @@ func (rq *request) startedGrant(ctx context.Context, res *approval.Result, stand
 		rq.ended = true
 		_, _ = rq.s.append(audit.Denied{Subject: rq.sub, Cause: audit.CauseLimit})
 		rq.answer(statusFor(audit.CauseLimit))
-		return
+		return false
 	}
 	rq.ended = true
 	// A grant that the client cannot learn of is cancelled: nobody could
@@ -129,7 +130,7 @@ func (rq *request) startedGrant(ctx context.Context, res *approval.Result, stand
 	if ctx.Err() != nil {
 		rq.dropGrant(res.GrantID)
 		rq.answer(http.StatusForbidden)
-		return
+		return false
 	}
 	rq.answered = true
 	ans := api.PreapproveAnswer{
@@ -149,7 +150,9 @@ func (rq *request) startedGrant(ctx context.Context, res *approval.Result, stand
 		rq.s.log.Warn("broker: cannot write the answer; the new grant is cancelled",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		rq.dropGrant(res.GrantID)
+		return false
 	}
+	return true
 }
 
 // checkStanding checks the names, the times and the windows of a request
@@ -216,6 +219,7 @@ func windowSpec(w api.Window) (approval.WindowSpec, bool) {
 // dropGrant cancels the grant id of this client in the core, and writes its
 // grant_ended entry, as cancelGrant does.
 func (rq *request) dropGrant(id string) {
+	rq.s.forgetLogin(id)
 	ev, ok := rq.core.CancelGrant(rq.client, id)
 	if !ok {
 		return
@@ -291,6 +295,7 @@ func (rq *request) cancelGrant(r *http.Request) {
 		rq.answer(http.StatusForbidden)
 		return
 	}
+	rq.s.forgetLogin(req.ID)
 	if _, err := rq.s.append(ev); err != nil {
 		rq.s.log.Warn("broker: a scheduled grant was cancelled, but its audit entry could not be written",
 			slog.String("client", rq.client))

@@ -62,6 +62,9 @@ type loginState struct {
 	reqs    map[string][]time.Time // when each client asked for a login
 	noTotp  map[string][]time.Time // TOTP requests without a ticket
 	tickets map[loginTicket]time.Time
+	// remembered holds the logins of login pre-approvals, by the ID of
+	// the grant (remembered.go).
+	remembered map[string]*rememberedLogin
 }
 
 // nowTime returns the time of the Service.
@@ -326,18 +329,25 @@ func loginScope(sel loginSel, origin string) *approval.LoginScope {
 	}
 }
 
+// loginAllowed counts a request for a login or a login pre-approval
+// toward the client's limit (LoginRequestRate). Over the limit, the
+// request is answered, and it returns false.
+func (rq *request) loginAllowed() bool {
+	if rq.s.allowLoginRequest(rq.client) {
+		return true
+	}
+	rq.s.log.Info("broker: a request for a website login is denied: the client asks too often; wait a minute",
+		slog.String("client", rq.client))
+	rq.recordDenied(audit.Subject{}, audit.CauseLimit, "", true)
+	rq.answer(http.StatusTooManyRequests)
+	return false
+}
+
 // checkedLogin fetches the item, checks it, and clears its secrets at
 // once: the secrets must not sit in memory while the person decides. It
 // returns only what the item says about itself. On a failure the request
 // is answered.
 func (rq *request) checkedLogin(ctx context.Context, page loginmatch.Page, item string) (loginSel, bool) {
-	if !rq.s.allowLoginRequest(rq.client) {
-		rq.s.log.Info("broker: a request for a website login is denied: the client asks too often; wait a minute",
-			slog.String("client", rq.client))
-		rq.recordDenied(audit.Subject{}, audit.CauseLimit, "", true)
-		rq.answer(http.StatusTooManyRequests)
-		return loginSel{}, false
-	}
 	cfg := rq.v.cfg
 	sections := candidateSections(cfg, rq.client)
 	rq.failCode = audit.CodeStoreFailed
@@ -391,11 +401,29 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 		return
 	}
 	rq.releaseBody()
+	if !rq.loginAllowed() {
+		return
+	}
+	origin := page.Origin()
+	if rem, has := rq.s.rememberedFor(rq.client, item, origin); has {
+		rq.loginRemembered(ctx, page, item, rem, noTap)
+		return
+	}
+	if noTap && !rq.core.LoginGranted(rq.client, item) {
+		// Only a window grant or a pre-approval can cover a login, and
+		// neither does: deny at once, with no run of the store. The
+		// section of the item is not known without the store, so the
+		// entry names no item, as for the other checks before the store.
+		rq.s.log.Info("broker: a request for a website login with no tap is denied: no pre-approval and no window grant covers it",
+			slog.String("client", rq.client))
+		rq.recordDenied(audit.Subject{}, audit.CauseNoTap, "", true)
+		rq.answer(statusFor(audit.CauseNoTap))
+		return
+	}
 	sel, ok := rq.checkedLogin(ctx, page, item)
 	if !ok {
 		return
 	}
-	origin := page.Origin()
 	rq.pre = audit.Subject{Logins: sel.section, Item: item, Origin: origin}
 	res, rc, ok := rq.decide(ctx, &approval.Request{
 		Client: rq.client, Kind: audit.KindWebLogin, Login: loginScope(sel, origin), NoTap: noTap,
@@ -403,10 +431,17 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 	if !ok {
 		return
 	}
+	if id := res.UsedGrantID(); id != "" {
+		// A pre-approval that was made while this request was checked:
+		// its remembered login is not used, so it goes now.
+		rq.s.forgetLogin(id)
+	}
 	res.StartGrants()
 	rq.decided = res.Config()
 	// The password is fetched again after the tap: it was cleared during
-	// the wait, and the item may have changed.
+	// the wait, and the item may have changed. checkedLogin ran
+	// "bw sync" a moment ago, so this fetch does not: bw syncs once per
+	// request.
 	if !rc.valid() {
 		rq.fail(audit.CodeStoreFailed)
 		return
@@ -416,15 +451,89 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 		return
 	}
 	rq.failCode = audit.CodeStoreFailed
-	l, from, ok := rq.fetchApproved(ctx, item)
+	l, from, ok := rq.fetchApproved(ctx, item, false)
 	if !ok {
 		return
 	}
 	defer l.Clear()
+	rq.handOutLogin(ctx, rc, page, item, sel, l, from)
+}
+
+// loginRemembered answers a request for a login that a login
+// pre-approval may cover: the broker keeps the login of that
+// pre-approval (remembered.go). It runs every check of a login against
+// the config of now, with the item as the broker fetched it at the tap,
+// and then asks the core. When the core allows the request by the
+// pre-approval, the remembered login is the answer, and no store runs.
+// When something else allowed it (a tap, a window grant), the item is
+// fetched as after any tap, with the one "bw sync" of the request.
+func (rq *request) loginRemembered(ctx context.Context, page loginmatch.Page, item string, rem rememberedMeta, noTap bool) {
+	cfg := rq.v.cfg
+	origin := page.Origin()
+	sel, reason := checkLoginItem(cfg, rq.client, page, rem.sel.meta, rem.from)
+	if reason == "" && (!slices.Contains(candidateSections(cfg, rq.client), sel.section) || !sameSel(sel, rem.sel)) {
+		reason = "the config changed after the pre-approval"
+	}
+	if reason != "" {
+		rq.refuseLogin(audit.Subject{Logins: rem.sel.section, Item: item, Origin: origin}, reason)
+		return
+	}
+	rq.pre = audit.Subject{Logins: sel.section, Item: item, Origin: origin}
+	res, rc, ok := rq.decide(ctx, &approval.Request{
+		Client: rq.client, Kind: audit.KindWebLogin, Login: loginScope(sel, origin), NoTap: noTap,
+	})
+	if !ok {
+		return
+	}
+	res.StartGrants()
+	rq.decided = res.Config()
+	if !rc.valid() {
+		rq.fail(audit.CodeStoreFailed)
+		return
+	}
+	if ctx.Err() != nil {
+		rq.cancelled()
+		return
+	}
+	rq.failCode = audit.CodeStoreFailed
+	var l store.Login
+	from, took := rem.from, false
+	if id := res.UsedGrantID(); id != "" {
+		l, took = rq.s.takeLogin(id, rq.client, item, origin)
+	}
+	if took {
+		rq.values = append(rq.values, l.Password, l.TOTP)
+	} else {
+		l, from, ok = rq.fetchApproved(ctx, item, true)
+		if !ok {
+			return
+		}
+	}
+	defer l.Clear()
+	rq.handOutLogin(ctx, rc, page, item, sel, l, from)
+}
+
+// sameSel reports whether two checks of the same item found the same
+// section, clients and rule.
+func sameSel(a, b loginSel) bool {
+	return a.section == b.section && slices.Equal(a.clients, b.clients) && reflect.DeepEqual(a.rule, b.rule)
+}
+
+// sameLogin checks the login l, which came from the store from, against
+// the config of now, and against sel, what the checks found before the
+// tap. It reports false when something changed.
+func (rq *request) sameLogin(page loginmatch.Page, item string, sel loginSel, l store.Login, from string) bool {
 	again, reason := checkLoginItem(rq.s.view().cfg, rq.client, page, l.LoginItem, from)
-	if reason != "" || again.section != sel.section || l.Username != sel.meta.Username ||
-		l.Name != sel.meta.Name || l.Reprompt != sel.meta.Reprompt || !reflect.DeepEqual(again.rule, sel.rule) ||
-		!strings.EqualFold(l.ID, item) || !rq.stillAllowedLogin(sel, item) {
+	return reason == "" && again.section == sel.section && l.Username == sel.meta.Username &&
+		l.Name == sel.meta.Name && l.Reprompt == sel.meta.Reprompt && reflect.DeepEqual(again.rule, sel.rule) &&
+		strings.EqualFold(l.ID, item)
+}
+
+// handOutLogin checks the approved login l once more against the config
+// of now, and hands out its username and password. On a failure the
+// request is answered.
+func (rq *request) handOutLogin(ctx context.Context, rc receipt, page loginmatch.Page, item string, sel loginSel, l store.Login, from string) {
+	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item) {
 		rq.s.log.Warn("broker: the login item changed while the request waited; the request is denied",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		rq.ended = true
@@ -450,25 +559,30 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 	}
 	rq.answered = true
 	// One TOTP code may follow this login.
-	rq.s.addTicket(loginTicket{client: rq.client, item: item, origin: origin})
+	rq.s.addTicket(loginTicket{client: rq.client, item: item, origin: page.Origin()})
 	if err := transport.WriteJSONBody(rq.w, http.StatusOK, body); err != nil {
 		rq.s.log.Warn("broker: cannot write the answer; the client may not have it",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 	}
 }
 
-// fetchApproved gets the item of an approved request again. The stores
-// are those of the current config's sections. On a failure the request
-// has its end entries and its answer.
-func (rq *request) fetchApproved(ctx context.Context, item string) (store.Login, string, bool) {
+// fetchApproved gets the item of an approved request again, after
+// "bw sync" only when sync is set. The stores are those of the current
+// config's sections. On a failure the request has its end entries and its
+// answer.
+func (rq *request) fetchApproved(ctx context.Context, item string, sync bool) (store.Login, string, bool) {
 	cfg := rq.s.view().cfg
 	for _, name := range loginStores(cfg, candidateSections(cfg, rq.client)) {
 		ls, isLS := rq.s.stores[name].(store.LoginStore)
 		if !isLS {
 			continue
 		}
+		fetch := ls.FetchLoginNoSync
+		if sync {
+			fetch = ls.FetchLogin
+		}
 		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
-		l, err := ls.FetchLogin(fctx, item)
+		l, err := fetch(fctx, item)
 		cancel()
 		if err == nil {
 			rq.values = append(rq.values, l.Password, l.TOTP)
@@ -740,6 +854,9 @@ func (rq *request) fetchLoginForTOTP(ctx context.Context, cfg *config.Broker, se
 // preapproveLogin answers a request for a one-use pre-approval of a login
 // (DESIGN.md section 21.3): one login, in the 60 s after the tap. The
 // item is checked as for a login, and its secrets are cleared at once.
+// After the tap, the broker fetches the item again, checks it again, and
+// keeps the login in memory for the one login that the pre-approval
+// covers (remembered.go). Without that login, no grant starts.
 func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveRequest) {
 	if req.Login == "" || req.URL == "" || len(req.Secrets) > 0 || req.Key != "" || req.User != "" ||
 		len(req.Hosts) > 0 || req.From != "" || req.Until != "" || req.Uses != 1 || req.Windows != nil {
@@ -755,17 +872,60 @@ func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveReque
 		return
 	}
 	rq.releaseBody()
+	if !rq.loginAllowed() {
+		return
+	}
 	sel, ok := rq.checkedLogin(ctx, page, item)
 	if !ok {
 		return
 	}
 	origin := page.Origin()
 	rq.pre = audit.Subject{Logins: sel.section, Item: item, Origin: origin, Reason: cl.Reason}
-	res, _, ok := rq.decide(ctx, &approval.Request{
+	res, rc, ok := rq.decide(ctx, &approval.Request{
 		Client: rq.client, Kind: audit.KindPreapprove, Uses: 1, Login: loginScope(sel, origin), Claim: cl,
 	})
 	if !ok {
 		return
 	}
-	rq.startedGrant(ctx, res, false, grantkey.Token{})
+	if !rc.valid() {
+		rq.fail(audit.CodeStoreFailed)
+		return
+	}
+	rq.decided = res.Config()
+	// The core ends the grant LoginPreapproveTime after the tap; the
+	// remembered login ends no later than that.
+	end := rq.s.nowTime().Add(approval.LoginPreapproveTime)
+	if ctx.Err() != nil {
+		rq.cancelled()
+		return
+	}
+	// The item as it is now: the person may have taken long to tap. This
+	// is the one fetch of the login; the login itself runs no store.
+	rq.failCode = audit.CodeStoreFailed
+	l, from, ok := rq.fetchApproved(ctx, item, true)
+	if !ok {
+		return
+	}
+	defer l.Clear()
+	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item) {
+		rq.s.log.Warn("broker: the login item changed while the request waited; the pre-approval is denied",
+			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
+		rq.ended = true
+		_, _ = rq.s.append(audit.Denied{Subject: rq.sub, Cause: audit.CauseNotAllowed})
+		rq.answer(http.StatusForbidden)
+		return
+	}
+	sel.meta = l.LoginItem // the item as the login will see it
+	rem := rememberedLogin{client: rq.client, item: item, origin: origin, from: from, sel: sel, end: end}
+	if why := rq.s.remember(res.GrantID, rem, l); why != "" {
+		rq.s.log.Warn("broker: the login of a pre-approval cannot be kept, so the pre-approval is denied: "+string(why),
+			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
+		rq.ended = true
+		_, _ = rq.s.append(audit.Denied{Subject: rq.sub, Cause: audit.CauseLimit})
+		rq.answer(statusFor(audit.CauseLimit))
+		return
+	}
+	if !rq.startedGrant(ctx, res, false, grantkey.Token{}) {
+		rq.s.forgetLogin(res.GrantID)
+	}
 }

@@ -54,7 +54,18 @@ func (r *runner) hint() string {
 	return "to check the setup, see section 5 of docs/setup.md; the token goes in the environment, never in an argument"
 }
 
-// run runs the program once with args, and returns what it wrote to
+// run runs the program once with args, as runProgram does, and gives
+// the time it took to the StepTimer of ctx, if it has one.
+func (r *runner) run(ctx context.Context, step string, args, env []string) ([]byte, error) {
+	start := time.Now()
+	out, err := r.runProgram(ctx, step, args, env)
+	if f := stepTimerOf(ctx); f != nil {
+		f(r.store, step, time.Since(start), err != nil)
+	}
+	return out, err
+}
+
+// runProgram runs the program once with args, and returns what it wrote to
 // stdout. The caller must clear the result. env holds the variables that
 // the program gets on top of HOME; nothing comes from the broker's own
 // environment. step names the run in errors, such as "bw sync".
@@ -70,7 +81,7 @@ func (r *runner) hint() string {
 // when it takes longer than the time limit, when it writes more than
 // maxStdout or maxStderr, when it leaves a process that holds its output
 // open, and when ctx ends, even after the program has finished.
-func (r *runner) run(ctx context.Context, step string, args, env []string) ([]byte, error) {
+func (r *runner) runProgram(ctx context.Context, step string, args, env []string) ([]byte, error) {
 	if !supported {
 		return nil, fmt.Errorf("store %q: %s: %w: %w", r.store, step, ErrStart, errors.ErrUnsupported)
 	}

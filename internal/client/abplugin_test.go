@@ -67,6 +67,13 @@ func (s *pluginLoginStore) ListLogins(_ context.Context, collection string) ([]s
 	return []store.LoginItem{s.item()}, nil
 }
 
+// var _ checks at build time that the fake is a login store.
+var _ store.LoginStore = (*pluginLoginStore)(nil)
+
+func (s *pluginLoginStore) FetchLoginNoSync(ctx context.Context, id string) (store.Login, error) {
+	return s.FetchLogin(ctx, id)
+}
+
 func (s *pluginLoginStore) FetchLogin(_ context.Context, id string) (store.Login, error) {
 	if id != recItem {
 		return store.Login{}, fmt.Errorf("fake bw: not found: %w", store.ErrFailed)
@@ -385,9 +392,10 @@ func TestPluginBrokerRefusals(t *testing.T) {
 	e := newPluginEnv(t)
 	other := `{"capability":"credential.read","protocol":"agent-browser.plugin.v1","request":{"itemRef":"` +
 		recItem + `","url":"https://other.example.net/"},"type":"credential.resolve"}`
-	// An origin that matches no URI of the item: denied, with no message.
+	// An origin that no pre-approval covers: denied at once, with no
+	// message and no run of the store.
 	_, out, _ := e.plugin(t, []byte(other))
-	if a := readAnswer(t, out); a.Success || !strings.Contains(a.Error, "denied") {
+	if a := readAnswer(t, out); a.Success || !strings.Contains(a.Error, "it needs a tap first") {
 		t.Errorf("other origin: %q", out)
 	}
 	// Another item.

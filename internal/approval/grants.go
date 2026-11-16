@@ -723,9 +723,15 @@ func (c *Core) startScheduled(r *Result, now moment) {
 	g := r.plan
 	if g.loginOrigin != "" {
 		// The time of a login pre-approval starts at the tap, not when
-		// it was asked for: the person may take long to tap.
-		g.end.wall = now.wall.Add(LoginPreapproveTime)
-		r.GrantFrom, r.GrantUntil = now.wall, g.end.wall
+		// it was asked for: the person may take long to tap. It starts
+		// at the tap, not here: the broker fetches the login between
+		// the two, and on a slow host that takes many seconds (#190).
+		tap := r.at
+		if tap.IsZero() || tap.After(now.wall) {
+			tap = now.wall
+		}
+		g.end.wall = tap.Add(LoginPreapproveTime)
+		r.GrantFrom, r.GrantUntil = tap, g.end.wall
 	}
 	// The end is an absolute time. Its monotonic reading is counted from
 	// now, so a wall clock that is set back later cannot make it later.

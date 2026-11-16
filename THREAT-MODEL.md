@@ -1600,12 +1600,30 @@ What nodkey does:
 - The broker does not keep the password while the request waits for the
   tap. After the tap it reads the item again and runs every check again;
   the username, the item name, the rule and the re-prompt flag must be
-  unchanged.
+  unchanged. That read runs no second `bw sync`: bw syncs once per
+  request (#190).
+- **The remembered login of a pre-approval** (#190). After the tap of a
+  pre-approval, the broker reads the item once more, checks it, and
+  keeps the login in memory with the grant: only the login request that
+  the core allows by that grant gets it, and it runs no `bw`. Before it
+  hands it out, the broker runs every check of DESIGN.md 21.3 on it
+  against the config of now (section, rule, client, origin, item ID). A
+  request from another client, for another item or another origin, a
+  second use, a use after 60 seconds, after a cancel, after a reload that
+  ends the grant or changes `[logins.*]`, or after the stop finds no
+  remembered login. With the no-tap header it is denied before the store
+  runs. The login is cleared at its use, at the end of the grant, by a
+  timer at 60 seconds, and at the stop; at most 64 are kept.
 - Logins and pre-approvals have a rate limit per client, before the
   store runs.
 - A reload keeps a login grant only when the item has the same rule.
 Risk that remains: low. In its 60 seconds, a pre-approval can be used by
 any process of that client that asks for that item and origin (as T35).
+For up to 60 seconds after the tap, one password is in the broker's
+memory (a core dump or a read of the broker's memory would show it; the
+store's session key, which opens every item, is there all the time
+anyway). A password changed in the vault in those 60 seconds goes out
+once in its old form; the next login reads it again.
 
 **T48. The agent-browser plugin hands a login to the agent.**
 The credential plugin (DESIGN.md section 21.10) answers agent-browser

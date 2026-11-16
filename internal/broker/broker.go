@@ -455,6 +455,8 @@ func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc,
 	// entry (DESIGN.md section 8).
 	var dropped droppedGrants
 	core.OnGrantEnded(func(ev audit.GrantEnded) {
+		// The login of a login pre-approval goes with its grant.
+		s.forgetLogin(ev.GrantID)
 		if _, err := s.append(ev); err != nil {
 			s.log.Warn("broker: cannot write the grant_ended entry of a scheduled grant")
 		}
@@ -475,6 +477,7 @@ func (s *Service) Run(ctx context.Context, core *approval.Core, alert AlertFunc,
 	})
 	err := core.Run(ctx)
 	s.coreStopped.Store(true) // first: deny every request from now on
+	s.forgetLogins()
 	// The grants are dropped by now. Their messages are updated, and one
 	// notice lists them, each with a short time limit. This comes after the
 	// line above, so a slow Telegram never leaves the broker open to
@@ -508,7 +511,9 @@ func (s *Service) Close() {
 		s.closed = true
 		s.mu.Unlock()
 		s.stop()
+		s.forgetLogins()
 		s.requests.Wait()
+		s.forgetLogins() // a request that ended in between kept nothing, but be sure
 		close(s.tapsStop)
 		s.bg.Wait()
 		s.mu.Lock()

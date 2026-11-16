@@ -4755,9 +4755,14 @@ broker cannot check that the browser is on that page.
    check that fails means deny, with an audit entry. Then it applies the
    item's rule (21.2). The broker clears the password and the TOTP seed
    at once: they are not kept while the request waits for the tap. On
-   approval it runs `bw sync --force` and `bw get item ID` again, runs
-   every check again, and the username, the item name and the rule
-   must be the same as in the message. Then it returns the username and the password.
+   approval it runs `bw get item ID` again, with no second
+   `bw sync --force` (#190): **`bw` syncs once per request**, before the
+   tap. It runs every check again, and the username, the item name and
+   the rule must be the same as in the message. Then it returns the
+   username and the password. The cost: a change in the vault during the
+   wait for the tap is not seen by this login; the next request syncs
+   again. A login that a pre-approval covers runs no `bw` at all (21.7,
+   "The remembered login").
    A request with the header of a standing grant token is refused:
    standing grants for logins are not built yet.
    An item with Bitwarden's "Master password re-prompt" (`reprompt` is
@@ -4883,6 +4888,47 @@ to that item (`RuleFor` gives the same clients and rule).
 - Why: agent-browser waits only 15 seconds for a credential plugin, and
   a tap often takes longer. So the wait runs in a nodkey command.
 
+**The remembered login** (#190, owner 2026-11-16). On a small host one
+run of `bw` takes about 6 s. A login that ran `bw sync --force` and
+`bw get item` could not answer in the 12 s of `PluginResolveTime`. So
+the fetch happens at the pre-approval, which has no short limit:
+
+- After the tap, the broker runs `bw sync --force` and `bw get item ID`
+  once more, runs every check of 21.3 again, and compares the item with
+  the message, as after the tap of a login. A change denies the
+  pre-approval; then no grant starts. The grant still ends 60 s after
+  the tap, not after this fetch: the core counts from the time of the
+  answer. A fetch that takes the whole 60 s denies the pre-approval, and
+  the journal points to docs/agent-browser.md, "A slow store".
+- It keeps that login (username, password, TOTP seed) in memory, with
+  the grant of the pre-approval (`internal/broker/remembered.go`). It is
+  never written to disk or to a log. Without it, no grant starts: at
+  most `maxRememberedLogins` (64) logins are kept for all clients; one
+  more pre-approval is denied (cause `limit`, 429).
+- The login request that the core allows by that grant gets the login
+  from memory, with **no run of `bw`**. Before the core decides, the
+  broker runs every check of 21.3 on the remembered item against the
+  config of now: the section, the rule, the client, the origin, and the
+  item ID. After the decision it checks them once more, as for any login.
+- The remembered login is cleared at its use, at the end of its grant
+  (`LoginPreapproveTime`, 60 s after the tap), when the grant is
+  cancelled or ended by a reload, at a reload that changes `[logins.*]`
+  (a reload refuses that change today; the broker clears it anyway), and
+  at the stop. A timer clears it at its end even when no request comes.
+- When the remembered login is gone but the grant still lives, a login
+  without the no-tap header uses the grant and fetches the item, with
+  one `bw sync --force`. With the no-tap header it gets 428 (21.10).
+- The trade-off: one password stays in the broker's memory for up to
+  60 s after the tap. The broker keeps the store's session key in memory
+  the whole time, and that key opens every item, so this adds little. A
+  password changed in the vault in those 60 s is handed out in its old
+  form once; the next login fetches it again. `bw serve` was not chosen:
+  it keeps an unlocked vault behind a local HTTP port.
+- Each run of a store program is logged at debug level, with the store,
+  the step and the time (`store.StepTimer`). A run of 2 s or more is
+  logged at info level: a slow store shows in the journal, not only as
+  "no answer from the broker in time".
+
 ### 21.8 Audit events
 
 *(Built.)* New events: `login_list` (client, collection section, page
@@ -4898,7 +4944,10 @@ password, a TOTP seed, a TOTP code or a username.
 | when | command | what the broker reads |
 |---|---|---|
 | a list | `bw sync --force`, then `bw list items --collectionid ID --nointeraction` | stdout: one JSON array of items. Of each item: `id`, `type`, `name`, `reprompt`, `deletedDate`, `archivedDate`, `collectionIds`, `login.username`, and `uri` and `match` of each `login.uris`. It checks `login.password` and `login.totp` (a string or `null`) and keeps neither. |
-| a login | `bw sync --force`, then `bw get item ID --nointeraction` | the same fields, and `login.password` and `login.totp`, each into its own buffer that is cleared after use. |
+| a login, before the tap | `bw sync --force`, then `bw get item ID --nointeraction` | the same fields, and `login.password` and `login.totp`, each into its own buffer that is cleared after use. |
+| a login, after the tap | `bw get item ID --nointeraction`, with no sync | the same. |
+| a pre-approval, after the tap | `bw sync --force`, then `bw get item ID --nointeraction` | the same; the broker keeps a copy for the one login (21.7). |
+| a login by a pre-approval | nothing | the remembered login (21.7). |
 
 - `bw list items` returns whole items, with every password of the
   collection. The broker skips every other field without keeping it, and
@@ -4954,10 +5003,14 @@ as any other request (21.7):
    within `LoginTOTPTime` (2 minutes) after the login (21.3).
 
 **The no-tap header.** The plugin's login request has the header
-`Nodkey-No-Tap: 1` (`api.NoTapHeader`). The broker runs every check of
-21.3 as for any login. Then, when no `window` grant and no pre-approval
-covers the login, it answers 428 Precondition Required at once, with a
-`denied` entry with the cause `no_tap`. It sends no message, so the
+`Nodkey-No-Tap: 1` (`api.NoTapHeader`). When the broker keeps no
+remembered login (21.7) for the client, item and origin, and no
+`window` grant covers the item, it answers 428 Precondition Required at
+once, before any run of `bw`, with a `denied` entry with the cause
+`no_tap`. That entry has no `logins`, `item` or `origin`: the section is
+not known without the store. Else the broker runs every check of 21.3 as
+for any login; when nothing covers the login then, it answers 428 in
+the same way, with the full subject. It sends no message, so the
 phone never shows a request that agent-browser has already given up on.
 Another value of the header is refused (403, `not_allowed`). The header
 only takes away the tap: it never allows what a tap would not. Other

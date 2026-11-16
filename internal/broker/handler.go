@@ -91,7 +91,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rq.answer(adm.status)
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(s.timeSteps(r.Context(), client))
 	defer cancel()
 	stop := context.AfterFunc(s.stopCtx, cancel) // Close ends the request
 	defer stop()
