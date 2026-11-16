@@ -8,7 +8,7 @@ require (
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/infisical/go-sdk v0.9.1
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.62.0
 )
 
 require (
