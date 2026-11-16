@@ -59,7 +59,7 @@ func (r *runner) hint() string {
 func (r *runner) run(ctx context.Context, step string, args, env []string) ([]byte, error) {
 	start := time.Now()
 	out, err := r.runProgram(ctx, step, args, env)
-	if f := stepTimerOf(ctx); f != nil {
+	if f := StepTimerOf(ctx); f != nil {
 		f(r.store, step, time.Since(start), err != nil)
 	}
 	return out, err

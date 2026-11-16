@@ -364,3 +364,25 @@ func TestLoginPreapproveFetchTooSlow(t *testing.T) {
 	l.noGrant()
 	l.vs.checkCleared(t)
 }
+
+// TestStoreStepsInTheJournal: a slow run of a store program is logged at
+// info level, with the store, the step and the time; a fast one is not
+// (it is at debug level).
+func TestStoreStepsInTheJournal(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	timer := store.StepTimerOf(l.svc.timeSteps(t.Context(), "laptop"))
+	if timer == nil {
+		t.Fatal("no step timer")
+	}
+	timer("vault", "bw get item", 10*time.Millisecond, false)
+	if strings.Contains(l.logs.String(), "bw get item") {
+		t.Error("a fast step is logged at info level")
+	}
+	timer("vault", "bw sync", 6*time.Second, true)
+	got := l.logs.String()
+	for _, want := range []string{"a store step was slow", `step="bw sync"`, "took=6s", "store=vault", "client=laptop", "failed=true", "A slow store"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the journal has no %q:\n%s", want, got)
+		}
+	}
+}

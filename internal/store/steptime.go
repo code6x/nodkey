@@ -21,8 +21,9 @@ func WithStepTimer(ctx context.Context, f StepTimer) context.Context {
 	return context.WithValue(ctx, stepTimerKey{}, f)
 }
 
-// stepTimerOf returns the StepTimer of ctx, or nil.
-func stepTimerOf(ctx context.Context) StepTimer {
+// StepTimerOf returns the StepTimer of ctx, or nil. Each run of a store
+// program calls it.
+func StepTimerOf(ctx context.Context) StepTimer {
 	f, _ := ctx.Value(stepTimerKey{}).(StepTimer)
 	return f
 }

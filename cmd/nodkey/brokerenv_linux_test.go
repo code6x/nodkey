@@ -88,6 +88,9 @@ const (
 	// seamFastReleaseCheck makes the check for a newer release ask at once,
 	// not 10 minutes after the start.
 	seamFastReleaseCheck = "fast-release-check"
+	// seamSlowLoginStore makes the store "web" a slow fake bw for logins
+	// (slowLoginStore).
+	seamSlowLoginStore = "slow-login-store"
 )
 
 // telegramHost is the host of the Bot API, and githubHost the host of
@@ -148,6 +151,14 @@ func TestBrokerChild(t *testing.T) {
 			version = "0.2.0"
 		case seamFastReleaseCheck:
 			releaseFirstWait = 0
+		case seamSlowLoginStore:
+			real := newStore
+			newStore = func(cfg config.Store, dir string) (store.Store, error) {
+				if cfg.Name != "web" {
+					return real(cfg, dir)
+				}
+				return newSlowLoginStore(cfg.Program)
+			}
 		case seamNoCoreDumps:
 			if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{}); err != nil {
 				fmt.Fprintln(os.Stderr, "child: cannot set the hard limit of core dumps to 0")
