@@ -93,11 +93,25 @@ preapprove = true
 	start := time.Now()
 	code := client.AgentBrowserPlugin(nil, bytes.NewReader(req), &stdout, &stderr, "dev")
 	took := time.Since(start)
-	if code != 0 || !strings.Contains(stdout.String(), `"success":true`) {
-		t.Fatalf("the plugin: exit %d, %s %s", code, stdout.String(), stderr.String())
+	// Only the status and fields with no secret are printed: the answer
+	// holds the password.
+	var out struct {
+		Success    bool   `json:"success"`
+		Error      string `json:"error"`
+		Credential struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		} `json:"credential"`
 	}
-	if !strings.Contains(stdout.String(), `"username":"alice@example.com"`) {
-		t.Error("the answer has no username")
+	jerr := json.Unmarshal(stdout.Bytes(), &out)
+	if code != 0 || jerr != nil || !out.Success {
+		t.Fatalf("the plugin: exit %d, success %v, error %q (JSON: %v)", code, out.Success, out.Error, jerr != nil)
+	}
+	if out.Credential.Username != "alice@example.com" {
+		t.Error("the answer has another username")
+	}
+	if out.Credential.Password != pw {
+		t.Error("the answer has another password")
 	}
 	if took >= 2*time.Second {
 		t.Errorf("credential.resolve took %s; want under 2s", took)

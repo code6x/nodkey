@@ -1,6 +1,8 @@
 package approval
 
 import (
+	"time"
+
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/config"
 )
@@ -60,6 +62,18 @@ func (r *Result) UsedGrantID() string {
 		return ""
 	}
 	return r.usedID
+}
+
+// SinceTap returns how long ago the core decided the request of r (the
+// tap, for a request that the person approved), on the core's monotonic
+// clock. A wall clock that is set back does not change it. With no core
+// it returns LoginPreapproveTime: the broker then keeps no login (DESIGN.md
+// section 21.3).
+func (r *Result) SinceTap() time.Duration {
+	if r == nil || r.core == nil || r.tap.mono.IsZero() {
+		return LoginPreapproveTime
+	}
+	return max(r.core.clock.Now().Sub(r.tap.mono), 0)
 }
 
 // SkippedByReload reports whether StartGrants started nothing because a

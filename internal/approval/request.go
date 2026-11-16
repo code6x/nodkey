@@ -153,6 +153,7 @@ type Result struct {
 	cfg      *config.Broker // the config that the checks used
 	reloaded bool           // StartGrants started nothing: a reload came after the checks
 	at       time.Time      // when the request was decided, on the wall clock
+	tap      moment         // when the request was decided, on both clocks
 	plan     *grant         // the scheduled grant of an approved KindPreapprove request
 	msg      MessageID      // with plan: the message of the request, and its prompt
 	prompt   Prompt

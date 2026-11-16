@@ -39,8 +39,8 @@ type LoginStore interface {
 	FetchLogin(ctx context.Context, id string) (Login, error)
 	// FetchLoginNoSync is FetchLogin without "bw sync --force": it reads
 	// the item as bw has it since its last sync. The broker uses it for
-	// the second fetch of a request that ran FetchLogin a moment before,
-	// so that bw syncs only once per request (DESIGN.md section 21.3).
+	// the fetch before the tap; the fetch after the tap syncs, so that bw
+	// syncs once per request (DESIGN.md section 21.3).
 	FetchLoginNoSync(ctx context.Context, id string) (Login, error)
 }
 

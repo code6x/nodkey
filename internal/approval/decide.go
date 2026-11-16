@@ -726,6 +726,7 @@ func (c *Core) newResult(p *pending) *Result {
 	s.Secrets = slices.Clone(s.Secrets)
 	s.ProjectSecrets = slices.Clone(s.ProjectSecrets)
 	s.Hosts = slices.Clone(s.Hosts)
+	now := c.now()
 	return &Result{
 		RequestID: p.id,
 		ShortCode: p.code,
@@ -733,7 +734,8 @@ func (c *Core) newResult(p *pending) *Result {
 		Subject:   s,
 		core:      c,
 		cfg:       p.cfg,
-		at:        c.clock.Wall(),
+		at:        now.wall,
+		tap:       now,
 	}
 }
 

@@ -41,6 +41,11 @@ type fakeLogin struct {
 	password, totp string
 	fetchErr       error // FetchLogin returns it
 	hidden         bool  // ListLogins leaves it out
+	// unsynced: bw's own copy does not have the item yet, so
+	// FetchLoginNoSync does not find it until a sync.
+	unsynced bool
+	// stale, if set, is the item as bw's own copy has it until a sync.
+	stale *store.LoginItem
 }
 
 // fakeLoginStore is the store "vault" for the tests of logins.
@@ -54,6 +59,7 @@ type fakeLoginStore struct {
 	syncs      int         // FetchLogin and ListLogins: each one is a "bw sync --force"
 	onFetch    func(n int) // if set, runs before fetch n (from 1), without the lock
 	given      [][]byte
+	ops        []string // "sync" and "get", in order
 }
 
 // var _ checks at build time that the fake is a login store.
@@ -100,6 +106,10 @@ func mapKeys[V any](m map[string]V) func(func(string) bool) {
 func (f *fakeLoginStore) FetchLogin(ctx context.Context, id string) (store.Login, error) {
 	f.lmu.Lock()
 	f.syncs++
+	f.ops = append(f.ops, "sync")
+	for _, l := range f.logins {
+		l.unsynced, l.stale = false, nil
+	}
 	f.lmu.Unlock()
 	return f.FetchLoginNoSync(ctx, id)
 }
@@ -114,8 +124,9 @@ func (f *fakeLoginStore) FetchLoginNoSync(_ context.Context, id string) (store.L
 	f.lmu.Lock()
 	defer f.lmu.Unlock()
 	f.fetchedIDs = append(f.fetchedIDs, id)
+	f.ops = append(f.ops, "get")
 	l, ok := f.logins[id]
-	if !ok {
+	if !ok || l.unsynced {
 		return store.Login{}, fmt.Errorf("fake bw: not found: %w", store.ErrFailed)
 	}
 	if l.fetchErr != nil {
@@ -124,6 +135,9 @@ func (f *fakeLoginStore) FetchLoginNoSync(_ context.Context, id string) (store.L
 	pw, seed := []byte(l.password), []byte(l.totp)
 	f.given = append(f.given, pw, seed)
 	out := store.Login{LoginItem: l.LoginItem, Password: store.NewValue(pw)}
+	if l.stale != nil {
+		out.LoginItem = *l.stale
+	}
 	if l.totp != "" {
 		out.TOTP = store.NewValue(seed)
 	}
@@ -149,6 +163,13 @@ func (f *fakeLoginStore) runs() (fetches, syncs int) {
 	f.lmu.Lock()
 	defer f.lmu.Unlock()
 	return len(f.fetchedIDs) + f.listed, f.syncs
+}
+
+// opsDone returns the runs of the store so far: "sync" and "get".
+func (f *fakeLoginStore) opsDone() []string {
+	f.lmu.Lock()
+	defer f.lmu.Unlock()
+	return slices.Clone(f.ops)
 }
 
 func (f *fakeLoginStore) fetches() int {

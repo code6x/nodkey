@@ -1600,8 +1600,10 @@ What nodkey does:
 - The broker does not keep the password while the request waits for the
   tap. After the tap it reads the item again and runs every check again;
   the username, the item name, the rule and the re-prompt flag must be
-  unchanged. That read runs no second `bw sync`: bw syncs once per
-  request (#190).
+  unchanged. bw syncs after the tap (#190), so a change made during
+  the wait for the tap is seen. The read before the tap uses bw's own
+  copy, and syncs only when bw lacks the item or its copy fails a check
+  (limited by the login rate limit of the client).
 - **The remembered login of a pre-approval** (#190). After the tap of a
   pre-approval, the broker reads the item once more, checks it, and
   keeps the login in memory with the grant: only the login request that
@@ -1613,17 +1615,28 @@ What nodkey does:
   ends the grant or changes `[logins.*]`, or after the stop finds no
   remembered login. With the no-tap header it is denied before the store
   runs. The login is cleared at its use, at the end of the grant, by a
-  timer at 60 seconds, and at the stop; at most 64 are kept.
+  timer at 60 seconds, and at the stop; at most 64 are kept. The request
+  that uses the grant takes the login before any step that can fail, so
+  a failure after that clears it too. The 60 seconds are counted from
+  the tap on the monotonic clock: a wall clock set back during the fetch
+  does not make them longer. After a suspend of the host, the login may
+  stay in memory longer, until the next request or the end of the grant
+  in the core, but it cannot be used. The TOTP seed is not kept.
 - Logins and pre-approvals have a rate limit per client, before the
   store runs.
 - A reload keeps a login grant only when the item has the same rule.
 Risk that remains: low. In its 60 seconds, a pre-approval can be used by
 any process of that client that asks for that item and origin (as T35).
 For up to 60 seconds after the tap, one password is in the broker's
-memory (a core dump or a read of the broker's memory would show it; the
-store's session key, which opens every item, is there all the time
-anyway). A password changed in the vault in those 60 seconds goes out
-once in its old form; the next login reads it again.
+memory: a core dump or a read of the broker's memory would show it. The
+store's session key alone does not open the items (bw also needs its
+encrypted copy of the vault on disk), but who can read the broker's
+memory can also read that file, so this adds little. During those 60
+seconds, a changed password, a trashed item, an item moved out of the
+collection or a removed URI each go out once in the old form; the next
+login reads the item again. A login under a `window` grant still runs
+`bw` three times (about 18 seconds on a small host), so there it can
+still miss the time limit of agent-browser.
 
 **T48. The agent-browser plugin hands a login to the agent.**
 The credential plugin (DESIGN.md section 21.10) answers agent-browser

@@ -65,6 +65,9 @@ type loginState struct {
 	// remembered holds the logins of login pre-approvals, by the ID of
 	// the grant (remembered.go).
 	remembered map[string]*rememberedLogin
+	// afterFunc starts the timer that clears a remembered login at its
+	// end: time.AfterFunc when nil. Only tests set it.
+	afterFunc func(d time.Duration, f func()) (stop func() bool)
 }
 
 // nowTime returns the time of the Service.
@@ -246,9 +249,17 @@ func loginStores(cfg *config.Broker, sections []string) []string {
 // the caller clears the returned login as soon as it can. On a failure it
 // has answered the request, and ok is false.
 //
+// Unless forceSync is set, it reads the item as bw has it since its last
+// sync, with no "bw sync": the one sync of a request comes after the tap
+// (fetchApproved), where the item is checked again. Only when bw does
+// not have the item, or has it in the trash, archived, not as a login or
+// with no password, does it sync and look once more: bw's copy may be
+// older than the item. synced reports whether the login came after a
+// sync.
+//
 // A store that cannot find the item (bw exits with an error) is skipped
 // for the next store; any other error ends the request.
-func (rq *request) fetchLogin(ctx context.Context, cfg *config.Broker, sections []string, item string, sub audit.Subject) (store.Login, string, bool) {
+func (rq *request) fetchLogin(ctx context.Context, cfg *config.Broker, sections []string, item string, sub audit.Subject, forceSync bool) (l store.Login, from string, synced, ok bool) {
 	var lastErr error
 	for _, name := range loginStores(cfg, sections) {
 		ls, isLS := rq.s.stores[name].(store.LoginStore)
@@ -258,28 +269,38 @@ func (rq *request) fetchLogin(ctx context.Context, cfg *config.Broker, sections 
 		if ctx.Err() != nil {
 			rq.recordDenied(sub, audit.CauseCancelled, "", false)
 			rq.answer(http.StatusForbidden)
-			return store.Login{}, "", false
+			return store.Login{}, "", false, false
 		}
-		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
-		l, err := ls.FetchLogin(fctx, item)
-		cancel()
+		var err error
+		synced = forceSync
+		if !forceSync {
+			fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+			l, err = ls.FetchLoginNoSync(fctx, item)
+			cancel()
+		}
+		if forceSync || (err != nil && ctx.Err() == nil && (notInStore(err) || itemRefused(err))) {
+			l.Clear()
+			synced = true
+			fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+			l, err = ls.FetchLogin(fctx, item)
+			cancel()
+		}
 		if err == nil {
 			rq.values = append(rq.values, l.Password, l.TOTP)
-			return l, name, true
+			return l, name, synced, true
 		}
 		l.Clear()
 		switch {
 		case ctx.Err() != nil:
 			rq.recordDenied(sub, audit.CauseCancelled, "", false)
 			rq.answer(http.StatusForbidden)
-			return store.Login{}, "", false
-		case errors.Is(err, store.ErrFailed) && !errors.Is(err, store.ErrLoggedOut) && !errors.Is(err, store.ErrLocked):
+			return store.Login{}, "", false, false
+		case notInStore(err):
 			lastErr = err
 			continue
-		case errors.Is(err, store.ErrTrashed), errors.Is(err, store.ErrArchived), errors.Is(err, store.ErrNotLogin),
-			errors.Is(err, store.ErrNoValue):
+		case itemRefused(err):
 			rq.refuseLogin(sub, "the item is in the trash, archived, not a login, or has no password")
-			return store.Login{}, "", false
+			return store.Login{}, "", false, false
 		}
 		rq.s.log.Warn("broker: a store failed; the request is denied",
 			slog.String("client", rq.client), slog.String("store", name), slog.String("error", errorText(err)))
@@ -288,14 +309,28 @@ func (rq *request) fetchLogin(ctx context.Context, cfg *config.Broker, sections 
 		}
 		rq.recordDenied(sub, audit.CauseError, audit.CodeStoreFailed, false)
 		rq.answer(http.StatusServiceUnavailable)
-		return store.Login{}, "", false
+		return store.Login{}, "", false, false
 	}
 	if lastErr != nil {
 		rq.s.log.Warn("broker: no store has the login item, or it failed; the request is denied",
 			slog.String("client", rq.client), slog.String("error", errorText(lastErr)))
 	}
 	rq.refuseLogin(sub, "no store has the item")
-	return store.Login{}, "", false
+	return store.Login{}, "", false, false
+}
+
+// itemRefused reports whether err of a fetch of a login says that the
+// item is in the trash, archived, not a login, or has no password.
+func itemRefused(err error) bool {
+	return errors.Is(err, store.ErrTrashed) || errors.Is(err, store.ErrArchived) ||
+		errors.Is(err, store.ErrNotLogin) || errors.Is(err, store.ErrNoValue)
+}
+
+// notInStore reports whether err of a fetch of a login may mean that the
+// store does not have the item: bw exits with an error. A logged out or
+// locked store is a failure of the store.
+func notInStore(err error) bool {
+	return errors.Is(err, store.ErrFailed) && !errors.Is(err, store.ErrLoggedOut) && !errors.Is(err, store.ErrLocked)
 }
 
 // refuseLogin denies a request for a login that a check refused. The
@@ -351,23 +386,33 @@ func (rq *request) checkedLogin(ctx context.Context, page loginmatch.Page, item 
 	cfg := rq.v.cfg
 	sections := candidateSections(cfg, rq.client)
 	rq.failCode = audit.CodeStoreFailed
-	l, from, ok := rq.fetchLogin(ctx, cfg, sections, item, audit.Subject{})
+	check := func(forceSync bool) (loginSel, string, bool, bool) {
+		l, from, synced, ok := rq.fetchLogin(ctx, cfg, sections, item, audit.Subject{}, forceSync)
+		if !ok {
+			return loginSel{}, "", false, false
+		}
+		meta := l.LoginItem
+		l.Clear()
+		if !strings.EqualFold(meta.ID, item) {
+			return loginSel{}, "the store answered with another item", synced, true
+		}
+		sel, reason := checkLoginItem(cfg, rq.client, page, meta, from)
+		if reason == "" && !slices.Contains(sections, sel.section) {
+			reason = "the section is not one of the client's"
+		}
+		return sel, reason, synced, true
+	}
+	sel, reason, synced, ok := check(false)
+	if ok && reason != "" && !synced {
+		// bw's own copy may be older than the item, such as before a URI
+		// or the collection was added: sync once, and check again.
+		sel, reason, _, ok = check(true)
+	}
 	if !ok {
 		return loginSel{}, false
 	}
-	meta := l.LoginItem
-	l.Clear()
-	if !strings.EqualFold(meta.ID, item) {
-		rq.refuseLogin(audit.Subject{}, "the store answered with another item")
-		return loginSel{}, false
-	}
-	sel, reason := checkLoginItem(cfg, rq.client, page, meta, from)
 	if reason != "" {
 		rq.refuseLogin(audit.Subject{}, reason)
-		return loginSel{}, false
-	}
-	if !slices.Contains(sections, sel.section) {
-		rq.refuseLogin(audit.Subject{}, "the section is not one of the client's")
 		return loginSel{}, false
 	}
 	return sel, true
@@ -410,10 +455,13 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 		return
 	}
 	if noTap && !rq.core.LoginGranted(rq.client, item) {
-		// Only a window grant or a pre-approval can cover a login, and
-		// neither does: deny at once, with no run of the store. The
-		// section of the item is not known without the store, so the
-		// entry names no item, as for the other checks before the store.
+		// No remembered login and no window grant covers the login: deny
+		// at once, with no run of the store. A pre-approval whose
+		// remembered login is gone (a reload that changed [logins.*])
+		// is not used with the no-tap header; a login without the header
+		// can still use it (DESIGN.md section 21.7). The section of the
+		// item is not known without the store, so the entry names no
+		// item, as for the other checks before the store.
 		rq.s.log.Info("broker: a request for a website login with no tap is denied: no pre-approval and no window grant covers it",
 			slog.String("client", rq.client))
 		rq.recordDenied(audit.Subject{}, audit.CauseNoTap, "", true)
@@ -438,10 +486,9 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 	}
 	res.StartGrants()
 	rq.decided = res.Config()
-	// The password is fetched again after the tap: it was cleared during
-	// the wait, and the item may have changed. checkedLogin ran
-	// "bw sync" a moment ago, so this fetch does not: bw syncs once per
-	// request.
+	// The password is fetched again after the tap, with the one
+	// "bw sync" of the request: it was cleared during the wait, and the
+	// item may have changed during it, which can be minutes.
 	if !rc.valid() {
 		rq.fail(audit.CodeStoreFailed)
 		return
@@ -451,7 +498,7 @@ func (rq *request) logins(ctx context.Context, r *http.Request) {
 		return
 	}
 	rq.failCode = audit.CodeStoreFailed
-	l, from, ok := rq.fetchApproved(ctx, item, false)
+	l, from, ok := rq.fetchApproved(ctx, item)
 	if !ok {
 		return
 	}
@@ -475,6 +522,9 @@ func (rq *request) loginRemembered(ctx context.Context, page loginmatch.Page, it
 		reason = "the config changed after the pre-approval"
 	}
 	if reason != "" {
+		// The remembered login can no longer pass the checks: it goes now,
+		// not at the end of its grant.
+		rq.s.forgetLoginsFor(rq.client, item, origin)
 		rq.refuseLogin(audit.Subject{Logins: rem.sel.section, Item: item, Origin: origin}, reason)
 		return
 	}
@@ -484,6 +534,18 @@ func (rq *request) loginRemembered(ctx context.Context, page loginmatch.Page, it
 	})
 	if !ok {
 		return
+	}
+	// The remembered login is taken first, before any path below can
+	// return: its use is spent, and it is cleared when this request ends,
+	// on every path.
+	var kept store.Login
+	took := false
+	if id := res.UsedGrantID(); id != "" {
+		kept, took = rq.s.takeLogin(id, rq.client, item, origin)
+	}
+	defer kept.Clear()
+	if took {
+		rq.values = append(rq.values, kept.Password)
 	}
 	res.StartGrants()
 	rq.decided = res.Config()
@@ -496,20 +558,14 @@ func (rq *request) loginRemembered(ctx context.Context, page loginmatch.Page, it
 		return
 	}
 	rq.failCode = audit.CodeStoreFailed
-	var l store.Login
-	from, took := rem.from, false
-	if id := res.UsedGrantID(); id != "" {
-		l, took = rq.s.takeLogin(id, rq.client, item, origin)
-	}
-	if took {
-		rq.values = append(rq.values, l.Password, l.TOTP)
-	} else {
-		l, from, ok = rq.fetchApproved(ctx, item, true)
+	l, from := kept, rem.from
+	if !took {
+		l, from, ok = rq.fetchApproved(ctx, item)
 		if !ok {
 			return
 		}
+		defer l.Clear()
 	}
-	defer l.Clear()
 	rq.handOutLogin(ctx, rc, page, item, sel, l, from)
 }
 
@@ -567,22 +623,18 @@ func (rq *request) handOutLogin(ctx context.Context, rc receipt, page loginmatch
 }
 
 // fetchApproved gets the item of an approved request again, after
-// "bw sync" only when sync is set. The stores are those of the current
-// config's sections. On a failure the request has its end entries and its
-// answer.
-func (rq *request) fetchApproved(ctx context.Context, item string, sync bool) (store.Login, string, bool) {
+// "bw sync": this is the one sync of the request. The stores are those of
+// the current config's sections. On a failure the request has its end
+// entries and its answer.
+func (rq *request) fetchApproved(ctx context.Context, item string) (store.Login, string, bool) {
 	cfg := rq.s.view().cfg
 	for _, name := range loginStores(cfg, candidateSections(cfg, rq.client)) {
 		ls, isLS := rq.s.stores[name].(store.LoginStore)
 		if !isLS {
 			continue
 		}
-		fetch := ls.FetchLoginNoSync
-		if sync {
-			fetch = ls.FetchLogin
-		}
 		fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
-		l, err := fetch(fctx, item)
+		l, err := ls.FetchLogin(fctx, item)
 		cancel()
 		if err == nil {
 			rq.values = append(rq.values, l.Password, l.TOTP)
@@ -593,7 +645,7 @@ func (rq *request) fetchApproved(ctx context.Context, item string, sync bool) (s
 			rq.cancelled()
 			return store.Login{}, "", false
 		}
-		if errors.Is(err, store.ErrFailed) && !errors.Is(err, store.ErrLoggedOut) && !errors.Is(err, store.ErrLocked) {
+		if notInStore(err) {
 			continue // not in this store
 		}
 		rq.s.log.Warn("broker: a store failed; the request is denied",
@@ -892,9 +944,6 @@ func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveReque
 		return
 	}
 	rq.decided = res.Config()
-	// The core ends the grant LoginPreapproveTime after the tap; the
-	// remembered login ends no later than that.
-	end := rq.s.nowTime().Add(approval.LoginPreapproveTime)
 	if ctx.Err() != nil {
 		rq.cancelled()
 		return
@@ -902,11 +951,15 @@ func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveReque
 	// The item as it is now: the person may have taken long to tap. This
 	// is the one fetch of the login; the login itself runs no store.
 	rq.failCode = audit.CodeStoreFailed
-	l, from, ok := rq.fetchApproved(ctx, item, true)
+	l, from, ok := rq.fetchApproved(ctx, item)
 	if !ok {
 		return
 	}
 	defer l.Clear()
+	// The core ends the grant LoginPreapproveTime after the tap, on its
+	// monotonic clock; the remembered login ends no later than that. The
+	// time since the tap includes the fetch.
+	end := rq.s.nowTime().Add(approval.LoginPreapproveTime - res.SinceTap())
 	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item) {
 		rq.s.log.Warn("broker: the login item changed while the request waited; the pre-approval is denied",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
@@ -920,6 +973,11 @@ func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveReque
 	if why := rq.s.remember(res.GrantID, rem, l); why != "" {
 		rq.s.log.Warn("broker: the login of a pre-approval cannot be kept, so the pre-approval is denied: "+string(why),
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
+		if why == keptNothingStop {
+			// As for any request that the stop meets after the tap.
+			rq.fail(audit.CodeApproverFailed)
+			return
+		}
 		rq.ended = true
 		_, _ = rq.s.append(audit.Denied{Subject: rq.sub, Cause: audit.CauseLimit})
 		rq.answer(statusFor(audit.CauseLimit))

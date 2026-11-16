@@ -5,9 +5,14 @@ package broker
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,13 +80,14 @@ func zeroed(b []byte) bool { return bytes.Equal(b, make([]byte, len(b))) }
 
 // TestLoginRememberedRunsNoStore: after the pre-approval, the login is
 // answered from memory: no fetch, no list and no sync. The pre-approval
-// itself syncs twice: before and after the tap.
+// itself reads the item before the tap with no sync, and syncs once
+// after the tap.
 func TestLoginRememberedRunsNoStore(t *testing.T) {
 	l := rememberEnv(t, nil)
-	runs, syncs := l.vs.runs()
-	if runs != 2 || syncs != 2 {
-		t.Errorf("the pre-approval ran the store %d times with %d syncs; want 2 and 2", runs, syncs)
+	if ops := l.vs.opsDone(); !slices.Equal(ops, []string{"get", "sync", "get"}) {
+		t.Errorf("the pre-approval ran %v; want [get sync get]", ops)
 	}
+	runs, _ := l.vs.runs()
 	kept := l.rememberedPassword()
 	res := l.noTapLogin(l.laptp, itemShop, pageShop)
 	mustStatus(t, res, http.StatusOK)
@@ -251,8 +257,9 @@ func TestLoginPreapproveItemChangesBeforeFetch(t *testing.T) {
 	l.vs.checkCleared(t)
 }
 
-// TestLoginTapSyncsOnce: a login by tap runs "bw sync" once: the fetch
-// before the tap syncs, the fetch after it does not.
+// TestLoginTapSyncsOnce: a login by tap runs "bw sync" once, after the
+// tap: the fetch before the tap reads bw's own copy, the fetch after the
+// tap syncs first, so that a change during a long wait is seen.
 func TestLoginTapSyncsOnce(t *testing.T) {
 	l := newLoginEnv(t, nil)
 	mustStatus(t, l.approveLogin(itemShop, pageShop, audit.AnswerApproveOnce), http.StatusOK)
@@ -260,7 +267,54 @@ func TestLoginTapSyncsOnce(t *testing.T) {
 	if runs != 2 || syncs != 1 {
 		t.Errorf("the login ran the store %d times with %d syncs; want 2 and 1", runs, syncs)
 	}
+	if ops := l.vs.opsDone(); !slices.Equal(ops, []string{"get", "sync", "get"}) {
+		t.Errorf("the login ran %v; want [get sync get]", ops)
+	}
 	l.vs.checkCleared(t)
+}
+
+// TestLoginTapNewItemSyncs: when bw's own copy does not have the item
+// yet, the fetch before the tap syncs and looks again.
+func TestLoginTapNewItemSyncs(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	l.vs.lmu.Lock()
+	l.shop.unsynced = true
+	l.vs.lmu.Unlock()
+	mustStatus(t, l.approveLogin(itemShop, pageShop, audit.AnswerApproveOnce), http.StatusOK)
+	if ops := l.vs.opsDone(); !slices.Equal(ops, []string{"get", "sync", "get", "sync", "get"}) {
+		t.Errorf("the login ran %v; want [get sync get sync get]", ops)
+	}
+	l.vs.checkCleared(t)
+}
+
+// TestLoginTapItemChangesDuringWait: the item is trashed, or its username
+// changes, while the person decides. The sync after the tap sees it, and
+// the login is denied.
+func TestLoginTapItemChangesDuringWait(t *testing.T) {
+	cases := map[string]func(*fakeLogin){
+		"trashed":  func(f *fakeLogin) { f.fetchErr = store.ErrTrashed },
+		"username": func(f *fakeLogin) { f.Username = "mallory@example.com" },
+		"no URI":   func(f *fakeLogin) { f.URIs = nil },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			l := newLoginEnv(t, nil)
+			p := l.start(l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+			pr := l.waitAsked(1)[0].Prompt
+			l.vs.lmu.Lock()
+			change(l.shop)
+			l.vs.lmu.Unlock()
+			l.tap(pr.RequestID, audit.AnswerApproveOnce)
+			res := p.wait(t)
+			if res.status == http.StatusOK || bytes.Contains(res.body, []byte(l.pw)) {
+				t.Fatalf("status %d: the login is not denied", res.status)
+			}
+			if ops := l.vs.opsDone(); !slices.Equal(ops, []string{"get", "sync", "get"}) {
+				t.Errorf("the login ran %v; want [get sync get]", ops)
+			}
+			l.vs.checkCleared(t)
+		})
+	}
 }
 
 // TestRememberLimit: the broker keeps at most maxRememberedLogins logins;
@@ -384,5 +438,298 @@ func TestStoreStepsInTheJournal(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("the journal has no %q:\n%s", want, got)
 		}
+	}
+}
+
+// noTapRaw is noTapLogin for another goroutine: it reports an error, and
+// does not end the test.
+func (l *loginTest) noTapRaw(item, url string) (int, []byte, error) {
+	data, err := json.Marshal(l.loginReq(item, url))
+	if err != nil {
+		return 0, nil, err
+	}
+	req, err := http.NewRequestWithContext(l.t.Context(), http.MethodPost, "https://"+l.addr+api.PathLogin, bytes.NewReader(data))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", api.ContentType)
+	req.Header.Set(api.NoTapHeader, api.NoTapValue)
+	resp, err := l.laptp.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, err
+}
+
+// TestLoginRememberedTwoAtOnce: two logins at the same time on one
+// pre-approval: exactly one gets the login.
+func TestLoginRememberedTwoAtOnce(t *testing.T) {
+	for range 5 {
+		l := rememberEnv(t, nil)
+		kept := l.rememberedPassword()
+		before, _ := l.vs.runs()
+		var wg sync.WaitGroup
+		statuses := make([]int, 2)
+		errs := make([]error, 2)
+		for i := range 2 {
+			wg.Go(func() {
+				statuses[i], _, errs[i] = l.noTapRaw(itemShop, pageShop)
+			})
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		slices.Sort(statuses)
+		if statuses[0] != http.StatusOK || statuses[1] == http.StatusOK {
+			t.Fatalf("statuses %v; want exactly one 200", statuses)
+		}
+		if after, _ := l.vs.runs(); after != before {
+			t.Errorf("the store ran %d times; want 0", after-before)
+		}
+		if n := l.svc.rememberedCount(); n != 0 || !zeroed(kept) {
+			t.Errorf("the broker keeps %d logins (cleared: %v)", n, zeroed(kept))
+		}
+		l.vs.checkCleared(t)
+	}
+}
+
+// TestLoginRememberedRuleChanged: the remembered login was checked with
+// another rule than the config of now has (a reload that the broker
+// missed): the login is denied by the check against the config of now,
+// with no run of the store.
+func TestLoginRememberedRuleChanged(t *testing.T) {
+	l := rememberEnv(t, nil)
+	l.svc.logins.mu.Lock()
+	for _, r := range l.svc.logins.remembered {
+		r.sel.rule.Ask = config.AskNever
+	}
+	l.svc.logins.mu.Unlock()
+	before, _ := l.vs.runs()
+	res := l.noTapLogin(l.laptp, itemShop, pageShop)
+	if res.status == http.StatusOK || bytes.Contains(res.body, []byte(l.pw)) {
+		t.Fatalf("status %d: the login is not denied", res.status)
+	}
+	if after, _ := l.vs.runs(); after != before {
+		t.Errorf("the store ran %d times; want 0", after-before)
+	}
+	if !strings.Contains(l.logs.String(), "the config changed after the pre-approval") {
+		t.Error("the journal does not say why")
+	}
+	if n := l.svc.rememberedCount(); n != 0 {
+		t.Errorf("the broker still keeps %d logins after the refusal", n)
+	}
+	l.vs.checkCleared(t)
+}
+
+// TestLoginRememberedFailures: a failure after the core allowed the
+// login by the pre-approval spends the pre-approval: the remembered login
+// is cleared, the answer has no password, and the store does not run.
+func TestLoginRememberedFailures(t *testing.T) {
+	cases := map[string]func(l *loginTest){
+		"the notice cannot be sent": func(l *loginTest) {
+			l.approver.FailNotify(errors.New("the approver is down"))
+		},
+		"the grant_ended entry cannot be written": func(l *loginTest) {
+			l.audit.setFail(func(ev audit.Event) error {
+				if _, is := ev.(audit.GrantEnded); is {
+					return errors.New("disk full")
+				}
+				return nil
+			})
+		},
+		"the secret_sent entry cannot be written": func(l *loginTest) {
+			l.audit.setFail(func(ev audit.Event) error {
+				if _, is := ev.(audit.SecretSent); is {
+					return errors.New("disk full")
+				}
+				return nil
+			})
+		},
+	}
+	for name, fail := range cases {
+		t.Run(name, func(t *testing.T) {
+			l := rememberEnv(t, nil)
+			kept := l.rememberedPassword()
+			before, _ := l.vs.runs()
+			fail(l)
+			res := l.noTapLogin(l.laptp, itemShop, pageShop)
+			if res.status == http.StatusOK || bytes.Contains(res.body, []byte(l.pw)) {
+				t.Fatalf("status %d: the login is not denied", res.status)
+			}
+			if after, _ := l.vs.runs(); after != before {
+				t.Errorf("the store ran %d times; want 0", after-before)
+			}
+			if n := l.svc.rememberedCount(); n != 0 || !zeroed(kept) {
+				t.Errorf("the broker keeps %d logins (cleared: %v)", n, zeroed(kept))
+			}
+			l.vs.checkCleared(t)
+		})
+	}
+}
+
+// TestLoginRememberedTimer: the remembered login is cleared at its end
+// also when no request comes: by the broker's own timer, set to 60 s
+// after the tap, and by the end of the grant in the core.
+func TestLoginRememberedTimer(t *testing.T) {
+	t.Run("the broker's timer", func(t *testing.T) {
+		l := newLoginEnv(t, nil)
+		l.svc.setNow(l.clock.Now)
+		var (
+			mu    sync.Mutex
+			after time.Duration
+			fire  func()
+		)
+		l.svc.logins.mu.Lock()
+		l.svc.logins.afterFunc = func(d time.Duration, f func()) func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			after, fire = d, f
+			return func() bool { return true }
+		}
+		l.svc.logins.mu.Unlock()
+		l.vs.lmu.Lock()
+		l.vs.onFetch = func(n int) {
+			if n == 2 { // the fetch after the tap takes 20 s
+				l.clock.Advance(20 * time.Second)
+			}
+		}
+		l.vs.lmu.Unlock()
+		mustStatus(t, l.loginPre(itemShop, pageShop), http.StatusOK)
+		kept := l.rememberedPassword()
+		mu.Lock()
+		d, f := after, fire
+		mu.Unlock()
+		if d != 40*time.Second || f == nil {
+			t.Fatalf("the timer is set to %s; want 40s (60 s after the tap)", d)
+		}
+		f()
+		if n := l.svc.rememberedCount(); n != 0 || !zeroed(kept) {
+			t.Errorf("after the timer the broker keeps %d logins (cleared: %v)", n, zeroed(kept))
+		}
+		l.vs.checkCleared(t)
+	})
+	t.Run("the end of the grant", func(t *testing.T) {
+		l := rememberEnv(t, nil)
+		kept := l.rememberedPassword()
+		l.clock.Advance(60 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
+		for l.svc.rememberedCount() != 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("the end of the grant did not clear the remembered login")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !zeroed(kept) {
+			t.Error("the remembered password is not cleared")
+		}
+		l.vs.checkCleared(t)
+	})
+}
+
+// TestLoginPreapproveWallClockBack: the wall clock is set back by an hour
+// during the fetch after the tap. The grant and the remembered login
+// still end 60 s after the tap, counted on the monotonic clock.
+func TestLoginPreapproveWallClockBack(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	l.svc.setNow(l.clock.Now)
+	l.vs.lmu.Lock()
+	l.vs.onFetch = func(n int) {
+		if n == 2 {
+			l.clock.JumpWall(-time.Hour)
+			l.clock.Advance(30 * time.Second)
+		}
+	}
+	l.vs.lmu.Unlock()
+	mustStatus(t, l.loginPre(itemShop, pageShop), http.StatusOK)
+	l.vs.lmu.Lock()
+	l.vs.onFetch = nil
+	l.vs.lmu.Unlock()
+	l.clock.Advance(31 * time.Second) // 61 s after the tap
+	before, _ := l.vs.runs()
+	mustStatus(t, l.noTapLogin(l.laptp, itemShop, pageShop), http.StatusPreconditionRequired)
+	if after, _ := l.vs.runs(); after != before {
+		t.Errorf("the store ran %d times; want 0", after-before)
+	}
+	if n := l.svc.rememberedCount(); n != 0 {
+		t.Errorf("the broker keeps %d logins", n)
+	}
+	l.noGrant()
+	l.vs.checkCleared(t)
+}
+
+// TestLoginStaleCopySyncs: bw's own copy of the item is older than the
+// item: it has no URI yet. The check before the tap fails on it, so the
+// broker syncs once and checks again, and the login works.
+func TestLoginStaleCopySyncs(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	l.vs.lmu.Lock()
+	old := l.shop.LoginItem
+	old.URIs = nil
+	l.shop.stale = &old
+	l.vs.lmu.Unlock()
+	mustStatus(t, l.approveLogin(itemShop, pageShop, audit.AnswerApproveOnce), http.StatusOK)
+	if ops := l.vs.opsDone(); !slices.Equal(ops, []string{"get", "sync", "get", "sync", "get"}) {
+		t.Errorf("the login ran %v; want [get sync get sync get]", ops)
+	}
+	l.vs.checkCleared(t)
+}
+
+// TestLoginRefusedAfterSync: an item that fails the check also after the
+// sync is refused before the tap, with one sync and no message.
+func TestLoginRefusedAfterSync(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	l.vs.lmu.Lock()
+	l.shop.URIs = nil
+	l.vs.lmu.Unlock()
+	res := l.post(t.Context(), l.laptp, api.PathLogin, l.loginReq(itemShop, pageShop))
+	mustStatus(t, res, http.StatusForbidden)
+	if ops := l.vs.opsDone(); !slices.Equal(ops, []string{"get", "sync", "get"}) {
+		t.Errorf("the login ran %v; want [get sync get]", ops)
+	}
+	if n := len(l.approver.Asked()); n != 0 {
+		t.Errorf("%d messages, want 0", n)
+	}
+	l.vs.checkCleared(t)
+}
+
+// TestLoginPreapproveStopDuringFetch: the broker stops while it fetches
+// the login after the tap: the pre-approval fails with 503, as any
+// request that the stop meets, and nothing is kept.
+func TestLoginPreapproveStopDuringFetch(t *testing.T) {
+	l := newLoginEnv(t, nil)
+	l.vs.lmu.Lock()
+	l.vs.onFetch = func(n int) {
+		if n == 2 {
+			l.svc.coreStopped.Store(true)
+		}
+	}
+	l.vs.lmu.Unlock()
+	res := l.loginPre(itemShop, pageShop)
+	mustStatus(t, res, http.StatusServiceUnavailable)
+	if n := l.svc.rememberedCount(); n != 0 {
+		t.Errorf("the broker keeps %d logins", n)
+	}
+	l.vs.checkCleared(t)
+}
+
+// TestRememberedEnded: the end of a remembered login has come when either
+// clock reaches it.
+func TestRememberedEnded(t *testing.T) {
+	now := time.Now()
+	if ended(now, now.Add(time.Second)) {
+		t.Error("ended before the end")
+	}
+	if !ended(now, now) || !ended(now.Add(time.Second), now) {
+		t.Error("not ended at or after the end")
+	}
+	// An end with no monotonic reading is compared on the wall clock.
+	wallOnly := now.Round(0).Add(-time.Hour)
+	if !ended(now, wallOnly) {
+		t.Error("not ended on the wall clock")
 	}
 }

@@ -133,7 +133,8 @@ level=INFO msg="broker: a store step was slow; ..." client=laptop store=vault st
 If `auth login` still fails with "no answer from the broker in time":
 run `nodkey preapprove --login` again, then `auth login` at once, in
 the same 60 seconds. A login without a pre-approval, by a `window`
-grant, still runs `bw` and can be too slow on such a host.
+grant, still runs `bw` three times (about 18 seconds on such a host),
+and can be too slow.
 
 ## 3. Stop Chrome from saving passwords: the `agents` profile
 
