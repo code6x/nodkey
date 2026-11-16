@@ -1969,6 +1969,68 @@ terminal, and editors, `ssh` and prompts work. `--mask` masks also on a
 terminal. `--no-mask` turns masking off, for a value that is also a
 common word, for example: then normal output would show `***`.
 
+#### Keep the mask on: password commands and wrappers
+
+Since nodkey 0.6.0, masking is the default whenever stdout or stderr is
+not a terminal. Two kinds of setup need a change for it. Keep the mask
+on in both: with `--no-mask`, even a plain `printenv` or a debug line
+shows the value. (The mask only stops a value that is printed as it is,
+not one in another form such as base64.)
+
+**A password command that prints the secret.** Some programs read a
+password from a command, such as a mail client with
+`password.cmd = "nodkey run --secret P=mail-read -- printenv P"`. The
+program reads that output through a pipe, so with the mask it gets
+`***`, and the login fails. Instead, run the program itself inside
+`nodkey run`, and let its password command read the value from the
+program's own environment:
+
+```sh
+nodkey run --secret MAIL_READ=mail-read --reason "read the mail" -- mail-client sync
+```
+
+with `password.cmd = "printenv MAIL_READ"` in the program's config. The
+value then goes only from the program to its own child. It never goes
+through the output of `nodkey run`, and the output of the program to the
+agent stays masked. A small wrapper script can choose the secrets for
+each command: for example, a read-only secret for `sync` and a
+send-only secret for `send`. Note: the program, and every process that
+it starts, now has the value in its environment for as long as the
+program runs, not only for one `printenv`
+([THREAT-MODEL.md section 5](../THREAT-MODEL.md#5-what-nodkey-does-not-promise)). Keep such runs
+short.
+
+**A wrapper that checks its parent.** With the mask, nodkey does not
+replace itself with the command: it stays as the command's parent
+([DESIGN.md section 5](../DESIGN.md#5-flow-secrets-for-one-command), "What
+the command gets"). A script that checks that its parent is the process
+that started `nodkey run` must accept a parent named `nodkey` and look
+at that process's parent. nodkey is not dumpable, so `/proc/PID/exe`
+cannot be read; read the name and the parent's process ID from
+`/proc/PID/stat`:
+
+```sh
+parent=$PPID
+name=$(sed 's/^[0-9]* (\(.*\)) .*/\1/' "/proc/$parent/stat")
+if [ "$name" = nodkey ]; then
+  parent=$(awk '{print $4}' "/proc/$parent/stat")
+fi
+```
+
+A process name is not proof: any program of the same user can take the
+name `nodkey`. Use this only where the parent check is a convenience,
+not a security boundary.
+
+A masked command gets nodkey's stdin, and its stdout and stderr are
+pipes to nodkey. nodkey opens no other file descriptor for it, but it
+does not close the ones that it got: a descriptor that you pass to
+`nodkey run`, such as fd 3, reaches the command too.
+
+**`--no-mask` is the last resort**, for a case that the two ways above
+do not cover, or for a short value that is also a common word. It costs
+the mask: the command replaces nodkey, and even a plain `printenv` or a
+debug line of the command then shows the value.
+
 `nodkey run` exits with the exit code of the command. When nodkey
 itself stops, its last line on stderr is
 `nodkey: <reason> (exit <code>)`: 77 when the request was denied or
@@ -2475,6 +2537,14 @@ other's requests: then the request fails, for example with
 what the client says: the broker allows and denies nothing because of
 it. A build from the source, such as one with the version `dev` or a
 commit, gets no warning and no notice.
+
+**An update from nodkey 0.5.0 or older.** Since 0.6.0, `nodkey run`
+masks the output by default when stdout or stderr is not a terminal, and
+then it stays as the parent of the command. Before you update the agent
+machines, check each `nodkey run` whose output another program reads,
+such as a password command, and each script that checks its parent.
+[Section 11, "Keep the mask on"](#keep-the-mask-on-password-commands-and-wrappers)
+shows how to change them, with the mask still on.
 
 ### New versions of bws and bw
 
