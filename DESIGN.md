@@ -308,6 +308,46 @@ nodkey run --secret GH_TOKEN=github-token \
    ended, these signals end the client again. The command sees pipes, not
    a terminal, so some programs print without colors or buffer their
    output.
+
+   **What the command gets** (#191). In both forms it gets the same
+   argument list, the same environment with the fetched values, and the
+   same working directory.
+   - **`execve` (`--no-mask`, or stdout and stderr both a terminal):**
+     the command replaces nodkey in the same process. Its process ID is
+     the one that `nodkey run` had, and its parent is the caller of
+     `nodkey run`. It gets every file descriptor of nodkey that is not
+     close-on-exec: stdin, stdout, stderr and each descriptor that
+     nodkey inherited. Every signal goes to the command; its exit code
+     or its signal is the end of the run.
+   - **Masked (the default when stdout or stderr is not a terminal, or
+     `--mask`):** the command is a child of nodkey. Its parent is a
+     process named `nodkey` (the name in `/proc/PID/stat`), whose parent
+     is the caller. nodkey is not dumpable, so another process of the
+     same user without `CAP_SYS_PTRACE` cannot read its `/proc/PID/exe`
+     or its environment (root can). The command gets
+     nodkey's stdin; its stdout and stderr are two pipes to nodkey. It is
+     in the same process group and session as nodkey. nodkey makes no
+     other file descriptor for it, but it does not close inherited ones:
+     Go closes only close-on-exec descriptors, so a descriptor that the
+     caller passed to `nodkey run` (such as fd 3) reaches the command
+     too. nodkey passes `SIGTERM` and `SIGHUP` on; it catches `SIGINT`
+     and `SIGQUIT` and does not pass them on (a terminal sends them to
+     the whole process group). It passes no other signal on. The Go
+     runtime catches most of them and does nothing, so `SIGUSR1`,
+     `SIGUSR2` or `SIGALRM` reach neither nodkey nor the command.
+     `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU` stop only nodkey, and
+     `SIGKILL` ends it. When nodkey dies of `SIGKILL`, the command goes
+     on running: its next write to stdout or stderr gets `SIGPIPE` (or
+     `EPIPE`), and a command that writes nothing runs on. The exit code is as
+     above: the command's code, the same signal for `SIGINT`,
+     `SIGTERM`, `SIGHUP` and `SIGKILL`, else 128 and the number.
+   - So a program that reads the output of `nodkey run` through a pipe
+     (a password command) gets `***` in place of the value, and a script
+     that checks that its parent is its caller sees `nodkey` in a masked
+     run. docs/setup.md, section 11, shows how to keep the mask on in
+     both cases. `--no-mask` is the last resort: with it, even a plain
+     `printenv` or a debug line shows the value (the mask stops only a
+     value printed as it is).
 8. On deny, timeout or error, the client prints one line to stderr, without
    any value, and exits: with 77 when the broker denies the request, and
    with 69 when it cannot reach the broker or gets another answer
