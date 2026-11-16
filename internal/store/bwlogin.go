@@ -37,6 +37,11 @@ type LoginStore interface {
 	// login ErrNotLogin, and an item with no password ErrNoValue. The
 	// caller must Clear the login.
 	FetchLogin(ctx context.Context, id string) (Login, error)
+	// FetchLoginNoSync is FetchLogin without "bw sync --force": it reads
+	// the item as bw has it since its last sync. The broker uses it for
+	// the fetch before the tap; the fetch after the tap syncs, so that bw
+	// syncs once per request (DESIGN.md section 21.3).
+	FetchLoginNoSync(ctx context.Context, id string) (Login, error)
 }
 
 // LoginURI is one URI of a login item: login.uris[].uri, and
@@ -88,7 +93,7 @@ func (s *bwStore) ListLogins(ctx context.Context, collection string) ([]LoginIte
 	if !isUUID(collection) {
 		return nil, stepError(s.run.store, stepListItems, ErrBadID)
 	}
-	out, err := s.synced(ctx, stepListItems, "list", "items", "--collectionid", collection)
+	out, err := s.synced(ctx, true, stepListItems, "list", "items", "--collectionid", collection)
 	if err != nil {
 		return nil, err
 	}
@@ -102,10 +107,21 @@ func (s *bwStore) ListLogins(ctx context.Context, collection string) ([]LoginIte
 
 // FetchLogin implements LoginStore.
 func (s *bwStore) FetchLogin(ctx context.Context, id string) (Login, error) {
+	return s.fetchLogin(ctx, true, id)
+}
+
+// FetchLoginNoSync implements LoginStore.
+func (s *bwStore) FetchLoginNoSync(ctx context.Context, id string) (Login, error) {
+	return s.fetchLogin(ctx, false, id)
+}
+
+// fetchLogin gets the login item id, after "bw sync --force" when sync
+// is set.
+func (s *bwStore) fetchLogin(ctx context.Context, sync bool, id string) (Login, error) {
 	if !isUUID(id) {
 		return Login{}, stepError(s.run.store, stepGetItem, ErrBadID)
 	}
-	out, err := s.synced(ctx, stepGetItem, "get", "item", id)
+	out, err := s.synced(ctx, sync, stepGetItem, "get", "item", id)
 	if err != nil {
 		return Login{}, err
 	}
@@ -118,9 +134,9 @@ func (s *bwStore) FetchLogin(ctx context.Context, id string) (Login, error) {
 }
 
 // synced takes the store's turn, unlocks if needed, runs
-// "bw sync --force" and then bw with args, as Fetch does. The caller must
-// clear the answer.
-func (s *bwStore) synced(ctx context.Context, step string, args ...string) ([]byte, error) {
+// "bw sync --force" when sync is set, and then bw with args, as Fetch
+// does. The caller must clear the answer.
+func (s *bwStore) synced(ctx context.Context, sync bool, step string, args ...string) ([]byte, error) {
 	if err := acquire(ctx, s.lock); err != nil {
 		return nil, stepError(s.run.store, step, err)
 	}
@@ -133,11 +149,13 @@ func (s *bwStore) synced(ctx context.Context, step string, args ...string) ([]by
 			return nil, err
 		}
 	}
-	out, err := s.runWithSession(ctx, stepSync, "sync", "--force")
-	if err != nil {
-		return nil, err
+	if sync {
+		out, err := s.runWithSession(ctx, stepSync, "sync", "--force")
+		if err != nil {
+			return nil, err
+		}
+		clear(out)
 	}
-	clear(out)
 	return s.runWithSession(ctx, step, args...)
 }
 

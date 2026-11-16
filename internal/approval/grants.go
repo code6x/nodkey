@@ -723,13 +723,23 @@ func (c *Core) startScheduled(r *Result, now moment) {
 	g := r.plan
 	if g.loginOrigin != "" {
 		// The time of a login pre-approval starts at the tap, not when
-		// it was asked for: the person may take long to tap.
-		g.end.wall = now.wall.Add(LoginPreapproveTime)
-		r.GrantFrom, r.GrantUntil = now.wall, g.end.wall
+		// it was asked for: the person may take long to tap. It starts
+		// at the tap, not here: the broker fetches the login between
+		// the two, and on a slow host that takes many seconds (#190).
+		// The end is counted from the tap on both clocks: a wall clock
+		// that is set back during the fetch cannot make it later.
+		tap := r.tap
+		if tap.mono.IsZero() || tap.mono.After(now.mono) {
+			tap = now
+		}
+		g.end = tap.add(LoginPreapproveTime)
+		r.GrantFrom, r.GrantUntil = tap.wall, g.end.wall
+	} else {
+		// The end is an absolute time. Its monotonic reading is counted
+		// from now, so a wall clock that is set back later cannot make it
+		// later.
+		g.end.mono = now.mono.Add(g.end.wall.Sub(now.wall))
 	}
-	// The end is an absolute time. Its monotonic reading is counted from
-	// now, so a wall clock that is set back later cannot make it later.
-	g.end.mono = now.mono.Add(g.end.wall.Sub(now.wall))
 	if c.stopped {
 		r.stopped = true
 		return

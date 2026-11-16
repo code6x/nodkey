@@ -41,6 +41,11 @@ type fakeLogin struct {
 	password, totp string
 	fetchErr       error // FetchLogin returns it
 	hidden         bool  // ListLogins leaves it out
+	// unsynced: bw's own copy does not have the item yet, so
+	// FetchLoginNoSync does not find it until a sync.
+	unsynced bool
+	// stale, if set, is the item as bw's own copy has it until a sync.
+	stale *store.LoginItem
 }
 
 // fakeLoginStore is the store "vault" for the tests of logins.
@@ -51,8 +56,14 @@ type fakeLoginStore struct {
 	listErr    error
 	listed     int
 	fetchedIDs []string
+	syncs      int         // FetchLogin and ListLogins: each one is a "bw sync --force"
+	onFetch    func(n int) // if set, runs before fetch n (from 1), without the lock
 	given      [][]byte
+	ops        []string // "sync" and "get", in order
 }
+
+// var _ checks at build time that the fake is a login store.
+var _ store.LoginStore = (*fakeLoginStore)(nil)
 
 func newFakeLoginStore() *fakeLoginStore {
 	return &fakeLoginStore{fakeStore: newFakeStore(), logins: make(map[string]*fakeLogin)}
@@ -68,6 +79,7 @@ func (f *fakeLoginStore) ListLogins(_ context.Context, collection string) ([]sto
 	f.lmu.Lock()
 	defer f.lmu.Unlock()
 	f.listed++
+	f.syncs++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -91,12 +103,30 @@ func mapKeys[V any](m map[string]V) func(func(string) bool) {
 	}
 }
 
-func (f *fakeLoginStore) FetchLogin(_ context.Context, id string) (store.Login, error) {
+func (f *fakeLoginStore) FetchLogin(ctx context.Context, id string) (store.Login, error) {
+	f.lmu.Lock()
+	f.syncs++
+	f.ops = append(f.ops, "sync")
+	for _, l := range f.logins {
+		l.unsynced, l.stale = false, nil
+	}
+	f.lmu.Unlock()
+	return f.FetchLoginNoSync(ctx, id)
+}
+
+func (f *fakeLoginStore) FetchLoginNoSync(_ context.Context, id string) (store.Login, error) {
+	f.lmu.Lock()
+	hook, n := f.onFetch, len(f.fetchedIDs)+1
+	f.lmu.Unlock()
+	if hook != nil {
+		hook(n)
+	}
 	f.lmu.Lock()
 	defer f.lmu.Unlock()
 	f.fetchedIDs = append(f.fetchedIDs, id)
+	f.ops = append(f.ops, "get")
 	l, ok := f.logins[id]
-	if !ok {
+	if !ok || l.unsynced {
 		return store.Login{}, fmt.Errorf("fake bw: not found: %w", store.ErrFailed)
 	}
 	if l.fetchErr != nil {
@@ -105,6 +135,9 @@ func (f *fakeLoginStore) FetchLogin(_ context.Context, id string) (store.Login, 
 	pw, seed := []byte(l.password), []byte(l.totp)
 	f.given = append(f.given, pw, seed)
 	out := store.Login{LoginItem: l.LoginItem, Password: store.NewValue(pw)}
+	if l.stale != nil {
+		out.LoginItem = *l.stale
+	}
 	if l.totp != "" {
 		out.TOTP = store.NewValue(seed)
 	}
@@ -122,6 +155,21 @@ func (f *fakeLoginStore) checkCleared(t testing.TB) {
 			t.Errorf("value %d that the store gave out is not cleared", i)
 		}
 	}
+}
+
+// runs returns how many fetches and lists ran, and how many of them
+// synced.
+func (f *fakeLoginStore) runs() (fetches, syncs int) {
+	f.lmu.Lock()
+	defer f.lmu.Unlock()
+	return len(f.fetchedIDs) + f.listed, f.syncs
+}
+
+// opsDone returns the runs of the store so far: "sync" and "get".
+func (f *fakeLoginStore) opsDone() []string {
+	f.lmu.Lock()
+	defer f.lmu.Unlock()
+	return slices.Clone(f.ops)
 }
 
 func (f *fakeLoginStore) fetches() int {
@@ -893,7 +941,8 @@ func TestLoginNoTap(t *testing.T) {
 	l.noMessage(noTap(), http.StatusPreconditionRequired)
 	found := false
 	for _, ev := range l.audit.all() {
-		if d, ok := ev.(audit.Denied); ok && d.Cause == audit.CauseNoTap && d.Item == itemShop {
+		// Denied before the store runs: the entry names no item.
+		if d, ok := ev.(audit.Denied); ok && d.Cause == audit.CauseNoTap && d.Item == "" {
 			found = true
 		}
 	}

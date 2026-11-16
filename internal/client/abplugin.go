@@ -246,7 +246,8 @@ func requestError(err error, what string) *pluginError {
 	switch {
 	case errors.As(err, &e) && e.NeedsTap():
 		return &pluginError{exitDenied, what + ": it needs a tap first: run \"nodkey preapprove --login ITEM --url URL\", " +
-			"wait for the tap, then run agent-browser auth login within 60 seconds"}
+			"wait for the tap, then run agent-browser auth login within 60 seconds; " +
+			"if the pre-approval is refused, the item does not cover this page or this client"}
 	case errors.As(err, &e) && e.Denied():
 		return &pluginError{exitDenied, what + ": " + e.Error()}
 	case errors.Is(err, context.DeadlineExceeded):

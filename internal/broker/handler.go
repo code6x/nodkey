@@ -91,7 +91,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rq.answer(adm.status)
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(s.timeSteps(r.Context(), client))
 	defer cancel()
 	stop := context.AfterFunc(s.stopCtx, cancel) // Close ends the request
 	defer stop()
@@ -414,6 +414,25 @@ func (rq *request) settle(res *approval.Result) (*approval.Result, receipt, bool
 			slog.String("error", errorText(res.Err)))
 	}
 	rq.ended = true // until every entry is written
+	// The login that a login pre-approval keeps goes with its grant, and
+	// with its use: first, so that no path below can leave it (DESIGN.md
+	// section 21.3). The grant that allowed this request ends with this
+	// use too; its login stays only when this function returns ok, and
+	// then the login request takes it at once (loginRemembered).
+	used := res.UsedGrantID()
+	for _, ev := range res.Events() {
+		if g, isEnd := ev.(audit.GrantEnded); isEnd && g.GrantID != used {
+			rq.s.forgetLogin(g.GrantID)
+		}
+	}
+	keep := false
+	if used != "" {
+		defer func() {
+			if !keep {
+				rq.s.forgetLogin(used)
+			}
+		}()
+	}
 	if !res.Allowed && res.Cause == audit.CauseLimit && !rq.s.refusedAllowed(rq.client) {
 		// A client can send requests that a limit denies fast: their
 		// entries are limited per minute, and only counted after that.
@@ -440,6 +459,7 @@ func (rq *request) settle(res *approval.Result) (*approval.Result, receipt, bool
 		rq.fail(audit.CodeApproverFailed)
 		return res, receipt{}, false
 	}
+	keep = true
 	return res, rc, true
 }
 
