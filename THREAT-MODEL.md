@@ -1755,6 +1755,78 @@ What nodkey does not do:
   broker's memory than for one `bws secret get`.
 Risk that remains: low, for a broker host that is safe (section 7).
 
+**T52. A change of the config from git, with pullgate, gives access that
+the owner did not mean.**
+With the recipe in `contrib/pullgate/` (docs/setup.md, "Change the
+config from git with pullgate"), the broker host pulls `broker.toml` and
+`known_hosts` from a private git repo. pullgate applies a commit only
+after the owner taps Apply on its own Telegram bot. The new parties: who
+can write the repo, the read-only deploy key, the git host, pullgate's
+bot token, and the scripts that run as root.
+What nodkey does:
+- **The gate is the tap on the host, not CI.** A writer of the repo,
+  or of its CI, can push any commit, also one that widens access. CI
+  can check a config, but it runs where the writer has power, so it is
+  only a help. The broker host applies nothing without the owner's tap
+  on the exact commit that pullgate shows, and pullgate refuses an older
+  commit or a rewritten branch.
+- The question shows `nodkey broker config-diff` (T42 and DESIGN.md
+  section 15): each change that widens access starts with `⚠`, and
+  these lines come first in the summary. A line about a secret names its store item by
+  the last 8 characters of its ID, so a commit cannot point a trusted
+  name at another item unseen. A change that needs a restart says so
+  first, because it ends every grant. A live config that differs from
+  the applied commit (a change by hand) is a `⚠` line too. The guide
+  says: tap Skip on a `⚠` line that you did not ask for.
+- **A commit cannot change the gate.** The approval channel
+  (`[telegram]`, `[ntfy]`), `listen`, `tls_key`, the paths of
+  `known_hosts` and `audit_log`, and a new or changed `[store.*]` are
+  refused by `check.sh` and again by `apply.sh` as root, also in a
+  rollback. Else a commit could point the channel at its own server, or
+  a token file at another credential that the broker holds, and approve
+  its own requests. These changes stay a step on the host, as root.
+- **The scripts are installed on the host, never run from the repo
+  tree.** They come from the release asset
+  `nodkey_VERSION_pullgate.tar.gz`, which is in `SHA256SUMS` and
+  covered by the build attestation of the release, as the binaries are.
+  The guide installs them only after both checks, owned by root. A
+  commit cannot change the scripts, the instance config or the units:
+  they are not in the repo.
+- `check.sh` and `summary.sh` run as an unprivileged check user and read
+  the commit only as data, with nodkey's own parser. Both files must be
+  plain files, not symlinks, and pullgate refuses a symlink out of the
+  tree and a large tree (`refuse_symlinks`, `max_files`,
+  `max_tree_bytes`). A commit may not change the paths of `known_hosts`
+  and `audit_log`, a store's program or files, or the channel's token
+  file (see below). It can still name another SSH key file: that is a
+  `⚠` line and a restart, and the gate is the owner's tap.
+- `apply.sh` checks the files again as root with `nodkey broker check`,
+  with the names of the credentials, before it installs them. The broker
+  checks the config a third time when it loads it (fail closed). On a
+  failed reload or restart, the old files go back, and pullgate rolls
+  back to the last good commit; if that fails too, it pauses and says
+  so.
+- The repo holds no secret value: the config names secrets only by
+  credential paths and item IDs. A new credential is still a step on the
+  host, as root.
+What nodkey does not do:
+- It cannot protect the owner who taps Apply without reading the `⚠`
+  lines. A careless tap applies what a writer of the repo wrote.
+- pullgate puts the summary after the commits and the changed files, and
+  cuts a long message from the end. A writer of the repo can push many
+  commits with long subjects, so that the summary, with its `⚠` lines,
+  is cut off. The recipe keeps the summary short (1200 characters) and
+  the repo small (`max_files = 20`), and the guide says: tap Skip when
+  the question has no complete summary, and read the full list on the
+  host.
+- Who can read the repo learns the names of the clients, secrets, keys,
+  hosts and item IDs, and the approver's Telegram user ID. Keep the repo
+  private, and give the deploy key read access only.
+- pullgate's bot token, the deploy key and pullgate itself are outside
+  nodkey: pullgate's own THREAT-MODEL.md covers them.
+- The git host is one more outbound connection of the broker host.
+Risk that remains: low, when the owner reads every `⚠` line.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

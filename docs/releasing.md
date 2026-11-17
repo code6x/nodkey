@@ -85,12 +85,14 @@ After every push to `main`, the **Release** workflow runs release-please.
      commit of this workflow run. Then it builds static `nodkey` binaries
      for Linux amd64 and arm64 (`CGO_ENABLED=0`, `-trimpath`), packs each
      one with `LICENSE` and `README.md` into
-     `nodkey_<version>_linux_<arch>.tar.gz`, and writes `SHA256SUMS`.
+     `nodkey_<version>_linux_<arch>.tar.gz`. It packs the files of
+     `contrib/pullgate/` with `LICENSE` into
+     `nodkey_<version>_pullgate.tar.gz`, and writes `SHA256SUMS`.
    - `publish` gets these files from `build`. It checks them against
      `SHA256SUMS` and checks the tag again. Then it makes a signed build
      provenance attestation for the tarballs. It saves the attestation as
      one more file, `nodkey_<version>.sigstore.json` (a Sigstore bundle
-     for both tarballs), and checks both tarballs with it, with no login,
+     for all tarballs), and checks all tarballs with it, with no login,
      as in [Verify a download](#verify-a-download). Then it uploads the
      files to the draft release and publishes it.
 
@@ -304,9 +306,12 @@ A release has these files:
 - `nodkey_<version>_linux_amd64.tar.gz` and
   `nodkey_<version>_linux_arm64.tar.gz`: the binary, `LICENSE` and
   `README.md`;
-- `SHA256SUMS`: the SHA-256 of both tarballs;
+- `nodkey_<version>_pullgate.tar.gz`: the pullgate recipe, the files of
+  `contrib/pullgate/` and `LICENSE` (docs/setup.md, "Change the config
+  from git with pullgate"). Releases before 0.7.0 do not have it;
+- `SHA256SUMS`: the SHA-256 of all tarballs;
 - `nodkey_<version>.sigstore.json`: the build provenance attestation of
-  both tarballs, as a Sigstore bundle. 0.1.0 does not have this file.
+  all tarballs, as a Sigstore bundle. 0.1.0 does not have this file.
 
 Set the version you want, and your machine's arch: `amd64`, or `arm64`
 on 64-bit ARM.

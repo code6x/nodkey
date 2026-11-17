@@ -1,0 +1,50 @@
+# The pullgate instance of the nodkey broker config (docs/setup.md,
+# "Change the config from git with pullgate"). The broker host pulls
+# broker.toml and known_hosts from a private git repo, asks the owner on
+# Telegram, and applies a commit only after a tap.
+#
+# Install it as /etc/pullgate/nodkey-broker.toml (owner root, mode 0600).
+# Change the host name and the [repo] section.
+mode = "ask"
+# A failed apply, reload, restart or health check runs apply.sh again with
+# the last good commit. That is safe: apply.sh installs two files and
+# reloads or restarts the broker.
+on_failure = "rollback"
+host = "example-host"
+
+[repo]
+url = "ssh://git@git.example.com/owner/config-repo.git"
+branch = "main"
+# A read-only deploy key of the config repo.
+deploy_key = "/etc/pullgate/nodkey-broker.key"
+known_hosts = "/etc/pullgate/nodkey-broker.known_hosts"
+
+[commands]
+# The scripts come from a release of nodkey (nodkey_VERSION_pullgate.tar.gz),
+# never from the config repo. check and summary run as check_user and only
+# read the tree as data; apply and health run as root.
+check = ["/usr/local/lib/nodkey-pullgate/check.sh"]
+summary = ["/usr/local/lib/nodkey-pullgate/summary.sh"]
+apply = ["/usr/local/lib/nodkey-pullgate/apply.sh"]
+health = ["/usr/local/lib/nodkey-pullgate/health.sh"]
+check_user = "pullgate-check-nodkey-broker"
+check_timeout = "2m"
+# apply.sh may restart the broker, and health.sh waits up to 60s for it.
+apply_timeout = "5m"
+
+[limits]
+questions_per_day = 10
+approval_ttl = "12h"
+max_failed_tries = 1
+allow_older = false
+# The repo holds two small files. A symlink out of the tree stops the
+# export; check.sh and apply.sh also refuse broker.toml or known_hosts as
+# a symlink.
+refuse_symlinks = true
+# Few files: pullgate lists the changed files and the commits before the
+# summary, and cuts a long message from the end. Keep the repo small.
+max_files = 20
+max_tree_bytes = 1048576
+
+[listener]
+user = "pullgate"
