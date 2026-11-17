@@ -1892,6 +1892,198 @@ the broker took has a `config_reloaded` entry in the audit log
 Check the setup with `sudo nodkey doctor broker`
 ([section 14](#14-when-something-does-not-work)).
 
+### Change the config from git with pullgate
+
+With [pullgate](https://github.com/code6x/pullgate), the broker host
+pulls its config from a private git repo by itself. You change the
+config with a commit, not with an SSH login to the broker host. For each
+new commit, pullgate asks you on Telegram, with the change list of
+`nodkey broker config-diff`. It applies the commit only after you tap
+**Apply**. If the new config does not work, it goes back to the last
+good one by itself.
+
+pullgate uses its own Telegram bot, not the broker's. The broker gets no
+new port and no new network path: pullgate fetches the repo with a
+read-only deploy key.
+
+The recipe is in `contrib/pullgate/` of this repository:
+
+- `check.sh` runs as the check user, before the question. Both files
+  must be plain files (no symlinks). It runs `nodkey broker check
+  --files` on the commit. A commit may not change the parts of the gate
+  itself (see "What stays a step on the host"). A commit that fails gets
+  no question, only a notice.
+- `summary.sh` runs as the check user. Its output is the change list in
+  the question: `nodkey broker config-diff --short --max-chars 1200` from
+  the applied commit (on the first apply, from the live config in
+  `/etc/nodkey`). When a reload cannot take the change, its first line
+  is `⚠ needs a broker restart: all grants end`.
+- `apply.sh` runs as root after your tap. It checks the new files again,
+  with the names of the credentials, and the parts of the gate again, and
+  installs both in `/etc/nodkey`.
+  Then it runs `nodkey broker reload`, or `systemctl restart nodkey` when
+  a reload cannot take the change. If that fails, it puts the old files
+  back, reloads or restarts again, and fails. Then pullgate rolls back.
+  When the broker does not run, it starts it: to keep a stopped broker
+  stopped, pause the instance first.
+- `health.sh` runs as root after `apply.sh`. It waits up to 60 seconds
+  for the broker to say, in its status file `reload-status.json`, that
+  the process that runs now uses the new `broker.toml`. A failure starts
+  the rollback.
+- `lib.sh` holds the one rule for "reload or restart" that the scripts
+  share. Only changes of `[client.*]`, `[secret.*]`, `[project.*]`,
+  `[key.*]` (but not a new key or a new key file) and the host keys in
+  `known_hosts` are done with a reload. Any other change, or a failed
+  compare, means a restart.
+
+#### What stays a step on the host
+
+These changes still need root on the broker host. `check.sh` and
+`apply.sh` refuse a commit that makes them. They are the gate itself: a
+commit that changes them could send a credential to another server, or
+approve its own requests.
+
+- `listen`, `tls_key`, and the paths of `known_hosts` and `audit_log`;
+- `[telegram]` and `[ntfy]`: the approver, the bot, the server, the
+  topics, the token file and the timeouts;
+- a new or changed `[store.*]` (a removed store is allowed);
+- a new credential, such as a new SSH key file
+  ([Encrypted credentials](#encrypted-credentials)), and a change of
+  the unit;
+- a new version of nodkey or of the recipe.
+
+Make such a change by hand (see the way back below), then commit the
+same files to the repo.
+
+#### The config repo
+
+Make a **private** git repo. Put two files at its root:
+
+- `broker.toml`: the config, the same as `/etc/nodkey/broker.toml`;
+- `known_hosts`: the broker's `known_hosts`, the same as
+  `/etc/nodkey/known_hosts`.
+
+**Never put a secret value in the repo.** The config names its secrets
+only by paths in `${CREDENTIALS_DIRECTORY}` and by item IDs, and
+`known_hosts` holds only public host keys. Start the repo from the live
+files, so that the first change list is empty. Other files, such as a
+README or a CI check with `nodkey broker check --files`, are fine:
+apply.sh installs only the two files.
+
+The recipe needs `known_hosts = "/etc/nodkey/known_hosts"` in
+`broker.toml`, and `audit_log = "..."` as one plain line at the top.
+That is the form of [section 7](#7-the-config-file).
+
+#### Install
+
+You need nodkey 0.7.0 or newer, and pullgate 0.2.0 or newer. Run every
+step on the broker host, as root.
+
+1. Install pullgate, its users and its units as its README says. Make the
+   check user of this instance:
+
+   ```sh
+   useradd --system --no-create-home --shell /usr/sbin/nologin pullgate-check-nodkey-broker
+   ```
+
+   It must be able to read `/etc/nodkey/broker.toml` and
+   `/etc/nodkey/known_hosts` (mode `0644`, as in section 7), but not the
+   credentials.
+
+2. Get the recipe from the release of the nodkey version that the host
+   runs, and check it as [Verify a download](releasing.md#verify-a-download)
+   says. Never take the scripts from the config repo: they run as root.
+
+   ```sh
+   VERSION=0.7.0
+   cd "$(mktemp -d)"
+   U="https://github.com/code6x/nodkey/releases/download/v$VERSION"
+   curl -fLO "$U/nodkey_${VERSION}_pullgate.tar.gz"
+   curl -fLO "$U/SHA256SUMS"
+   curl -fLO "$U/nodkey_${VERSION}.sigstore.json"
+   sha256sum -c --ignore-missing SHA256SUMS
+   gh attestation verify "nodkey_${VERSION}_pullgate.tar.gz" \
+     --bundle "nodkey_${VERSION}.sigstore.json" \
+     --repo code6x/nodkey \
+     --cert-identity https://github.com/code6x/nodkey/.github/workflows/release.yml@refs/heads/main \
+     --deny-self-hosted-runners \
+     --format json --jq '.[].verificationResult.statement.subject[].name' |
+     grep -Fx "nodkey_${VERSION}_pullgate.tar.gz"
+   ```
+
+   `sha256sum` must print `nodkey_<version>_pullgate.tar.gz: OK`, and the
+   last command must print the name of the file. If a check fails, stop.
+   Then install the files, owned by root:
+
+   ```sh
+   install -d -o root -g root -m 0755 /usr/local/lib/nodkey-pullgate
+   tar --no-same-owner -xzf "nodkey_${VERSION}_pullgate.tar.gz" -C /usr/local/lib/nodkey-pullgate
+   chown -R root:root /usr/local/lib/nodkey-pullgate
+   chmod -R go-w /usr/local/lib/nodkey-pullgate
+   ls -l /usr/local/lib/nodkey-pullgate
+   ```
+
+3. Make a read-only deploy key for the config repo, and pin the host key
+   of the git server, as pullgate's README says, with the names
+   `/etc/pullgate/nodkey-broker.key` and
+   `/etc/pullgate/nodkey-broker.known_hosts`. Leave write access off for
+   the deploy key.
+
+4. Write the instance config from the example. Change `host` and the
+   `[repo]` section:
+
+   ```sh
+   install -m 0600 -o root -g root /usr/local/lib/nodkey-pullgate/nodkey-broker.toml /etc/pullgate/nodkey-broker.toml
+   ```
+
+5. Start it:
+
+   ```sh
+   systemctl daemon-reload
+   systemctl enable --now pullgate-apply@nodkey-broker.path pullgate-run@nodkey-broker.timer
+   systemctl enable --now pullgate-check@nodkey-broker.path
+   ```
+
+6. Send `/check nodkey-broker` to pullgate's bot. The first question
+   compares the commit with the live config. If the repo was made from
+   the live files, the change list says `no change`. Tap **Apply**, and
+   check the result: `pullgate status nodkey-broker`, and
+   `journalctl -t pullgate`.
+
+When you update nodkey, get the recipe of the new version too, with
+step 2.
+
+#### Read the question
+
+The question shows the commit, and then the change list of
+`summary.sh`. The lines with `⚠` come first. Read each one before you
+tap **Apply**:
+
+- `⚠ needs a broker restart: all grants end`: the change needs a
+  restart, so every open grant ends, and requests that wait for a tap
+  are denied.
+- A line about a secret names its item by the last 8 characters of its
+  ID, such as `item …3f9a1c2e`. Check that it is the item you made
+  ([See what a config change means](#see-what-a-config-change-means)).
+- `⚠ the live config in /etc/nodkey is not the applied commit`: someone
+  changed `/etc/nodkey` by hand. Find out why before you apply.
+- **The change list must be complete.** pullgate lists the commits and
+  the changed files before the summary, and cuts a long message from
+  the end. If the question has no "Summary:" block, or says that lines
+  are left out, tap **Skip**. Then read the full list on the host:
+  `nodkey broker config-diff /etc/nodkey DIR`, with the commit's two
+  files in DIR. Keep commits few and their subjects short.
+- **A ⚠ line that you did not ask for: tap Skip.** A writer of the repo
+  can add a line to a change that you expect. Each `⚠` line widens
+  access, or is a change that nodkey does not know.
+
+pullgate reports each apply, rollback and failure on its bot. After a
+failed rollback, the instance is paused: the broker host needs root.
+The way back by hand: `pullgate status nodkey-broker --pause` first, so
+that pullgate does not undo the edit; then edit `/etc/nodkey` and run
+`nodkey broker reload` or `systemctl restart nodkey`; then commit the
+same files to the repo, and run `pullgate status nodkey-broker --resume`.
+
 ## 11. A client on the agent machine
 
 ### The key and the config of the client

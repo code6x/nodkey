@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: shellcheck install.sh
+      - name: shellcheck install.sh and contrib/pullgate
         # A fixed release of ShellCheck, checked by its SHA-256. Dependabot
         # does not update it. Update it by hand: the version and the SHA-256
         # of shellcheck-VERSION.linux.x86_64.tar.xz together.
@@ -80,6 +80,9 @@ jobs:
           tar -xJf "$dir/shellcheck.tar.xz" -C "$dir"
           "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --version
           "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh install.sh
+          # The scripts of the pullgate recipe source lib.sh from their own
+          # directory.
+          (cd contrib/pullgate && "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh -x -- *.sh)
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

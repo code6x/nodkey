@@ -61,6 +61,11 @@ Planned. Each v1 issue adds its part.
     `nodkey preapprove` (sections 8 and 15), and `nodkey agent-browser-plugin`
     (section 21.10), with recorded requests of agent-browser in
     `testdata/`.
+- `contrib/pullgate/` - the pullgate recipe: the broker host pulls its
+  config from git, and the owner taps each change (docs/setup.md,
+  "Change the config from git with pullgate"; THREAT-MODEL.md T52). Its
+  tests are in `contrib_pullgate_linux_test.go`, at the root of the
+  module. The release packs it as `nodkey_VERSION_pullgate.tar.gz`.
 - `contrib/systemd/` - the example systemd unit of the broker, with
   encrypted credentials and a sandbox (DESIGN.md section 16).
 - `docs/` - the guides for people:

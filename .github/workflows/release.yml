@@ -97,6 +97,16 @@ jobs:
             tar --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="$mtime" \
               -C "$stage" -cf - nodkey LICENSE README.md | gzip -9n > "dist/${name}.tar.gz"
           done
+          # The pullgate recipe (contrib/pullgate, docs/setup.md). A host
+          # installs it from here, checked by SHA256SUMS and the
+          # attestation as the binaries are, never from a config repo.
+          name="nodkey_${VERSION}_pullgate"
+          stage="${RUNNER_TEMP}/${name}"
+          mkdir -p "$stage"
+          cp contrib/pullgate/* LICENSE "$stage/"
+          # LC_ALL=C: the same order of the names on every runner.
+          (cd "$stage" && export LC_ALL=C && tar --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="$mtime" \
+            -cf - -- *) | gzip -9n > "dist/${name}.tar.gz"
           cd dist
           sha256sum -- *.tar.gz > SHA256SUMS
           cat SHA256SUMS
@@ -147,7 +157,7 @@ jobs:
           subject-path: dist/*.tar.gz
       # The attestation is also a file of the release. With this file,
       # gh attestation verify --bundle needs no GitHub login. One bundle
-      # covers both tarballs.
+      # covers all tarballs.
       - name: Save the attestation bundle
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}

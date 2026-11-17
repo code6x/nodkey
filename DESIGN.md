@@ -4585,10 +4585,42 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   (section 15). See docs/releasing.md.
 - release-please keeps a release pull request open. Merging it tags the
   version and creates the GitHub Release. A job then builds static Linux
-  binaries (`CGO_ENABLED=0`, amd64 and arm64, `-trimpath`), a
-  `SHA256SUMS` file, and a build provenance attestation. The attestation
-  is also a file of the release (`nodkey_<version>.sigstore.json`), so it
-  can be checked with no GitHub login.
+  binaries (`CGO_ENABLED=0`, amd64 and arm64, `-trimpath`), the tarball
+  of the pullgate recipe (`nodkey_<version>_pullgate.tar.gz`: the files
+  of `contrib/pullgate/` and `LICENSE`), a `SHA256SUMS` file of all
+  tarballs, and a build provenance attestation of all of them. The
+  attestation is also a file of the release
+  (`nodkey_<version>.sigstore.json`), so it can be checked with no GitHub
+  login.
+- The pullgate recipe (`contrib/pullgate/`, issue #102) lets the broker
+  host pull `broker.toml` and `known_hosts` from a git repo with
+  pullgate, which asks the owner on its own bot and applies a commit only
+  after a tap (THREAT-MODEL.md T52). It is four scripts and a shared
+  `lib.sh`. `check.sh` (check user): both files are plain files,
+  `nodkey broker check --files` passes, and the commit changes no part
+  of the gate (`nkp_host_parts` in `lib.sh`: `listen`, `tls_key`, the
+  paths of `known_hosts` and `audit_log`, `[telegram]`, `[ntfy]`, a new
+  or changed `[store.*]`); `apply.sh` checks this again as root, also in
+  a rollback. `summary.sh` (check user):
+  `nodkey broker config-diff --short --max-chars 1200` from the applied
+  commit, or from the live config on the first apply, with
+  `⚠ needs a broker restart: all grants end` first when needed, and a
+  `⚠` line when the live config is not the applied commit. `apply.sh`
+  (root): checks the files again with the credential names, refuses to
+  run while a copy of the old files from an earlier failed restore is
+  left (`/etc/nodkey/pullgate-old`), installs
+  them with the owner and mode of the live files, then reloads or
+  restarts; on a failure it puts the old files back, reloads or restarts
+  again, and fails. `health.sh` (root): waits until `reload-status.json`
+  names the unit's main process, a result of `started` or `loaded`, and
+  the SHA-256 of the live `broker.toml`. The one rule for "reload or
+  restart" is in `lib.sh`: a reload only when every line of the full
+  `config-diff` is about a client, secret, project, SSH key (not a new
+  key or file: credentials load only at the start) or a host key of
+  `known_hosts`; anything else, or a failed compare, is a restart. Its
+  tests (`contrib_pullgate_linux_test.go`) run the scripts with `/bin/sh`
+  against a fake `systemctl` and a fake `nodkey broker reload`, with the
+  real `nodkey` for the check and the diff. CI runs shellcheck on them.
 - `install.sh`, at the root of the repository, installs a release on the
   host itself, as root: the broker host or an agent machine. It needs
   `sh`, `curl`, `tar`, `gzip`, `sha256sum`, `install`, `mktemp`, `stat`
