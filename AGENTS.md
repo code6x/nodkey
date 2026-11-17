@@ -93,6 +93,10 @@ Planned. Each v1 issue adds its part.
 - `tools/prgate/` - the behavior-change gate that the PR title workflow
   runs from `main` (docs/releasing.md, "Changes in behavior for
   callers"). `.github/pull_request_template.md` has its line.
+- `test/contract/` - the contract tests (DESIGN.md section 17): what a
+  caller of `nodkey run` sees. A change to one of them is a change in
+  behavior for callers; see `test/contract/README.md`. Only that README
+  and `*_test.go` files go in this folder.
 - `.claude/agents/security-reviewer.md` - the security review every change
   gets.
 

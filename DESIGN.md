@@ -4552,6 +4552,17 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   something to find: the broker handed out the secret (a `secret_sent`
   entry), and SSH logins went through the wrapper. So a `-run` filter
   that leaves out the cases makes the search fail, not pass.
+- **Contract tests** (`test/contract`, #198): what a program or a
+  script that calls `nodkey run` sees, as section 5 ("What the command
+  gets") documents it. They run the built `nodkey` against a trial broker
+  (`nodkey try`), with stdout and stderr on pipes and on a
+  pseudo-terminal, masked and with `execve`: the password command, the
+  parent of the command, exit codes and signals, stdin and inherited file
+  descriptors, and a deny (exit 77, the command never runs). The command
+  reports only facts and a SHA-256 of the value, never the value. They
+  run in the `go test -race ./...` job of every pull request. A change to
+  one of them is a change in behavior for callers (section 18,
+  `test/contract/README.md`).
 - **One manual test with a real Telegram bot**, written down in
   [docs/manual-telegram-test.md](docs/manual-telegram-test.md). The token
   comes from a local file and is never committed. It ran on 2026-10-15,
