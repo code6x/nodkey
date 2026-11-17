@@ -7,12 +7,16 @@ name: PR title
 on:
   # pull_request_target also runs for pull requests from forks. It runs with
   # this repository's token, so this workflow must never check out or run
-  # code from the pull request. It only reads the title.
+  # code from the pull request. It reads only the title, the description,
+  # and the list of changed files. It checks out and runs code from the
+  # base branch (main) only.
+  # "edited" covers a new title and a new description.
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
-  pull-requests: read # read the pull request
+  contents: read # check out main, for the behavior-change gate
+  pull-requests: read # read the pull request and its changed files
 
 concurrency:
   # Check only the newest title of a pull request.
@@ -41,3 +45,35 @@ jobs:
             refactor
             build
             style
+      # The behavior-change gate (docs/releasing.md, "Changes in behavior
+      # for callers"). It is in this job, so it is a required check too.
+      - name: Check out main, not the pull request
+        # Run the gate also when the title check failed, so the author
+        # sees both results at once.
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # For pull_request_target, github.sha is the newest commit of the
+          # base branch. Never use a ref or a SHA of the pull request here.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: ${{ !cancelled() }}
+        with:
+          go-version-file: go.mod
+          # No cache in a pull_request_target run.
+          cache: false
+      - name: Behavior change for callers
+        if: ${{ !cancelled() }}
+        env:
+          TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          files="${RUNNER_TEMP}/changed-files.jsonl"
+          # Keep the names of all files, and the diff of docs/updating.md
+          # only. Only gh gets the token.
+          GH_TOKEN="$TOKEN" gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            --jq '.[] | {filename, previous_filename, patch: (if .filename == "docs/updating.md" then .patch else null end)}' > "$files"
+          unset TOKEN
+          go run ./tools/prgate --event "$GITHUB_EVENT_PATH" --files "$files"

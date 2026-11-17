@@ -30,6 +30,88 @@ For a breaking change, add `!` after the type. For example:
 The **PR title** check tests the title. If the check fails, edit the title.
 The check runs again by itself.
 
+## Changes in behavior for callers
+
+Before 1.0, a feature and a breaking change both make a minor release
+(see [Versions before 1.0](#versions-before-10)). So the version number
+does not warn the people who update. 0.6.0 changed a default that
+programs and scripts depend on (#171), and it was listed as a normal
+feature (#191). This gate makes such a change visible.
+
+### The line in the description
+
+The description of every pull request has this line, with `yes` or `no`
+([`.github/pull_request_template.md`](../.github/pull_request_template.md)):
+
+```text
+Changes behavior for existing callers: no
+```
+
+"Behavior" means: defaults, the content of stdout and stderr, exit codes,
+signals, which process runs the command, the meaning of the config, and
+time limits. A program or a script that uses nodkey can break when one
+of them changes.
+
+For `yes`, the pull request must also:
+
+- have `!` after the type or the scope of the title, for example
+  `feat(run)!: mask the output by default`;
+- add a section `## Updating from X` to
+  [docs/updating.md](updating.md). It says who is affected, what to do,
+  and gives a command that shows the new way. `X` is the newest release
+  that still has the old behavior, for example `0.5.0 or older`.
+
+### The check
+
+The **PR title** workflow runs the check in its job
+**Conventional Commits title**, after the title check. This job is
+already a required check of `main`. The check fails when:
+
+- the line is missing, is there more than once, or has another value
+  than `yes` or `no` (in small letters, with nothing else; a line in an
+  HTML comment `<!-- -->` does not count);
+- the answer is `yes` and the title has no `!`;
+- the answer is `yes` and the pull request adds no line
+  `## Updating from X` to `docs/updating.md`;
+- the answer is `no` and the title has a `!`;
+- the pull request changes a file under `test/contract/` and the answer
+  is `no`. These tests pin what callers see, so a change to one of them
+  is a change in behavior for callers.
+
+The error says what to fix. Edit the title or the description: the
+check runs again by itself.
+
+Two kinds of pull requests need no line:
+
+- the release pull request of release-please: its author is the release
+  App, its branch is `release-please--branches--main`, and it changes
+  only `CHANGELOG.md` and `.release-please-manifest.json`. Its commits
+  passed the check one by one;
+- a pull request of Dependabot with no `!` in the title that changes
+  only `go.mod`, `go.sum`, files under `.github/workflows/` and files
+  under `test/e2e/testdata/sshd/`.
+
+The check is `tools/prgate`, with its tests in
+`tools/prgate/main_test.go`. The workflow runs it with
+`pull_request_target`, from the code on `main`, never from the pull
+request. It reads only the title, the description, the author and the
+branch name of the pull request, and the list of changed files from the
+GitHub API: their names, and the diff of `docs/updating.md` only, as
+text. It never prints text of the pull request to the log. A change to
+the check itself takes effect only after it is merged.
+
+### "⚠ BREAKING CHANGES" in the release notes
+
+release-please lists a commit with `!` after the type or the scope under
+**⚠ BREAKING CHANGES**, at the top of the release notes and of
+CHANGELOG.md. The commit on `main` must keep the `!`. It does: the
+squash commit takes the pull request title as its message (repository
+setting: the default commit message of a squash merge is the pull
+request title; checked on 2026-11-17). So never change the title in the
+merge dialog, and never remove the `!` from it. Before you merge a
+release pull request, check that each change of `docs/updating.md` since
+the last release has its line under **⚠ BREAKING CHANGES**.
+
 ## Security fixes
 
 Use the type `security` for a pull request that fixes a real security
@@ -173,7 +255,9 @@ without activity. If this happens, turn on the CI workflow again in the
 These settings protect `main` and the releases:
 
 - **Ruleset for `main`**: changes only through a pull request; the CI checks
-  and the PR title check must pass; no force push; `main` cannot be deleted.
+  and the PR title check (with the gate of
+  [Changes in behavior for callers](#changes-in-behavior-for-callers))
+  must pass; no force push; `main` cannot be deleted.
 - **Rulesets for `v*` tags**: nobody can move or delete a tag, not even the
   release App. Only the release App can create one.
 - **Immutable releases**: on.

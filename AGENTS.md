@@ -78,7 +78,10 @@ Planned. Each v1 issue adds its part.
   - `docs/manual-ntfy-test.md` - the manual test with a real ntfy
     server, on Android and on an iPhone (issue #24), with a table for
     the results.
-  - `docs/releasing.md` - how releases are made and checked.
+  - `docs/releasing.md` - how releases are made and checked, and the
+    behavior-change gate.
+  - `docs/updating.md` - one section per change in behavior for callers
+    ("## Updating from X"): who is affected, what to do, a command.
   - `docs/agent-browser.md` - website logins with agent-browser: the
     plugin entry, the login steps and the `agents` Chrome profile.
   - `docs_test.go` (at the root of the module) checks that no shell
@@ -87,6 +90,9 @@ Planned. Each v1 issue adds its part.
 - `test/e2e/` - the end-to-end test with `sshd` in a container (DESIGN.md
   section 17). Build tag `e2e`. The image of the container is
   `test/e2e/testdata/sshd`.
+- `tools/prgate/` - the behavior-change gate that the PR title workflow
+  runs from `main` (docs/releasing.md, "Changes in behavior for
+  callers"). `.github/pull_request_template.md` has its line.
 - `.claude/agents/security-reviewer.md` - the security review every change
   gets.
 
@@ -138,6 +144,11 @@ that it makes.
   titles follow [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`). Pull requests are
   squash merged. Never push to `main` directly.
+- **Every pull request description** has the line
+  `Changes behavior for existing callers: yes` or `no`. For `yes`, the
+  title has `!` (`feat(run)!: ...`) and the pull request adds a section
+  `## Updating from X` to `docs/updating.md`. A change under
+  `test/contract/` is always `yes`. CI checks it (docs/releasing.md).
 - **Open work is a GitHub issue** with a "Done when" checklist, never a TODO
   file.
 - **Every error says how to fix it.** Every error that a person or an
