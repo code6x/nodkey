@@ -2240,6 +2240,23 @@ itself stops, its last line on stderr is
 expired, 69 when the broker cannot be reached, 64 for wrong usage
 ([DESIGN.md section 15](../DESIGN.md#15-commands-and-exit-codes)).
 
+Tests pin each of these patterns, with stdout and stderr on pipes and on
+a terminal, masked and with `--no-mask`. They are in
+[test/contract](../test/contract/README.md), in
+`contract_linux_test.go`. A change to one of them is a change in
+behavior for callers:
+
+| pattern | test |
+|---|---|
+| a password command that prints the secret gets `***` | `TestPasswordCommandThroughPipeGetsMask` |
+| the program runs inside `nodkey run` and reads its own environment | `TestPasswordCommandInsideRunGetsValue` |
+| the parent of the command, and `/proc/PID/stat` and `/proc/PID/exe` of nodkey | `TestParentProcess` |
+| the exit code of the command | `TestExitCode` |
+| a command that dies of a signal | `TestDeathBySignal` |
+| `SIGTERM` and `SIGHUP` reach the command | `TestSignalsReachCommand` |
+| stdin, fd 3, and what stdout and stderr of the command are | `TestStdinAndFileDescriptors` |
+| a denied request: exit 77, and the command does not run | `TestDenied` |
+
 ### SSH: nodkey ssh-agent
 
 `nodkey ssh-agent` is an SSH agent without keys. For each login, it asks
