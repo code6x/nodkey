@@ -115,7 +115,7 @@ func TestDiffMarksWidening(t *testing.T) {
 			"store = \"vault\"\nid = \"00000000-0000-0000-0000-000000000001\""}},
 			want: `secret "github-token": now another item: store changed from "main" to "vault"`},
 		{name: "another item", new: []edit{{"00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000009"}},
-			want: `secret "github-token": now another item: id changed`},
+			want: `secret "github-token": item changed from …00000001 to …00000009`},
 		{name: "another key file", new: []edit{{"/ssh-deploy", "/bw-master-password"}}, want: `SSH key "deploy": file changed`},
 		{name: "listen", new: []edit{{"192.0.2.10:7743", "192.0.2.11:7743"}}, want: `listen: changed from "192.0.2.10:7743" to "192.0.2.11:7743"`},
 		{name: "tls_key", new: []edit{{"/broker-tls-key", "/ssh-backup"}}, want: "tls_key: changed"},
@@ -298,4 +298,147 @@ func ntfyWith(b *Broker, f func(*Ntfy)) *Broker {
 	f(&n)
 	c.Ntfy = &n
 	return c
+}
+
+// TestDiffNamesTheItem: each line about a new, changed or moved store
+// reference names the item, project or collection by the last 8
+// characters of its ID (issue #196). So a change that keeps a name the
+// owner trusts but reads another item shows.
+func TestDiffNamesTheItem(t *testing.T) {
+	const (
+		id1  = "00000000-0000-4000-8000-1111aaaa1111"
+		id2  = "00000000-0000-4000-8000-2222bbbb2222"
+		col1 = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f3f9a1c2e"
+		col2 = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a7c6d5e4f"
+	)
+	base := func() *Broker {
+		b := reloadBase()
+		b.Stores = map[string]Store{"main": {Name: "main", Type: StoreBWS}, "other": {Name: "other", Type: StoreBWS},
+			"vault": {Name: "vault", Type: StoreBW}, "vault2": {Name: "vault2", Type: StoreBW},
+			"op": {Name: "op", Type: StoreOnePassword}, "inf": {Name: "inf", Type: StoreInfisical}}
+		b.Secrets = map[string]Secret{"token": {Name: "token", Store: "main", ID: id1, Clients: []string{"laptop"},
+			Rule: Rule{Ask: AskAlways}}}
+		b.Projects = map[string]Project{"ci": {Name: "ci", Store: "main", Project: id1, Clients: []string{"laptop"},
+			Rule: Rule{Ask: AskAlways}}}
+		b.Logins = map[string]Logins{"web": {Name: "web", Store: "vault", Collection: col1, Clients: []string{"laptop"},
+			Rule: Rule{Ask: AskAlways}, Items: map[string]LoginItemRule{}}}
+		return b
+	}
+	with := func(f func(b *Broker)) *Broker {
+		b := base()
+		f(b)
+		return b
+	}
+	empty := with(func(b *Broker) { b.Secrets, b.Projects, b.Logins = nil, nil, nil })
+	for _, c := range []struct {
+		name      string
+		old, next *Broker
+		want      string
+	}{
+		{"a new secret", empty, base(), `secret "token": new secret in store "main", item …aaaa1111, ask = "always"`},
+		{"a new 1password secret", empty, with(func(b *Broker) {
+			b.Secrets["token"] = Secret{Name: "token", Store: "op", ID: "abcdefghijklmnopqrstuvwxyz", Field: "otp",
+				Clients: []string{"laptop"}, Rule: Rule{Ask: AskAlways}}
+		}), `secret "token": new secret in store "op", item …stuvwxyz, field "otp", ask = "always"`},
+		{"a new infisical secret", empty, with(func(b *Broker) {
+			b.Secrets["token"] = Secret{Name: "token", Store: "inf", Project: id2, Environment: "prod", Path: "/",
+				SecretName: "TOKEN", Clients: []string{"laptop"}, Rule: Rule{Ask: AskAlways}}
+		}), `secret "token": new secret in store "inf", project …bbbb2222, environment "prod", path "/", name "TOKEN", ask`},
+		{"a secret's item", base(), with(func(b *Broker) { s := b.Secrets["token"]; s.ID = id2; b.Secrets["token"] = s }),
+			`secret "token": item changed from …aaaa1111 to …bbbb2222`},
+		{"a secret moved", base(), with(func(b *Broker) { s := b.Secrets["token"]; s.Store = "other"; b.Secrets["token"] = s }),
+			`secret "token": now another item: store changed from "main" to "other", item …aaaa1111`},
+		{"an infisical project", with(func(b *Broker) {
+			b.Secrets["token"] = Secret{Name: "token", Store: "inf", Project: id1, Environment: "prod", Path: "/",
+				SecretName: "TOKEN", Clients: []string{"laptop"}, Rule: Rule{Ask: AskAlways}}
+		}), with(func(b *Broker) {
+			b.Secrets["token"] = Secret{Name: "token", Store: "inf", Project: id2, Environment: "prod", Path: "/",
+				SecretName: "TOKEN", Clients: []string{"laptop"}, Rule: Rule{Ask: AskAlways}}
+		}), `secret "token": now another item: project changed from …aaaa1111 to …bbbb2222`},
+		{"a new project", empty, base(), `project "ci": new: every secret of project …aaaa1111 in store "main"`},
+		{"a project's ID", base(), with(func(b *Broker) { p := b.Projects["ci"]; p.Project = id2; b.Projects["ci"] = p }),
+			`project "ci": now other secrets: project changed from …aaaa1111 to …bbbb2222`},
+		{"a project moved", base(), with(func(b *Broker) { p := b.Projects["ci"]; p.Store = "other"; b.Projects["ci"] = p }),
+			`project "ci": now other secrets: store changed from "main" to "other", project …aaaa1111`},
+		{"new logins", empty, base(), `logins "web": new website logins of collection …3f9a1c2e in store "vault"`},
+		{"a collection", base(), with(func(b *Broker) { l := b.Logins["web"]; l.Collection = col2; b.Logins["web"] = l }),
+			`logins "web": now other logins: collection changed from …3f9a1c2e to …7c6d5e4f`},
+		{"logins moved", base(), with(func(b *Broker) { l := b.Logins["web"]; l.Store = "vault2"; b.Logins["web"] = l }),
+			`logins "web": now other logins: store changed from "vault" to "vault2", collection …3f9a1c2e`},
+		{"an item rule", base(), with(func(b *Broker) {
+			l := b.Logins["web"]
+			l.Items = map[string]LoginItemRule{id2: {ID: id2, Clients: []string{"laptop"}, Rule: Rule{Ask: AskNever}}}
+			b.Logins["web"] = l
+		}), `logins "web" item …bbbb2222: has its own rule now`},
+		{"the same short form", base(), with(func(b *Broker) {
+			s := b.Secrets["token"]
+			s.ID = "99999999-0000-4000-8000-1111aaaa1111"
+			b.Secrets["token"] = s
+		}), `secret "token": item changed from "` + id1 + `" to "99999999-0000-4000-8000-1111aaaa1111"`},
+		{"the same short form in another case", base(), with(func(b *Broker) {
+			s := b.Secrets["token"]
+			s.ID = "99999999-0000-4000-8000-1111AAAA1111"
+			b.Secrets["token"] = s
+		}), `secret "token": item changed from "` + id1 + `" to "99999999-0000-4000-8000-1111AAAA1111"`},
+		{"two item rules with the same short form", with(func(b *Broker) {
+			l := b.Logins["web"]
+			l.Items = map[string]LoginItemRule{id2: {ID: id2, Clients: []string{"laptop"}, Rule: Rule{Ask: AskAlways}}}
+			b.Logins["web"] = l
+		}), with(func(b *Broker) {
+			l := b.Logins["web"]
+			other := "99999999-0000-4000-8000-2222bbbb2222"
+			l.Items = map[string]LoginItemRule{other: {ID: other, Clients: []string{"laptop"}, Rule: Rule{Ask: AskNever}}}
+			b.Logins["web"] = l
+		}), `logins "web" item "99999999-0000-4000-8000-2222bbbb2222": has its own rule now`},
+		{"an infisical environment", with(func(b *Broker) {
+			b.Secrets["token"] = Secret{Name: "token", Store: "inf", Project: id1, Environment: "prod", Path: "/",
+				SecretName: "TOKEN", Clients: []string{"laptop"}, Rule: Rule{Ask: AskAlways}}
+		}), with(func(b *Broker) {
+			b.Secrets["token"] = Secret{Name: "token", Store: "inf", Project: id1, Environment: "dev", Path: "/",
+				SecretName: "TOKEN", Clients: []string{"laptop"}, Rule: Rule{Ask: AskAlways}}
+		}), `secret "token": now another item: environment changed from "prod" to "dev", project …aaaa1111, environment "dev"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			changes := Diff(c.old, c.next)
+			got, ok := findChange(changes, c.want)
+			if !ok || !got.Widens || !strings.HasPrefix(got.String(), "⚠ ") {
+				t.Fatalf("no marked change with %q; the diff:\n%s", c.want, diffText(changes))
+			}
+			if _, ok := findChange(changes, "does not know"); ok {
+				t.Errorf("a known change is also an unknown one:\n%s", diffText(changes))
+			}
+			for _, ch := range changes {
+				for _, full := range []string{id1, id2, col1, col2} {
+					if !strings.HasPrefix(c.name, "the same short form") && !strings.HasPrefix(c.name, "two item") &&
+						strings.Contains(ch.Text, full) {
+						t.Errorf("a full ID in %q", ch.Text)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestDiffOnlyTheItem: a change of only the item of a secret, with the
+// same name and rule, is one line, and it is marked (issue #196).
+func TestDiffOnlyTheItem(t *testing.T) {
+	changes := diffCase{new: []edit{{"00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-0000deadbeef"}}}.run(t)
+	if len(changes) != 1 || !changes[0].Widens ||
+		changes[0].String() != `⚠ secret "github-token": item changed from …00000001 to …deadbeef` {
+		t.Fatalf("the diff:\n%s", diffText(changes))
+	}
+}
+
+func TestIDText(t *testing.T) {
+	for in, want := range map[string]string{
+		"00000000-0000-4000-8000-1111aaaa1111": "…aaaa1111",
+		"abcdefgh":                             `"abcdefgh"`,
+		"":                                     `""`,
+		"abc def ghi jkl":                      `"abc def ghi jkl"`,
+		"aaaaaaaa\nbbbbbbbbb":                  `"aaaaaaaa\nbbbbbbbbb"`,
+	} {
+		if got := idText(in); got != want {
+			t.Errorf("idText(%q) = %s, want %s", in, got, want)
+		}
+	}
 }
