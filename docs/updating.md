@@ -1,0 +1,66 @@
+# Updating nodkey
+
+This page lists each change in nodkey that can break a program or a
+script that uses it: a new default, other output on stdout or stderr, a
+new exit code, other signals, another process that runs the command, a
+new meaning of a config key, or a new time limit. Before you update,
+read every section from your version up to the new one.
+
+Each section says who is affected, what to do, and gives a command that
+shows the new way. The steps of an update itself are in
+[docs/setup.md, section 13](setup.md#13-upgrades-and-key-changes).
+
+From 2026-11-17 on, the release notes list such a change under
+"⚠ BREAKING CHANGES", and its pull request adds a section here
+([docs/releasing.md](releasing.md#changes-in-behavior-for-callers)).
+Older releases listed it as a normal feature.
+
+## Updating from 0.5.0 or older
+
+**What changed (0.6.0, #171).** `nodkey run` masks the values that it
+fetched: it replaces each one with `***` in the command's stdout and
+stderr. This is now the default whenever stdout or stderr of
+`nodkey run` is not a terminal. A masked `nodkey run` stays as the parent
+of the command: it does not replace itself with the command, as 0.5.0
+did. On a terminal (stdout and stderr both a terminal), nothing changed.
+
+**Who is affected.**
+
+- A program that reads the output of `nodkey run` through a pipe, such
+  as a mail client with a password command like
+  `nodkey run --secret P=mail-read -- printenv P`. It now gets `***`, and
+  its login fails.
+- A script that checks that its parent is the process that started
+  `nodkey run`. Its parent is now a process named `nodkey`.
+
+**What to do.** Keep the mask on. With `--no-mask`, even a plain
+`printenv` or a debug line of the command shows the value.
+
+- For a password command: run the program itself inside `nodkey run`,
+  and let its password command read the value from the program's own
+  environment. For example, with `password.cmd = "printenv MAIL_READ"` in
+  the program's config:
+
+  ```sh
+  nodkey run --secret MAIL_READ=mail-read --reason "read the mail" -- mail-client sync
+  ```
+
+- For a parent check: accept a parent named `nodkey`, and look at that
+  process's parent. nodkey is not dumpable, so read `/proc/PID/stat`, not
+  `/proc/PID/exe`:
+
+  ```sh
+  parent=$PPID
+  name=$(sed 's/^[0-9]* (\(.*\)) .*/\1/' "/proc/$parent/stat")
+  if [ "$name" = nodkey ]; then
+    parent=$(awk '{print $4}' "/proc/$parent/stat")
+  fi
+  ```
+
+  A process name is not proof: any program of the same user can take
+  the name `nodkey`. Use this only where the parent check is a
+  convenience, not a security boundary.
+
+The full text, with what a masked command gets (stdin, file descriptors)
+and the risks of each way, is in
+[docs/setup.md, "Keep the mask on"](setup.md#keep-the-mask-on-password-commands-and-wrappers).

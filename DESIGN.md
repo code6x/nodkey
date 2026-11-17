@@ -4578,6 +4578,17 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
 - GitHub Actions are pinned to a commit SHA.
 - Pull request titles follow Conventional Commits. Pull requests are squash
   merged.
+- Every pull request says if it changes behavior for existing callers
+  (defaults, stdout and stderr, exit codes, signals, which process runs
+  the command, config meaning, time limits). For `yes`, the title has `!`,
+  so release-please lists it under "⚠ BREAKING CHANGES", and the pull
+  request adds a section to `docs/updating.md`. A change to an existing
+  file under `test/contract/` (not a new test, not its README) is
+  always `yes`. `tools/prgate` checks this in the PR
+  title workflow, run from `main` with `pull_request_target`; it reads
+  only the title, the description, the author, the branch name and the
+  changed files (names, status, and the added lines of `docs/updating.md`), and
+  never runs code of the pull request. See docs/releasing.md.
 - Pull request titles may use the type `security` (also `security(deps)`)
   for a real security fix. It puts a `### Security` section first in
   CHANGELOG.md and in the release notes; a line may name advisory IDs

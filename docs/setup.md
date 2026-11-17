@@ -2749,6 +2749,11 @@ such as a password command, and each script that checks its parent.
 [Section 11, "Keep the mask on"](#keep-the-mask-on-password-commands-and-wrappers)
 shows how to change them, with the mask still on.
 
+**Changes in behavior.** [docs/updating.md](updating.md) lists each
+change that can break a program or a script that uses nodkey, with what
+to do. Read its sections from your version up to the new one before you
+update.
+
 ### New versions of bws and bw
 
 Install them in the same way as the first time

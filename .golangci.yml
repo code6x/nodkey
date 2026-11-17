@@ -62,6 +62,12 @@ linters:
         linters:
           - forbidigo
         text: library code must not
+      # tools/ holds programs for CI, such as the behavior-change gate
+      # (tools/prgate). They are commands too, and may print.
+      - path: ^tools/
+        linters:
+          - forbidigo
+        text: library code must not
       # os.ReadFile is forbidden only in library code under internal/. The
       # config package has the file readers, and tests read their own files.
       - path-except: ^internal/
