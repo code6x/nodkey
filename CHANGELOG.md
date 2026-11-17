@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0](https://github.com/code6x/nodkey/compare/v0.6.0...v0.7.0) (2026-11-17)
+
+
+### Features
+
+* a pullgate recipe in contrib/pullgate, to change the broker config from git ([#204](https://github.com/code6x/nodkey/issues/204)) ([22f8965](https://github.com/code6x/nodkey/commit/22f896596d34bf67269dfd1b951113703aeff0b2)), closes [#102](https://github.com/code6x/nodkey/issues/102)
+* config-diff names the store item of each secret, and marks a changed item with ⚠ ([#203](https://github.com/code6x/nodkey/issues/203)) ([c1204ca](https://github.com/code6x/nodkey/commit/c1204ca000df4026d94b31593eefc4bbafb34f36)), closes [#196](https://github.com/code6x/nodkey/issues/196)
+
+
+### Bug Fixes
+
+* answer a pre-approved agent-browser login from memory, so a slow bw does not time it out ([#192](https://github.com/code6x/nodkey/issues/192)) ([961615b](https://github.com/code6x/nodkey/commit/961615bf1fbb41a53c3b0d67fd97cff11d82a998))
+
+
+### Documentation
+
+* note for updates from 0.5.0: keep the mask on for password commands and parent checks ([#195](https://github.com/code6x/nodkey/issues/195)) ([c5a87b9](https://github.com/code6x/nodkey/commit/c5a87b94306ca7c8f055943178f9f3c54aee7d37))
+
 ## [0.6.0](https://github.com/code6x/nodkey/compare/v0.5.0...v0.6.0) (2026-11-15)
 
 
