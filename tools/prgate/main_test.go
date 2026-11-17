@@ -29,7 +29,7 @@ const (
 var (
 	codeFile     = changedFile{Filename: "internal/client/run.go", Patch: ptr("@@ -1 +1 @@\n-a\n+b")}
 	updatingNote = changedFile{Filename: "docs/updating.md", Patch: ptr("@@ -1,2 +1,8 @@\n # Updating nodkey\n \n+## Updating from 0.7.0 or older\n+\n+Who is affected: ...")}
-	contractFile = changedFile{Filename: "test/contract/pipe_test.go", Patch: ptr("@@ -1 +1 @@\n-a\n+b")}
+	contractFile = changedFile{Filename: "test/contract/pipe_test.go", Status: "modified"}
 )
 
 func TestCheck(t *testing.T) {
@@ -82,7 +82,18 @@ func TestCheck(t *testing.T) {
 		// Fail: a contract test changes and the answer is no.
 		{name: "contract change with no", pr: newPR("test: pin the pipe", bodyNo), files: []changedFile{codeFile, contractFile}, reason: "under test/contract/"},
 		{name: "contract file renamed away with no", pr: newPR("test: move", bodyNo), files: []changedFile{{Filename: "test/other/pipe_test.go", PreviousFilename: "test/contract/pipe_test.go"}}, reason: "under test/contract/"},
-		{name: "contract README with no", pr: newPR("docs: fix a word", bodyNo), files: []changedFile{{Filename: "test/contract/README.md"}}, reason: "under test/contract/"},
+		{name: "contract file removed with no", pr: newPR("test: drop", bodyNo), files: []changedFile{{Filename: "test/contract/pipe_test.go", Status: "removed"}}, reason: "under test/contract/"},
+		{name: "contract file renamed inside with no", pr: newPR("test: move", bodyNo), files: []changedFile{{Filename: "test/contract/b_test.go", PreviousFilename: "test/contract/a_test.go", Status: "renamed"}}, reason: "under test/contract/"},
+		{name: "contract file with no status", pr: newPR("test: x", bodyNo), files: []changedFile{{Filename: "test/contract/pipe_test.go"}}, reason: "under test/contract/"},
+		{name: "contract testdata changed with no", pr: newPR("test: x", bodyNo), files: []changedFile{{Filename: "test/contract/testdata/x", Status: "modified"}}, reason: "under test/contract/"},
+		{name: "README renamed away with no", pr: newPR("test: x", bodyNo), files: []changedFile{{Filename: "test/contract/README.md", PreviousFilename: "test/contract/pipe_test.go", Status: "renamed"}}, reason: "under test/contract/"},
+		{name: "new contract test with no", pr: newPR("test: pin the pipe", bodyNo), files: []changedFile{{Filename: "test/contract/pipe_test.go", Status: "added"}}, pass: true},
+		{name: "new contract go.mod with no", pr: newPR("test: x", bodyNo), files: []changedFile{{Filename: "test/contract/go.mod", Status: "added"}}, reason: "under test/contract/"},
+		{name: "new contract testdata with no", pr: newPR("test: x", bodyNo), files: []changedFile{{Filename: "test/contract/testdata/x", Status: "added"}}, reason: "under test/contract/"},
+		{name: "new test in a subdirectory with no", pr: newPR("test: x", bodyNo), files: []changedFile{{Filename: "test/contract/sub/x_test.go", Status: "added"}}, reason: "under test/contract/"},
+		{name: "new non-test Go file with no", pr: newPR("test: x", bodyNo), files: []changedFile{{Filename: "test/contract/helpers.go", Status: "added"}}, reason: "under test/contract/"},
+		{name: "contract README changed with no", pr: newPR("docs: fix a word", bodyNo), files: []changedFile{{Filename: "test/contract/README.md", Status: "modified"}}, pass: true},
+		{name: "file renamed into contract with no", pr: newPR("test: move", bodyNo), files: []changedFile{{Filename: "test/contract/pipe_test.go", PreviousFilename: "cmd/nodkey/pipe_test.go", Status: "renamed"}}, reason: "under test/contract/"},
 	}
 
 	// Bots.

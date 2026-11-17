@@ -147,8 +147,9 @@ that it makes.
 - **Every pull request description** has the line
   `Changes behavior for existing callers: yes` or `no`. For `yes`, the
   title has `!` (`feat(run)!: ...`) and the pull request adds a section
-  `## Updating from X` to `docs/updating.md`. A change under
-  `test/contract/` is always `yes`. CI checks it (docs/releasing.md).
+  `## Updating from X` to `docs/updating.md`. A change to an existing
+  file under `test/contract/` (not a new test, not its README) is
+  always `yes`. CI checks it (docs/releasing.md).
 - **Open work is a GitHub issue** with a "Done when" checklist, never a TODO
   file.
 - **Every error says how to fix it.** Every error that a person or an

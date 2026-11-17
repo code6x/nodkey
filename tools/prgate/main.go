@@ -11,13 +11,14 @@
 //   - the answer is "yes" and the pull request adds no "## Updating from X"
 //     section to docs/updating.md;
 //   - the answer is "no" and the title has a "!";
-//   - the pull request changes a file under test/contract/ and the answer
-//     is "no".
+//   - the pull request changes, removes or moves a file under
+//     test/contract/ (a new file and README.md do not count) and the
+//     answer is "no".
 //
 // The workflow runs prgate from main, never from the pull request. prgate
 // reads only the event file of GitHub (title, body, author, branch name,
 // number of changed files) and the list of changed files from the GitHub
-// API (names, and the added lines of docs/updating.md as text). It never
+// API (names, status, and the added lines of docs/updating.md as text). It never
 // prints the title, the body or a file name: the author chose that text,
 // and a line such as "::stop-commands::" in the log is a command to the
 // runner.
@@ -39,9 +40,10 @@ const (
 	exitFail  = 1
 	exitUsage = 2
 
-	answerPrefix = "Changes behavior for existing callers:"
-	contractDir  = "test/contract/"
-	updatingFile = "docs/updating.md"
+	answerPrefix   = "Changes behavior for existing callers:"
+	contractDir    = "test/contract/"
+	contractReadme = contractDir + "README.md"
+	updatingFile   = "docs/updating.md"
 
 	// The release pull request of release-please only collects commits
 	// that passed this gate one by one.
@@ -93,6 +95,7 @@ type pullRequest struct {
 type changedFile struct {
 	Filename         string  `json:"filename"`
 	PreviousFilename string  `json:"previous_filename"`
+	Status           string  `json:"status"`
 	Patch            *string `json:"patch"`
 }
 
@@ -182,7 +185,7 @@ func readFiles(path string) ([]changedFile, error) {
 func check(pr pullRequest, files []changedFile) (string, []string) {
 	touchesContract := false
 	for _, f := range files {
-		if strings.HasPrefix(f.Filename, contractDir) || strings.HasPrefix(f.PreviousFilename, contractDir) {
+		if changesContract(f) {
 			touchesContract = true
 		}
 	}
@@ -213,13 +216,39 @@ func check(pr pullRequest, files []changedFile) (string, []string) {
 			problems = append(problems, `the title has a "!" (a breaking change), but the answer is "no": answer "yes" and add a note to `+updatingFile+`, or take the "!" out of the title`)
 		}
 		if touchesContract {
-			problems = append(problems, `the pull request changes a file under `+contractDir+`, but the answer is "no": a change to a contract test is a change in behavior for callers; answer "yes", add "!" to the title and a note to `+updatingFile)
+			problems = append(problems, `the pull request changes, removes or moves a test under `+contractDir+`, but the answer is "no": a change to a contract test is a change in behavior for callers; answer "yes", add "!" to the title and a note to `+updatingFile)
 		}
 	}
 	if len(problems) > 0 {
 		return "", problems
 	}
 	return fmt.Sprintf("changes behavior for existing callers: %s", answer), nil
+}
+
+// changesContract reports whether f changes a contract test that
+// callers rely on. A new test file pins behavior that callers already see or
+// that is new, so it changes nothing for them; a changed, removed or
+// moved test does. test/contract/README.md only describes the tests. A
+// status that is not "added" counts as a change, so an unknown status
+// fails closed.
+func changesContract(f changedFile) bool {
+	inDir := strings.HasPrefix(f.Filename, contractDir)
+	wasInDir := strings.HasPrefix(f.PreviousFilename, contractDir)
+	if !inDir && !wasInDir {
+		return false
+	}
+	if f.Filename == contractReadme && (f.PreviousFilename == "" || f.PreviousFilename == contractReadme) {
+		return false
+	}
+	if wasInDir || f.Status != "added" {
+		return true
+	}
+	// Only a new test file right in the directory is new behavior that
+	// is pinned. Any other new file, such as a go.mod (it would take the
+	// tests out of "go test ./...") or a file in testdata/, can change
+	// the tests that are there, so it counts.
+	rest := strings.TrimPrefix(f.Filename, contractDir)
+	return strings.Contains(rest, "/") || !strings.HasSuffix(rest, "_test.go")
 }
 
 // isBot reports whether the author is the GitHub App with this login. A

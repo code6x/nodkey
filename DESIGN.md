@@ -4582,11 +4582,12 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   (defaults, stdout and stderr, exit codes, signals, which process runs
   the command, config meaning, time limits). For `yes`, the title has `!`,
   so release-please lists it under "⚠ BREAKING CHANGES", and the pull
-  request adds a section to `docs/updating.md`. A change under
-  `test/contract/` is always `yes`. `tools/prgate` checks this in the PR
+  request adds a section to `docs/updating.md`. A change to an existing
+  file under `test/contract/` (not a new test, not its README) is
+  always `yes`. `tools/prgate` checks this in the PR
   title workflow, run from `main` with `pull_request_target`; it reads
   only the title, the description, the author, the branch name and the
-  changed files (names, and the added lines of `docs/updating.md`), and
+  changed files (names, status, and the added lines of `docs/updating.md`), and
   never runs code of the pull request. See docs/releasing.md.
 - Pull request titles may use the type `security` (also `security(deps)`)
   for a real security fix. It puts a `### Security` section first in

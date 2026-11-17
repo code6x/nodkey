@@ -74,6 +74,6 @@ jobs:
           # Keep the names of all files, and the diff of docs/updating.md
           # only. Only gh gets the token.
           GH_TOKEN="$TOKEN" gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
-            --jq '.[] | {filename, previous_filename, patch: (if .filename == "docs/updating.md" then .patch else null end)}' > "$files"
+            --jq '.[] | {filename, previous_filename, status, patch: (if .filename == "docs/updating.md" then .patch else null end)}' > "$files"
           unset TOKEN
           go run ./tools/prgate --event "$GITHUB_EVENT_PATH" --files "$files"

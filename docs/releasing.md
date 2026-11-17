@@ -74,9 +74,16 @@ already a required check of `main`. The check fails when:
 - the answer is `yes` and the pull request adds no line
   `## Updating from X` to `docs/updating.md`;
 - the answer is `no` and the title has a `!`;
-- the pull request changes a file under `test/contract/` and the answer
-  is `no`. These tests pin what callers see, so a change to one of them
-  is a change in behavior for callers.
+- the pull request changes, removes or moves a file under
+  `test/contract/`, and the answer is `no`. These tests pin what callers
+  see, so a change to one of them is a change in behavior for callers.
+  A new test file right in `test/contract/` (a name that ends in
+  `_test.go`) does not count: a new test pins behavior that callers
+  already have. A change to `test/contract/README.md` does not count
+  either. Any other new file there counts, such as a `go.mod` or a file
+  in `testdata/`, because it can change the tests that are there. A
+  new test file can still change the others, for example with a
+  `TestMain`: the review must check this.
 
 The error says what to fix. Edit the title or the description: the
 check runs again by itself.
@@ -96,8 +103,8 @@ The check is `tools/prgate`, with its tests in
 `pull_request_target`, from the code on `main`, never from the pull
 request. It reads only the title, the description, the author and the
 branch name of the pull request, and the list of changed files from the
-GitHub API: their names, and the diff of `docs/updating.md` only, as
-text. It never prints text of the pull request to the log. A change to
+GitHub API: their names, their status (added, changed, removed, moved),
+and the diff of `docs/updating.md` only, as text. It never prints text of the pull request to the log. A change to
 the check itself takes effect only after it is merged.
 
 ### "⚠ BREAKING CHANGES" in the release notes

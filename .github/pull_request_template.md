@@ -9,7 +9,8 @@ Answer with one word: yes or no. The check fails until you do.
 
 "Behavior" means: defaults, the content of stdout and stderr, exit codes,
 signals, which process runs the command, the meaning of the config, and
-time limits. A change to a file under test/contract/ is always "yes".
+time limits. A change to an existing test under test/contract/ is
+always "yes" (a new test is not).
 
 For "yes":
 - put "!" after the type or the scope of the title, such as
