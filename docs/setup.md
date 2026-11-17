@@ -1500,9 +1500,20 @@ change. An example:
 
 ```text
 ⚠ client "build-1": new client
+⚠ secret "mail-password": new secret in store "main", item …3f9a1c2e, ask = "always"
+⚠ secret "github-token": item changed from …1111aaaa to …2222bbbb
 ⚠ secret "backup-token": new rule: never ask (ask changed from "always" to "never")
   SSH key "deploy": host "web-2" removed
 ```
+
+A line about a new or changed secret, `[project.*]` or `[logins.*]`
+names what it reads in the store: the item ID (or the project ID or
+collection ID), shortened to its last 8 characters, such as `…3f9a1c2e`.
+Check that it is the item you made. A secret can keep a name that you
+trust and read another item: that line is `⚠` too. For a secret in
+Infisical, the line names the project ID, the environment, the path and
+the name. When two IDs end with the same 8 characters, the line shows
+both IDs in full.
 
 `--short` gives a short form for one Telegram message, at most
 `--max-chars` characters (3500 by default). It puts the lines with `⚠`

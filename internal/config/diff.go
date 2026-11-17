@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -250,7 +251,7 @@ func (d *differ) secrets(old, next *Broker) {
 		what := "secret " + q(name)
 		switch {
 		case !inOld:
-			d.add("secret", name, true, "%s: new secret in store %s, %s", what, q(n.Store), ruleText(n.Rule))
+			d.add("secret", name, true, "%s: new secret in store %s, %s, %s", what, q(n.Store), secretRef(n), ruleText(n.Rule))
 			for _, c := range n.Clients {
 				d.add("secret", name, true, "%s: client %s may now ask for it", what, q(c))
 			}
@@ -259,17 +260,27 @@ func (d *differ) secrets(old, next *Broker) {
 			d.add("secret", name, false, "%s: removed", what)
 			continue
 		}
+		if o.Store != n.Store {
+			d.add("secret", name, true, "%s: now another item: store changed from %s to %s, %s",
+				what, q(o.Store), q(n.Store), secretRef(n))
+		}
+		if o.ID != n.ID {
+			a, b := idPair(o.ID, n.ID)
+			d.add("secret", name, true, "%s: item changed from %s to %s", what, a, b)
+		}
+		if o.Project != n.Project {
+			a, b := idPair(o.Project, n.Project)
+			d.add("secret", name, true, "%s: now another item: project changed from %s to %s", what, a, b)
+		}
 		for _, p := range []struct{ key, old, new string }{
-			{"store", o.Store, n.Store},
-			{"id", o.ID, n.ID},
 			{"field", o.Field, n.Field},
-			{"project", o.Project, n.Project},
 			{"environment", o.Environment, n.Environment},
 			{"path", o.Path, n.Path},
 			{"name", o.SecretName, n.SecretName},
 		} {
 			if p.old != p.new {
-				d.add("secret", name, true, "%s: now another item: %s changed from %s to %s", what, p.key, q(p.old), q(p.new))
+				d.add("secret", name, true, "%s: now another item: %s changed from %s to %s, %s", what, p.key,
+					q(p.old), q(p.new), secretRef(n))
 			}
 		}
 		d.clientList("secret", name, what, "ask for it", o.Clients, n.Clients)
@@ -288,7 +299,7 @@ func (d *differ) projects(old, next *Broker) {
 		switch {
 		case !inOld:
 			d.add("project", name, true, "%s: new: every secret of project %s in store %s, %s",
-				what, q(n.Project), q(n.Store), ruleText(n.Rule))
+				what, idText(n.Project), q(n.Store), ruleText(n.Rule))
 			for _, c := range n.Clients {
 				d.add("project", name, true, "%s: client %s may now ask for its secrets", what, q(c))
 			}
@@ -297,13 +308,13 @@ func (d *differ) projects(old, next *Broker) {
 			d.add("project", name, false, "%s: removed", what)
 			continue
 		}
-		for _, p := range []struct{ key, old, new string }{
-			{"store", o.Store, n.Store},
-			{"project", o.Project, n.Project},
-		} {
-			if p.old != p.new {
-				d.add("project", name, true, "%s: now other secrets: %s changed from %s to %s", what, p.key, q(p.old), q(p.new))
-			}
+		if o.Store != n.Store {
+			d.add("project", name, true, "%s: now other secrets: store changed from %s to %s, project %s",
+				what, q(o.Store), q(n.Store), idText(n.Project))
+		}
+		if o.Project != n.Project {
+			a, b := idPair(o.Project, n.Project)
+			d.add("project", name, true, "%s: now other secrets: project changed from %s to %s", what, a, b)
 		}
 		d.clientList("project", name, what, "ask for its secrets", o.Clients, n.Clients)
 		d.rule("project", name, what, o.Rule, n.Rule)
@@ -321,32 +332,34 @@ func (d *differ) logins(old, next *Broker) {
 		switch {
 		case !inOld:
 			d.add("logins", name, true, "%s: new website logins of collection %s in store %s, %s",
-				what, q(n.Collection), q(n.Store), ruleText(n.Rule))
+				what, idText(n.Collection), q(n.Store), ruleText(n.Rule))
 			for _, c := range n.Clients {
 				d.add("logins", name, true, "%s: client %s may now ask for a login", what, q(c))
 			}
-			for _, id := range slices.Sorted(maps.Keys(n.Items)) {
-				d.add("logins", name, true, "%s: item %s has its own rule: %s", what, q(id), ruleText(n.Items[id].Rule))
+			items := slices.Sorted(maps.Keys(n.Items))
+			for _, id := range items {
+				d.add("logins", name, true, "%s: item %s has its own rule: %s", what, itemText(id, items), ruleText(n.Items[id].Rule))
 			}
 			continue
 		case !inNew:
 			d.add("logins", name, false, "%s: removed", what)
 			continue
 		}
-		for _, p := range []struct{ key, old, new string }{
-			{"store", o.Store, n.Store},
-			{"collection", o.Collection, n.Collection},
-		} {
-			if p.old != p.new {
-				d.add("logins", name, true, "%s: now other logins: %s changed from %s to %s", what, p.key, q(p.old), q(p.new))
-			}
+		if o.Store != n.Store {
+			d.add("logins", name, true, "%s: now other logins: store changed from %s to %s, collection %s",
+				what, q(o.Store), q(n.Store), idText(n.Collection))
+		}
+		if o.Collection != n.Collection {
+			a, b := idPair(o.Collection, n.Collection)
+			d.add("logins", name, true, "%s: now other logins: collection changed from %s to %s", what, a, b)
 		}
 		d.clientList("logins", name, what, "ask for a login", o.Clients, n.Clients)
 		d.rule("logins", name, what, o.Rule, n.Rule)
-		for _, id := range sortedUnion(o.Items, n.Items) {
+		items := sortedUnion(o.Items, n.Items)
+		for _, id := range items {
 			oi, inO := o.Items[id]
 			ni, inN := n.Items[id]
-			iw := what + " item " + q(id)
+			iw := what + " item " + itemText(id, items)
 			switch {
 			case !inO:
 				d.add("logins", name, true, "%s: has its own rule now, in place of the collection's: %s", iw, ruleText(ni.Rule))
@@ -403,6 +416,64 @@ func (d *differ) keys(old, next *Broker) {
 		}
 		d.rule("key", name, what, o.Rule, n.Rule)
 	}
+}
+
+// idText is the ID of an item, a project or a collection in a store,
+// shortened to its last 8 characters, such as "…3f9a1c2e" (issue #196).
+// That is enough for the owner to match it with the item in the store,
+// and too little to be of use alone. An ID of 8 characters or less, or
+// with a character that IDs do not have, is quoted in full.
+func idText(id string) string {
+	r := []rune(id)
+	idChar := func(c rune) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+	}
+	if len(r) <= idChars || strings.ContainsFunc(id, func(c rune) bool { return !idChar(c) }) {
+		return q(id)
+	}
+	return "…" + string(r[len(r)-idChars:])
+}
+
+// idChars is the number of characters of an ID that idText shows.
+const idChars = 8
+
+// idPair is idText of two IDs that differ. When their short forms are
+// the same, also in another case, it gives both IDs in full, so that a
+// change always shows.
+func idPair(old, next string) (string, string) {
+	a, b := idText(old), idText(next)
+	if strings.EqualFold(a, b) {
+		return q(old), q(next)
+	}
+	return a, b
+}
+
+// itemText is idText of id, one of ids. When another ID in ids has the
+// same short form, also in another case, it gives id in full, so that two
+// items never look like one.
+func itemText(id string, ids []string) string {
+	for _, other := range ids {
+		if other != id && strings.EqualFold(idText(other), idText(id)) {
+			return q(id)
+		}
+	}
+	return idText(id)
+}
+
+// secretRef names the item that a [secret.*] section reads: the item's
+// ID shortened, and the field for 1password when it is not "password";
+// for infisical, the project's ID shortened, the environment, the path
+// and the secret's name.
+func secretRef(s Secret) string {
+	if s.ID == "" && s.Project != "" {
+		return fmt.Sprintf("project %s, environment %s, path %s, name %s",
+			idText(s.Project), q(s.Environment), q(s.Path), q(s.SecretName))
+	}
+	ref := "item " + idText(s.ID)
+	if s.Field != "" && s.Field != "password" {
+		ref += ", field " + q(s.Field)
+	}
+	return ref
 }
 
 func hostsText(hosts []string) string {

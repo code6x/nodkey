@@ -1521,6 +1521,11 @@ not know as narrowing, and a field of the config that it does not
 compare by name is still compared and marked; a test fails when a field
 is in neither list. The short form never drops a line that widens: when
 they do not all fit, it says how many there are. It reads no credential.
+A writer of the config could keep the name of a secret that the owner
+trusts and point it at another item, project or collection. So each
+line about a new or changed reference names its ID by the last 8
+characters, and a change of only the ID is a line with `⚠` (issue #196).
+The owner checks the ID against the item they made.
 It is no control of the broker: it only helps a person to decide.
 
 **T43. A website login goes to a page that the client claims.**

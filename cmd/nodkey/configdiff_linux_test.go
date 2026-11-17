@@ -78,7 +78,7 @@ func TestConfigDiff(t *testing.T) {
 	for _, want := range []string{
 		"⚠ SSH key \"deploy\": may now log in to every host in known_hosts\n",
 		"  secret \"db-password\": removed\n",
-		"⚠ secret \"gone\": new secret in store \"vault\", ask = \"always\"\n",
+		"⚠ secret \"gone\": new secret in store \"vault\", item …00000002, ask = \"always\"\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout %q has no %q", out, want)
@@ -198,5 +198,34 @@ func TestConfigDiffShort(t *testing.T) {
 	// At the smallest --max-chars, the line still fits.
 	if got = shortForm(append(many, narrow...), append(mw, nw...), minShortChars); size(got) > minShortChars {
 		t.Errorf("size %d > %d: %q", size(got), minShortChars, got)
+	}
+}
+
+// TestConfigDiffShortItem: a change of only the item of a secret is a ⚠
+// line, and --short puts it first, before the lines that narrow (issue
+// #196).
+func TestConfigDiffShortItem(t *testing.T) {
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	if os.Getuid() == 0 {
+		t.Skip("runs as root; this test is for a user that is not root")
+	}
+	e := newBrokerEnv(t, brokerOptions{})
+	oldDir, newDir := diffDirs(t, e)
+	cfg := filepath.Join(newDir, "broker.toml")
+	data, err := os.ReadFile(cfg) //nolint:gosec // G304: the test's own file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The item of a secret changes (widens), and the "never" secret goes
+	// to "always" (narrows). The narrowing line is first by name.
+	data = bytes.Replace(data, []byte(idGitHub), []byte("00000000-0000-0000-0000-00003f9a1c2e"), 1)
+	data = bytes.Replace(data, []byte("ask = \"never\"\nnotify = false"), []byte("ask = \"always\""), 1)
+	writeTestFile(t, cfg, data, 0o600)
+	code, out, errOut := runDiff(t, "--short", "--max-chars", "200", oldDir, newDir)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	want := "⚠ secret \"github-token\": item changed from …00000001 to …3f9a1c2e"
+	if code != exitFailure || errOut != "" || len(lines) != 2 || lines[0] != want ||
+		!strings.HasPrefix(lines[1], "  secret \"db-password\"") {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want the first line %q", code, out, errOut, want)
 	}
 }

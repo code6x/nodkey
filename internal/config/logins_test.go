@@ -136,11 +136,11 @@ func TestDiffLogins(t *testing.T) {
 			new:  []edit{{"preapprove = true\n", "preapprove = true\n\n[[logins.web.items]]\nid = \"" + testItem + "\"\nclients = [\"laptop\"]\nask = \"always\"\n"}},
 			want: "has its own rule now"}, true},
 		{diffCase{name: "an item gets another client", old: []edit{added}, new: []edit{{"clients = [\"backup-box\"]\nask = \"always\"", "clients = [\"backup-box\", \"laptop\"]\nask = \"always\""}},
-			want: `item "` + testItem2 + `": client "laptop" may now ask for it`}, true},
+			want: `item …4f3a2b1c: client "laptop" may now ask for it`}, true},
 		{diffCase{name: "logins removed", old: []edit{added}, new: []edit{{loginsTOML, "[key.deploy]"}},
 			want: `logins "web": removed`}, false},
 		{diffCase{name: "an item's window", old: []edit{added}, new: []edit{{"window = \"30m\"", "window = \"1h\""}},
-			want: `item "` + strings.ToLower(testItem) + `": window changed from 30m to 1h`}, true},
+			want: `item …3e2f1a0b: window changed from 30m to 1h`}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			changes := c.run(t)

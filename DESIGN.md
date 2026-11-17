@@ -3532,6 +3532,22 @@ config-diff does not know". A test fails when a field is in neither
 list. Text from a config is quoted and each line cleaned with
 `claim.Line`.
 
+Each line about a new, changed or moved store reference names it (issue
+#196): a new `[secret.*]` names its item (and the field for 1password,
+when it is not `password`; for infisical, the project, environment,
+path and name), a new `[project.*]` its project, and a new `[logins.*]`
+its collection. A changed ID is its own line, such as `secret "x": item
+changed from …1111aaaa to …2222bbbb`, and a move to another store names
+the reference too. IDs are shown by their last 8 characters (`idText`).
+IDs are not secret; the short form keeps the line easy to read, and is
+enough for the owner to match the item they made. When the short forms
+of the old and the new ID are the same (also in another case), or two
+item rules of one `[logins.*]` have the same short form, the IDs are
+shown in full, so a change always shows. A change of the field,
+environment, path or name of a secret names the item too. An ID with a
+character that IDs do not have is quoted in full. All these lines are
+marked, so `--short` puts them first.
+
 `--short` fits one Telegram message: at most `--max-chars` characters,
 counted in UTF-16 code units as Telegram counts them (default 3500, from 200 to 100000). It puts the lines that widen first,
 then the others, and cuts with "and N more". When the lines that widen
