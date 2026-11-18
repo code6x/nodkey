@@ -157,6 +157,19 @@ func (f *fakeLoginStore) checkCleared(t testing.TB) {
 	}
 }
 
+// allCleared reports whether every password and seed that the store gave
+// out is cleared now.
+func (f *fakeLoginStore) allCleared() bool {
+	f.lmu.Lock()
+	defer f.lmu.Unlock()
+	for _, b := range f.given {
+		if len(b) > 0 && !bytes.Equal(b, make([]byte, len(b))) {
+			return false
+		}
+	}
+	return true
+}
+
 // runs returns how many fetches and lists ran, and how many of them
 // synced.
 func (f *fakeLoginStore) runs() (fetches, syncs int) {

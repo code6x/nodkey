@@ -97,6 +97,15 @@ func sameKey(old, next *view, name string) bool {
 // request may not go on, it is denied (cause not_allowed, 403) and the
 // broker logs why; it reports false.
 func (rq *request) stillAllowed(decided *config.Broker, secrets []string, key string, hostKey []byte) bool {
+	if rq.allowedNow(decided, secrets, key, hostKey) {
+		return true
+	}
+	rq.denyReloaded()
+	return false
+}
+
+// allowedNow is the check of stillAllowed. It does not answer.
+func (rq *request) allowedNow(decided *config.Broker, secrets []string, key string, hostKey []byte) bool {
 	cur := rq.s.view()
 	ok := rq.v != nil && decided != nil && rq.hasPin
 	if ok {
@@ -122,13 +131,15 @@ func (rq *request) stillAllowed(decided *config.Broker, secrets []string, key st
 	if ok && key != "" && rq.v != cur {
 		ok = sameKey(rq.v, cur, key)
 	}
-	if ok {
-		return true
-	}
+	return ok
+}
+
+// denyReloaded denies the request because a reload took away what it
+// uses (stillAllowed): cause not_allowed, 403.
+func (rq *request) denyReloaded() {
 	rq.s.log.Warn("broker: a reload of the config took away what an approved request uses; the request is denied",
 		slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 	rq.ended = true
 	_, _ = rq.s.append(audit.Denied{Subject: rq.sub, Cause: audit.CauseNotAllowed})
 	rq.answer(http.StatusForbidden)
-	return false
 }

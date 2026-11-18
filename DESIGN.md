@@ -5091,7 +5091,10 @@ the fetch happens at the pre-approval, which has no short limit:
   TOTP seed) in memory, with the grant of the pre-approval (`internal/broker/remembered.go`). It is
   never written to disk or to a log. Without it, no grant starts: at
   most `maxRememberedLogins` (64) logins are kept for all clients; one
-  more pre-approval is denied (cause `limit`, 429).
+  more pre-approval is denied (cause `limit`, 429). The request keeps a
+  copy; it clears its own copy of the item it read (the password and
+  the TOTP seed) before it answers, when it allows and when it denies
+  (#205).
 - The login request that the core allows by that grant gets the login
   from memory, with **no run of `bw`**. Before the core decides, the
   broker runs every check of 21.3 on the remembered item against the
