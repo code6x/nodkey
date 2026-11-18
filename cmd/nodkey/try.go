@@ -99,7 +99,7 @@ func runTry(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return parseErrorCode(stderr, "try", err)
 	}
 	if fs.NArg() > 0 {
-		return usageFail(stderr, "try", fmt.Sprintf("unexpected argument %.64q; it takes none, or run", fs.Arg(0)))
+		return usageFail(stderr, "try", fmt.Sprintf("unexpected argument %.64q; it takes none, --telegram, or run", fs.Arg(0)))
 	}
 	dir, err := tryDir()
 	if err != nil {
@@ -113,11 +113,22 @@ func runTry(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// Before the token is read: no core dumps, and other processes
 		// of the user cannot read its memory.
 		if err := hardenProcess(); err != nil {
-			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: cannot turn off core dumps: %s (exit 1)\n", err)
+			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: cannot turn off core dumps: %s; "+
+				"--telegram needs this to keep the bot token safe, so use nodkey try without it (exit 1)\n", err)
+			return exitFailure
+		}
+		// Before the pairing polls the bot: a second trial would stop
+		// the first one with a conflict from Telegram.
+		if err := checkNoTrial(dir); err != nil {
+			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: %s (exit 1)\n", err)
 			return exitFailure
 		}
 		tg, err = setupTryTelegram(ctx, bufio.NewReaderSize(stdin, maxTryLine), stdin, stdout)
-		if err != nil {
+		switch {
+		case err != nil && ctx.Err() != nil:
+			_, _ = io.WriteString(stdout, "\nnodkey try: TRY MODE: stopped before the setup ended; nothing was made\n")
+			return exitOK
+		case err != nil:
 			_, _ = fmt.Fprintf(stdout, "nodkey try: TRY MODE: %s (exit 1)\n", err)
 			return exitFailure
 		}
@@ -388,6 +399,20 @@ func (tr *trial) removeMade() {
 		_ = tr.lock.Close()
 		tr.lock = nil
 	}
+}
+
+// checkNoTrial returns an error when a trial runs in dir. It takes no
+// lock: makeDir takes it later.
+func checkNoTrial(dir string) error {
+	f, err := os.OpenFile(filepath.Join(dir, tryLockFile), os.O_RDWR|syscall.O_NOFOLLOW, 0) //nolint:gosec // G304: the lock file of the trial's own directory.
+	if err != nil {
+		return nil // no trial; makeDir checks the rest
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return errors.New("a trial runs already, in another terminal; stop it with Ctrl-C first")
+	}
+	return nil
 }
 
 // removeStaleTryDir removes dir, the directory of an earlier trial, when

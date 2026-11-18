@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -31,7 +32,7 @@ func (tryTelegram) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, "tryTe
 // program polls the bot.
 const tryConflictText = "Telegram says another program polls this bot, maybe a nodkey broker. " +
 	"Use a new bot for the trial, never the broker's bot: with two programs on one bot, " +
-	"the real broker stops (exit 76)"
+	"the real broker stops with exit code 76. Make a new bot in @BotFather, then start nodkey try --telegram again"
 
 // tryTelegramErr is the text of an error of the Telegram part of the trial.
 func tryTelegramErr(err error) string {
@@ -39,9 +40,18 @@ func tryTelegramErr(err error) string {
 	case errors.Is(err, telegram.ErrPollConflict):
 		return tryConflictText
 	case errors.Is(err, telegram.ErrTokenRefused):
-		return "Telegram does not accept the bot token"
+		return "Telegram does not accept the bot token; copy the token of the new bot from @BotFather again, " +
+			"then start nodkey try --telegram again"
 	}
-	return err.Error()
+	return err.Error() + "; check that this machine can reach api.telegram.org, then start nodkey try --telegram again"
+}
+
+// tryInputErr is the error of a line that the person did not type.
+func tryInputErr(err error) error {
+	if errors.Is(err, io.EOF) {
+		return errors.New("the input ended before the answer; run nodkey try --telegram in a terminal")
+	}
+	return err
 }
 
 // setupTryTelegram asks for the token of a new bot, prints the link that
@@ -57,7 +67,7 @@ Token: `)
 	token, err := readTryToken(ctx, in, stdin)
 	_, _ = io.WriteString(out, "\n")
 	if err != nil {
-		return nil, err
+		return nil, tryInputErr(err)
 	}
 	p, err := telegram.NewPairing(ctx, token)
 	if err != nil {
@@ -78,7 +88,11 @@ Token: `)
 	answer, err := readTryLine(ctx, in)
 	if err != nil || strings.TrimSpace(string(answer)) != "yes" {
 		clear(token)
-		return nil, errors.New("not confirmed, so the trial does not start")
+		if err != nil {
+			return nil, tryInputErr(err)
+		}
+		return nil, errors.New("not confirmed, so the trial does not start; " +
+			"start nodkey try --telegram again and type yes when the name is yours")
 	}
 	return &tryTelegram{token: token, userID: who.UserID}, nil
 }
@@ -89,7 +103,7 @@ func readTryToken(ctx context.Context, in *bufio.Reader, stdin io.Reader) ([]byt
 	if f, ok := stdin.(*os.File); ok && isTerminal(f) {
 		restore, err := echoOff(f)
 		if err != nil {
-			return nil, fmt.Errorf("cannot hide the input: %w", err)
+			return nil, fmt.Errorf("cannot hide the input of the terminal: %w; run nodkey try --telegram in a normal terminal", err)
 		}
 		defer restore()
 	}
@@ -97,7 +111,7 @@ func readTryToken(ctx context.Context, in *bufio.Reader, stdin io.Reader) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	token := []byte(strings.TrimSpace(string(line)))
+	token := bytes.Clone(bytes.TrimSpace(line))
 	clear(line)
 	return token, nil
 }
@@ -117,7 +131,7 @@ func readTryLine(ctx context.Context, in *bufio.Reader) ([]byte, error) {
 			return
 		}
 		if errors.Is(err, bufio.ErrBufferFull) {
-			err = errors.New("the line is too long")
+			err = errors.New("the line is too long; paste only the token, or the answer, and press Enter")
 		}
 		done <- result{err: err}
 	}()

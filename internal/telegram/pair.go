@@ -39,7 +39,9 @@ func NewPairing(ctx context.Context, token []byte) (*Pairing, error) {
 func newPairing(ctx context.Context, token []byte, base string) (*Pairing, error) {
 	t, err := parseToken(bytes.Clone(token))
 	if err != nil {
-		return nil, err
+		// The text never shows what was typed.
+		return nil, errors.New("telegram: this is not a bot token, which is the bot's ID in digits, \":\", " +
+			"and 30 to 64 letters, digits, \"_\" or \"-\"; copy the token of the new bot from @BotFather again")
 	}
 	api := newClient(t, base)
 	var me struct {
@@ -49,7 +51,8 @@ func newPairing(ctx context.Context, token []byte, base string) (*Pairing, error
 		return nil, err
 	}
 	if !botNamePattern.MatchString(me.Username) {
-		return nil, errors.New("telegram: getMe: the bot has no valid user name")
+		return nil, errors.New("telegram: getMe: the bot has no valid user name; " +
+			"make a new bot in @BotFather with /newbot, then start nodkey try --telegram again")
 	}
 	return &Pairing{api: api, Bot: me.Username}, nil
 }

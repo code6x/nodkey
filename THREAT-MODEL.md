@@ -1315,7 +1315,13 @@ must never take answers from a terminal.
   answers one of them with a conflict: either the real broker stops with
   exit code 76 (T6), or nodkey try stops and says to use a new bot. While
   both poll, the trial can take button presses meant for the broker;
-  those requests get no answer and are denied. The approver's
+  those requests get no answer and are denied, and the trial removes the
+  buttons of the broker's message. A second trial checks first that no
+  trial runs, so it does not poll the bot of the first one. If the
+  broker's token was pasted, the agent may now have it: with it, it can
+  poll the bot and stop the broker, or send messages that look like the
+  broker's (T6). Make a new token (docs/setup.md section 13, "A new bot
+  token"). The approver's
   user ID comes only from the `/start CODE` message with a random code,
   and the person must confirm the name.
 

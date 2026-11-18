@@ -40,6 +40,9 @@ const (
 	// lastLineRoom is the room that a message keeps for its last line:
 	// the expiry, or the result after the request ended.
 	lastLineRoom = 100
+	// maxPrefixUnits is the longest Options.Prefix. A notice keeps this
+	// room free for it, and so does a prompt.
+	maxPrefixUnits = 32
 	// maxAlertUnits is the longest alert text.
 	maxAlertUnits = 3000
 	// clockFormat shows a time of day in the broker's local time.
@@ -629,9 +632,9 @@ func expiryLine(p approval.Prompt) string {
 // its message ends with the line of its approval and the line of its end.
 func bodyLimit(p approval.Prompt) int {
 	if p.Kind.IsPreapprove() {
-		return maxTextUnits - 2*lastLineRoom
+		return maxTextUnits - 2*lastLineRoom - maxPrefixUnits
 	}
-	return maxTextUnits - lastLineRoom
+	return maxTextUnits - lastLineRoom - maxPrefixUnits
 }
 
 // promptMessage returns the message that Ask sends for p: its text and
@@ -742,7 +745,7 @@ func noticeText(p approval.Prompt) (*text, error) {
 	if err := checkPrompt(p, true); err != nil {
 		return nil, err
 	}
-	return fitBody(p, true, maxTextUnits)
+	return fitBody(p, true, maxTextUnits-maxPrefixUnits)
 }
 
 // standingEndLine says how and when a standing grant ended. It has no

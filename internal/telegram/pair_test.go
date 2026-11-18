@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/code6x/nodkey/internal/approval"
+	"github.com/code6x/nodkey/internal/audit"
 )
 
 const testPairCode = "abcdefghij0123456789"
@@ -134,5 +137,27 @@ func TestNewWithToken(t *testing.T) {
 	clear(token)
 	if a.api.token.value != want {
 		t.Fatal("the Approver does not hold its own copy of the token")
+	}
+}
+
+// A prefix longer than the room that each message keeps for it is refused,
+// and the longest notice still fits with the longest prefix.
+func TestPrefixRoom(t *testing.T) {
+	read := func(string) ([]byte, error) { return []byte(newCanaryToken(t)), nil }
+	long := strings.Repeat("x", maxPrefixUnits+1)
+	if _, err := newApprover(testTelegramConfig(), Options{Prefix: long}, read, "http://192.0.2.1"); err == nil {
+		t.Fatal("no error for a prefix that is too long")
+	}
+	p := approval.Prompt{
+		RequestID: testID(4), ShortCode: "k3f9", Kind: audit.KindSecrets, Client: "laptop",
+		Secrets: []string{"backup-token"}, Via: audit.ViaStanding,
+		Claim: approval.Claim{Command: strings.Repeat("😀 long command ", 2000), Reason: strings.Repeat("😀 long reason ", 2000)},
+	}
+	tx, err := noticeText(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := tx.units() + maxPrefixUnits; n > maxTextUnits {
+		t.Fatalf("a notice with the prefix has %d UTF-16 code units, more than %d", n, maxTextUnits)
 	}
 }

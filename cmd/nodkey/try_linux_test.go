@@ -535,3 +535,45 @@ func TestTryTelegramBadToken(t *testing.T) {
 	}
 	e.checkClean()
 }
+
+// When the input ends before the token, the trial says so, and makes
+// nothing.
+func TestTryTelegramInputEnds(t *testing.T) {
+	e, _ := newTryTelegramEnv(t, brokerOptions{})
+	e.startNoWait(time.Minute)
+	e.log.wait(t, "kept only in memory")
+	_ = e.in.Close()
+	if code := e.exitCode(); code != exitFailure || !e.log.has("the input ended before the answer") {
+		t.Fatalf("exit code %d, want 1; output:\n%s", code, e.log.text())
+	}
+	e.checkClean()
+}
+
+// A signal during the setup stops the trial cleanly, with exit code 0.
+func TestTryTelegramSignalInSetup(t *testing.T) {
+	e, _ := newTryTelegramEnv(t, brokerOptions{})
+	e.startNoWait(time.Minute)
+	e.log.wait(t, "kept only in memory")
+	if err := e.cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.exitCode(); code != exitOK || !e.log.has("stopped before the setup ended") {
+		t.Fatalf("exit code %d, want 0; output:\n%s", code, e.log.text())
+	}
+	e.checkClean()
+}
+
+// While a trial runs, a second one with --telegram stops before it asks
+// for a token, so it never polls the bot of the first one.
+func TestTryTelegramWhileATrialRuns(t *testing.T) {
+	e := newTryEnv(t)
+	e.start(time.Minute)
+	second, _ := newTryTelegramEnv(t, brokerOptions{})
+	second.home, second.runtime, second.tmp, second.work = e.home, e.runtime, e.tmp, e.work
+	second.startNoWait(time.Minute)
+	if code := second.exitCode(); code != exitFailure || !second.log.has("a trial runs already") ||
+		second.log.has("approval in Telegram") {
+		t.Fatalf("second trial: exit code %d, want 1; output:\n%s", code, second.log.text())
+	}
+	e.stopAndCheck(syscall.SIGTERM)
+}

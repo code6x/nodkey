@@ -3792,8 +3792,10 @@ adds, with a pointer to docs/setup.md.
 With `--telegram`, the requests go to Telegram instead of the terminal,
 before the directory is made:
 
-1. nodkey try asks the person to make a new bot with @BotFather, never
-   the bot of a real broker, and to paste its token. When stdin is a
+1. When a trial runs already, nodkey try stops with exit code 1: a
+   second poller would stop the first trial. Then it asks the person to
+   make a new bot with @BotFather, never the bot of a real broker, and to
+   paste its token. When stdin is a
    terminal, its echo is off while the token is typed. The token is kept
    only in memory, never in a file or a log.
 2. It calls `getMe` for the bot's user name, makes a random code (16
@@ -3811,7 +3813,9 @@ the text of every message and every edit. The terminal shows only the
 intro and the notices. When Telegram answers a poll with a conflict
 (another program polls the bot, such as a real broker), nodkey try stops
 with exit code 1 and says to use a new bot. A token that Telegram does
-not accept stops it with 1 too.
+not accept stops it with 1 too. A signal during the setup stops it with
+exit code 0; nothing was made. `Options.Prefix` of the Telegram approver
+is at most 32 characters, and every message keeps room for it.
 
 `nodkey try run` is `nodkey run` with the client config of the trial,
 `client.toml` in that directory. It never reads
