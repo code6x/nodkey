@@ -65,8 +65,9 @@ go test -race -tags e2e ./test/e2e/...
   [AGENTS.md](AGENTS.md#rules). Anything else needs a reason in the pull
   request.
 - **No private data.** This repository is public. Never add a real host
-  name, domain name, IP address, MAC address, token, key, serial number,
-  or private name. Use `laptop`, `web-1`, `example.com` and addresses
+  name, domain name, IP address, MAC address, VPN or tailnet name,
+  token, key, serial number, private name of a person, household or
+  company, or a link to a private repository. Use `laptop`, `web-1`, `example.com` and addresses
   from `192.0.2.0/24`.
 - **Plain English** in docs and messages, with short sentences. Many
   readers are not native speakers. Dates are absolute (`2026-10-12`).
