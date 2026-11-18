@@ -6,7 +6,7 @@
 # internal/client.
 #
 # The base image is pinned by the digest of its multi-platform index.
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 # deploy and ops are the remote users. Their password is "*": no password
 # works, and the account is not locked, so sshd lets the key in (sshd
