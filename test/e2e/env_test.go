@@ -83,11 +83,13 @@ const clientPath = "/usr/local/bin:/usr/bin:/bin"
 type env struct {
 	procs procs
 
-	bin     string // the nodkey binary
-	self    string // the test binary, for the wrapper of ssh and git
-	sshPath string
-	gitPath string
-	dir     string // the private directory
+	bin       string // the nodkey binary of the clients
+	brokerBin string // the nodkey binary of the broker
+	journal   string // the journal (stderr) of an earlier broker, before e.broker
+	self      string // the test binary, for the wrapper of ssh and git
+	sshPath   string
+	gitPath   string
+	dir       string // the private directory
 
 	canary1  string   // the value of the secret in the store
 	canary2  string   // a word in the command line of a parent of ssh
@@ -131,7 +133,11 @@ func newEnv(t *testing.T) *env {
 	if e.self, err = os.Executable(); err != nil {
 		t.Fatal(err)
 	}
-	_, e.bin = runDirectory(t)
+	_, e.bin, e.brokerBin = runDirectory(t)
+	brokerVersion := run.brokerVersion
+	if run.first != "" {
+		e.brokerBin, brokerVersion = run.first, run.firstVersion
+	}
 	e.dir = subdirectory(t, "e2e-")
 	for _, sub := range []string{"creds", "etc", "bin", "state", "ssh", "container", "ca"} {
 		mkdirs(t, filepath.Join(e.dir, sub))
@@ -162,7 +168,7 @@ func newEnv(t *testing.T) *env {
 	e.laptop = e.newClient(t, "laptop")
 	e.ci = e.newClient(t, "ci")
 	e.startBroker(t)
-	e.audit.next(t, map[string]string{"version": "dev"}, "broker_started")
+	e.audit.next(t, map[string]string{"version": brokerVersion}, "broker_started")
 	e.startAgent(t)
 	e.writeSSHConfig(t)
 	return e
@@ -434,6 +440,10 @@ const (
 	// lineNoCheck: the broker is a build from the source, so it never asks
 	// GitHub for a newer release (DESIGN.md section 15).
 	lineNoCheck = "nodkey broker: the check for a newer release is off: this is a build from the source"
+	// lineCheckRuns: the broker is a release build (NODKEY_E2E_BROKER_BIN).
+	// Its first check would come 10 minutes after the start, after the
+	// end of the test, so it never reaches GitHub.
+	lineCheckRuns = "nodkey broker: the check for a newer release runs: it asks GitHub 10 minutes after the start"
 )
 
 // startBroker starts nodkey broker, and waits until it is ready. The port
@@ -449,12 +459,16 @@ func (e *env) startBroker(t *testing.T) {
 		"SSL_CERT_DIR=" + e.tg.caDir,
 	}, goraceEnv()...)
 	for try := 1; ; try++ {
-		e.brokerAddr = freeAddress(t)
+		// A next broker (nextBroker) keeps the address, so nodkey
+		// ssh-agent and the clients reach it as before.
+		if try > 1 || e.brokerAddr == "" {
+			e.brokerAddr = freeAddress(t)
+		}
 		e.writeBrokerConfig(t)
 		e.writeClientConfig(t, e.laptop)
 		e.writeClientConfig(t, e.ci)
 		p := e.procs.start(t, "nodkey broker", "", brokerEnv, nil,
-			e.bin, "broker", "--config", filepath.Join(e.dir, "etc", "broker.toml"))
+			e.brokerBin, "broker", "--config", filepath.Join(e.dir, "etc", "broker.toml"))
 		if p.stderr.waitOrEnd(t, "nodkey broker", lineListening) {
 			e.broker = p
 			break
@@ -468,9 +482,14 @@ func (e *env) startBroker(t *testing.T) {
 		t.Errorf("the broker does not log that it calls Telegram through the fake proxy; its log:\n%s",
 			redact(e.broker.stderr.text()))
 	}
-	if !e.broker.stderr.has(lineNoCheck) {
-		t.Errorf("the broker does not log that its check for a newer release is off; its log:\n%s",
-			redact(e.broker.stderr.text()))
+	wantCheck := lineNoCheck
+	if v, err := binVersion(e.brokerBin); err != nil {
+		t.Fatal(err)
+	} else if releasePattern.MatchString(v) {
+		wantCheck = lineCheckRuns
+	}
+	if !e.broker.stderr.has(wantCheck) {
+		t.Errorf("the broker does not log %q; its log:\n%s", wantCheck, redact(e.broker.stderr.text()))
 	}
 }
 

@@ -78,47 +78,9 @@ jobs:
           # No cache for release builds: a bad cache entry could change the binaries.
           cache: false
       - name: Build
-        # -w drops the debug data. The symbol table stays (no -s): govulncheck
-        # needs it to check the published binaries (see ci.yml).
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          # Fixed owner, mode and time in the tarball, so a rebuild of the
-          # same commit with the same Go version gives the same file.
-          mtime="@$(git log -1 --format=%ct)"
-          for arch in amd64 arm64; do
-            name="nodkey_${VERSION}_linux_${arch}"
-            stage="${RUNNER_TEMP}/${name}"
-            mkdir -p "$stage"
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-              go build -trimpath -ldflags "-w -X main.version=${VERSION}" \
-              -o "${stage}/nodkey" ./cmd/nodkey
-            cp LICENSE README.md "$stage/"
-            tar --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="$mtime" \
-              -C "$stage" -cf - nodkey LICENSE README.md | gzip -9n > "dist/${name}.tar.gz"
-          done
-          # The pullgate recipe (contrib/pullgate, docs/setup.md). A host
-          # installs it from here, checked by SHA256SUMS and the
-          # attestation as the binaries are, never from a config repo.
-          name="nodkey_${VERSION}_pullgate"
-          stage="${RUNNER_TEMP}/${name}"
-          mkdir -p "$stage"
-          cp contrib/pullgate/* LICENSE "$stage/"
-          # LC_ALL=C: the same order of the names on every runner.
-          (cd "$stage" && export LC_ALL=C && tar --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="$mtime" \
-            -cf - -- *) | gzip -9n > "dist/${name}.tar.gz"
-          # The Ansible recipe (contrib/ansible): the role, the playbooks
-          # and check-data. build.sh puts the install.sh and the unit of
-          # this tag into the role, and pins their SHA-256 in it. A host
-          # installs it from here, checked as the binaries are.
-          name="nodkey_${VERSION}_ansible"
-          stage="${RUNNER_TEMP}/${name}"
-          sh contrib/ansible/build.sh "$VERSION" . "$stage"
-          (cd "$stage" && export LC_ALL=C && tar --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="$mtime" \
-            -cf - -- *) | gzip -9n > "dist/${name}.tar.gz"
-          cd dist
-          sha256sum -- *.tar.gz > SHA256SUMS
-          cat SHA256SUMS
+        # scripts/build-release.sh is the one build of the release files.
+        # The Release check workflow builds a candidate with it too.
+        run: sh scripts/build-release.sh "$VERSION" dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-files

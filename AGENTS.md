@@ -20,6 +20,12 @@ Planned. Each v1 issue adds its part.
   (package `nodkey`, at the root of the module) builds it into the
   binary with `go:embed`, for `nodkey update`. The tests of the script
   are in `install_linux_test.go`. CI checks it with shellcheck.
+- `scripts/build-release.sh` - the one build of the release files. The
+  release workflow and the Release check workflow both run it.
+  `scripts/release-check/` has the checks of the Release check workflow
+  (`.github/workflows/release-check.yml`, docs/releasing.md "Check a
+  release candidate"). Their tests are in `scripts_linux_test.go`, at the
+  root of the module. CI checks them with shellcheck.
 - `cmd/nodkey/` - the one binary. Subcommands: `broker`, `try`, `run`,
   `ssh-agent`, `ssh-grant`, `preapprove`, `agent-browser-plugin`, `keygen`,
   `audit verify`, `update`, `version`, `doctor`.
@@ -98,6 +104,9 @@ Planned. Each v1 issue adds its part.
 - `test/e2e/` - the end-to-end test with `sshd` in a container (DESIGN.md
   section 17). Build tag `e2e`. The image of the container is
   `test/e2e/testdata/sshd`.
+- `test/compat/configs/` - broker configs that the last release accepts
+  (`ok-*`) or refuses (`bad-*`). The Release check loads them with the
+  candidate (docs/releasing.md).
 - `tools/prgate/` - the behavior-change gate that the PR title workflow
   runs from `main` (docs/releasing.md, "Changes in behavior for
   callers"). `.github/pull_request_template.md` has its line.

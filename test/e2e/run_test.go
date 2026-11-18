@@ -240,8 +240,14 @@ func removeStale(t *testing.T) {
 var run struct {
 	once   sync.Once
 	dir    string // the private directory, base/nodkey-e2e-<runID>
-	nodkey string // the nodkey binary in it
-	err    string
+	nodkey string // the nodkey binary of the clients in it
+	broker string // the nodkey binary of the broker in it
+	// The versions of the two binaries, from nodkey version: X.Y.Z or dev.
+	clientVersion, brokerVersion string
+	// first is the broker of the first case, with its version, when
+	// NODKEY_E2E_FIRST_BROKER_BIN is set; else both are "".
+	first, firstVersion string
+	err                 string
 }
 
 // runDirectory returns the private directory of this run, and the nodkey
@@ -254,7 +260,7 @@ var run struct {
 // checks the directories on the way and its new file as the broker checks
 // a key file, so a key that it makes there is the probe. A program there
 // must run too: the fake store.
-func runDirectory(t *testing.T) (dir, nodkey string) {
+func runDirectory(t *testing.T) (dir, nodkey, broker string) {
 	t.Helper()
 	run.once.Do(func() {
 		var tried []string
@@ -264,8 +270,24 @@ func runDirectory(t *testing.T) (dir, nodkey string) {
 				tried = append(tried, fmt.Sprintf("%s: %v", base, err))
 				continue
 			}
-			bin := filepath.Join(d, "nodkey")
-			if err := buildNodkey(bin); err != nil {
+			bin, broker := filepath.Join(d, "nodkey"), filepath.Join(d, "nodkey-broker")
+			err := placeNodkey(bin, clientBinVar)
+			if err == nil {
+				err = placeNodkey(broker, brokerBinVar)
+			}
+			if err == nil {
+				run.clientVersion, err = binVersion(bin)
+			}
+			if err == nil {
+				run.brokerVersion, err = binVersion(broker)
+			}
+			if err == nil && os.Getenv(firstBrokerVar) != "" {
+				run.first = filepath.Join(d, "nodkey-broker-first")
+				if err = placeNodkey(run.first, firstBrokerVar); err == nil {
+					run.firstVersion, err = binVersion(run.first)
+				}
+			}
+			if err != nil {
 				_ = os.RemoveAll(d)
 				run.err = err.Error()
 				return
@@ -275,7 +297,7 @@ func runDirectory(t *testing.T) (dir, nodkey string) {
 				tried = append(tried, fmt.Sprintf("%s: %v", base, err))
 				continue
 			}
-			run.dir, run.nodkey = d, bin
+			run.dir, run.nodkey, run.broker = d, bin, broker
 			return
 		}
 		run.err = fmt.Sprintf("no directory passes the file checks of nodkey: tried %q", tried)
@@ -283,7 +305,7 @@ func runDirectory(t *testing.T) (dir, nodkey string) {
 	if run.err != "" {
 		t.Fatal(run.err)
 	}
-	return run.dir, run.nodkey
+	return run.dir, run.nodkey, run.broker
 }
 
 // probeDir reports whether dir passes the checks of a key file, and
@@ -315,7 +337,7 @@ func probeDir(dir, bin string) error {
 // directory of this run, for one test, and removes it when the test ends.
 func subdirectory(t *testing.T, name string) string {
 	t.Helper()
-	parent, _ := runDirectory(t)
+	parent, _, _ := runDirectory(t)
 	dir, err := os.MkdirTemp(parent, name)
 	if err != nil {
 		t.Fatal(err)

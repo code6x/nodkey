@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -130,6 +132,57 @@ func goBuild(env []string, args ...string) error {
 		return fmt.Errorf("go %q: %w\n%s", args, err, out)
 	}
 	return nil
+}
+
+// The variables that give the test a nodkey binary instead of a build
+// from the source: for the broker, and for the clients. The Release check
+// workflow runs the test with a release candidate and the last release,
+// in each mix (docs/releasing.md). Each must be the absolute path of a
+// nodkey binary.
+const (
+	brokerBinVar = "NODKEY_E2E_BROKER_BIN"
+	clientBinVar = "NODKEY_E2E_CLIENT_BIN"
+	// firstBrokerVar, when set, names the broker of the first case. Then
+	// that broker stops, and the broker of brokerBinVar goes on with the
+	// same audit log: the update of a broker host (docs/releasing.md).
+	firstBrokerVar = "NODKEY_E2E_FIRST_BROKER_BIN"
+)
+
+// placeNodkey makes the nodkey binary bin: a copy of the file that the
+// variable names, or else a build from this repository.
+func placeNodkey(bin, variable string) error {
+	src := os.Getenv(variable)
+	if src == "" {
+		return buildNodkey(bin)
+	}
+	if !filepath.IsAbs(src) {
+		return fmt.Errorf("%s=%q is not an absolute path; give the absolute path of a nodkey binary, or unset it to build from the source",
+			variable, src)
+	}
+	data, err := os.ReadFile(src) //nolint:gosec // G304: the binary that the person who runs the test named.
+	if err != nil {
+		return fmt.Errorf("%s: %w; give the absolute path of a nodkey binary, or unset it to build from the source", variable, err)
+	}
+	return os.WriteFile(bin, data, 0o700) //nolint:gosec // G306: a program of the test, private to its owner.
+}
+
+// releasePattern matches a release version of nodkey: X.Y.Z.
+var releasePattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// binVersion returns the version that "nodkey version --offline" prints:
+// X.Y.Z for a release build, dev for a build from the source.
+func binVersion(bin string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "version", "--offline").Output()
+	if err != nil {
+		return "", fmt.Errorf("%s version --offline: %w", bin, err)
+	}
+	v, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "nodkey ")
+	if !ok || v == "" || strings.ContainsAny(v, " \n") {
+		return "", fmt.Errorf("%s version --offline printed %q, not \"nodkey VERSION\"", bin, out)
+	}
+	return v, nil
 }
 
 // buildNodkey builds the nodkey binary from this repository as bin. When

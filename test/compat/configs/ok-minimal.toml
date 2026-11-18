@@ -1,0 +1,24 @@
+listen = "192.0.2.10:7743"
+tls_key = "${CREDENTIALS_DIRECTORY}/broker-tls-key"
+audit_log = "/var/lib/nodkey/audit.jsonl"
+known_hosts = "/etc/nodkey/known_hosts"
+
+[telegram]
+token_file = "${CREDENTIALS_DIRECTORY}/telegram-token"
+user_id = 123456789
+timeout = "120s"
+ssh_timeout = "90s"
+
+[client.laptop]
+pin = "sha256:xWsaGUsjjvJzyoihBxnypn7sumBRkcAfZJtjeiDRycc"
+
+[store.main]
+type = "bws"
+program = "/usr/local/bin/bws"
+token_file = "${CREDENTIALS_DIRECTORY}/bws-token"
+
+[secret.github-token]
+store = "main"
+id = "00000000-0000-0000-0000-000000000000"
+clients = ["laptop"]
+ask = "always"

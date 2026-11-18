@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -400,14 +401,49 @@ func (f *fakeTelegram) waitFor(t *testing.T, what string, cond func() bool) {
 
 // messagesLocked returns every message that the broker sent: those with
 // buttons, of requests, and those without, alerts and notices.
+//
+// When the client and the broker are two different releases, the notices
+// about the version of a client (DESIGN.md section 10) are left out:
+// versionNotices counts them.
 func (f *fakeTelegram) messagesLocked() []tgCall {
 	var out []tgCall
+	notice := versionNotice()
 	for _, c := range f.calls {
-		if c.method == "sendMessage" {
+		if c.method == "sendMessage" && (notice == nil || !isNotice(c, notice)) {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// versionNotices returns how many notices about the version of a client
+// went out.
+func (f *fakeTelegram) versionNotices() int {
+	notice := versionNotice()
+	if notice == nil {
+		return 0
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c.method == "sendMessage" && isNotice(c, notice) {
+			n++
+		}
+	}
+	return n
+}
+
+// isNotice reports whether the message c has no buttons and a text that
+// matches the pattern.
+func isNotice(c tgCall, pattern *regexp.Regexp) bool {
+	if len(c.buttons) > 0 {
+		return false
+	}
+	var p struct {
+		Text string `json:"text"`
+	}
+	return json.Unmarshal(c.body, &p) == nil && pattern.MatchString(p.Text)
 }
 
 // sent returns how many messages the fake got, with buttons or without.

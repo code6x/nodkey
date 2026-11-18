@@ -38,11 +38,48 @@ func TestBrokerLoginWithSlowStore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("each run of the fake bw takes 5 s")
 	}
+	l := newSlowLogin(t, 0)
+	// The tap of the pre-approval: the broker fetches the item before and
+	// after it.
+	mustStatus(t, l.e.approve(l.e.httpClient(), api.PathPreapprove, api.PreapproveRequest{Login: slowItem, URL: slowPage, Uses: 1}), http.StatusOK)
+	before := bwCalls(t, l.calls)
+	r := l.resolve(t)
+	if r.code != 0 || r.jsonErr || !r.success {
+		t.Fatalf("the plugin: exit %d, success %v, error %q (JSON error: %v)", r.code, r.success, r.err, r.jsonErr)
+	}
+	if !r.rightLogin {
+		t.Error("the answer has another username or password")
+	}
+	if r.took >= 2*time.Second {
+		t.Errorf("credential.resolve took %s; want under 2s", r.took)
+	}
+	if after := bwCalls(t, l.calls); after != before {
+		t.Errorf("the login ran bw %d times; want 0", after-before)
+	}
+	if strings.Contains(l.e.stderr.text(), l.pw) {
+		t.Error("the password is in the journal")
+	}
+}
+
+// slowLogin is a broker with the slow fake bw store "web" and a login of
+// agent-browser for it (TestBrokerLoginWithSlowStore, TestLoginTimingReport).
+type slowLogin struct {
+	e     *brokerEnv
+	pw    string // the password of the item
+	calls string // the file of the runs of the fake bw
+}
+
+// newSlowLogin starts the broker. pause is how long each run of the fake
+// bw takes; 0 means slowBWPause.
+func newSlowLogin(t *testing.T, pause time.Duration) *slowLogin {
+	t.Helper()
 	e := newBrokerEnv(t, brokerOptions{updatesOff: true})
-	pw := madeUp("shop-password")
-	calls := filepath.Join(e.dir, "bw-calls")
-	writeTestFile(t, calls, nil, 0o600)
-	writeTestFile(t, filepath.Join(e.dir, "bw-password-of-item"), []byte(pw), 0o600)
+	l := &slowLogin{e: e, pw: madeUp("shop-password"), calls: filepath.Join(e.dir, "bw-calls")}
+	writeTestFile(t, l.calls, nil, 0o600)
+	writeTestFile(t, filepath.Join(e.dir, "bw-password-of-item"), []byte(l.pw), 0o600)
+	if pause > 0 {
+		writeTestFile(t, filepath.Join(e.dir, "bw-pause"), []byte(pause.String()), 0o600)
+	}
 	// The config names a bw program and a password file, as for a real bw
 	// store; the seam puts the slow fake in its place.
 	writeTestFile(t, filepath.Join(e.dir, "bin", "bw"), []byte("#!/bin/sh\nexit 1\n"), 0o700)
@@ -68,13 +105,6 @@ preapprove = true
 	e.start(seamSlowLoginStore)
 	e.stderr.wait(t, lineListenOpen)
 
-	// The tap of the pre-approval: the broker fetches the item before and
-	// after it.
-	c := e.httpClient()
-	mustStatus(t, e.approve(c, api.PathPreapprove, api.PreapproveRequest{Login: slowItem, URL: slowPage, Uses: 1}), http.StatusOK)
-	before := bwCalls(t, calls)
-
-	// agent-browser's credential.resolve, through the plugin.
 	home := filepath.Join(e.dir, "home")
 	if err := os.MkdirAll(filepath.Join(home, ".config", "nodkey"), 0o700); err != nil {
 		t.Fatal(err)
@@ -82,6 +112,23 @@ preapprove = true
 	writeTestFile(t, filepath.Join(home, ".config", "nodkey", "client.toml"), []byte(fmt.Sprintf(
 		"broker = %q\nbroker_pin = %q\ntls_key = %q\n", e.addr, e.brokerPin.String(), filepath.Join(e.dir, "client.key"))), 0o600)
 	t.Setenv("HOME", home)
+	return l
+}
+
+// resolveResult is what credential.resolve gave, with no secret: only
+// whether the login is the right one.
+type resolveResult struct {
+	code       int
+	success    bool
+	err        string // the error of the answer, which holds no secret
+	jsonErr    bool
+	rightLogin bool
+	took       time.Duration
+}
+
+// resolve runs agent-browser's credential.resolve through the plugin.
+func (l *slowLogin) resolve(t *testing.T) resolveResult {
+	t.Helper()
 	req, err := json.Marshal(map[string]any{
 		"capability": "credential.read", "protocol": "agent-browser.plugin.v1", "type": "credential.resolve",
 		"request": map[string]string{"itemRef": slowItem, "url": slowPage},
@@ -93,7 +140,7 @@ preapprove = true
 	start := time.Now()
 	code := client.AgentBrowserPlugin(nil, bytes.NewReader(req), &stdout, &stderr, "dev")
 	took := time.Since(start)
-	// Only the status and fields with no secret are printed: the answer
+	// Only the status and fields with no secret are kept: the answer
 	// holds the password.
 	var out struct {
 		Success    bool   `json:"success"`
@@ -104,24 +151,8 @@ preapprove = true
 		} `json:"credential"`
 	}
 	jerr := json.Unmarshal(stdout.Bytes(), &out)
-	if code != 0 || jerr != nil || !out.Success {
-		t.Fatalf("the plugin: exit %d, success %v, error %q (JSON: %v)", code, out.Success, out.Error, jerr != nil)
-	}
-	if out.Credential.Username != "alice@example.com" {
-		t.Error("the answer has another username")
-	}
-	if out.Credential.Password != pw {
-		t.Error("the answer has another password")
-	}
-	if took >= 2*time.Second {
-		t.Errorf("credential.resolve took %s; want under 2s", took)
-	}
-	if after := bwCalls(t, calls); after != before {
-		t.Errorf("the login ran bw %d times; want 0", after-before)
-	}
-	if strings.Contains(e.stderr.text(), pw) {
-		t.Error("the password is in the journal")
-	}
+	return resolveResult{code: code, success: out.Success, err: out.Error, jsonErr: jerr != nil, took: took,
+		rightLogin: out.Credential.Username == "alice@example.com" && out.Credential.Password == l.pw}
 }
 
 // bwCalls returns the number of runs of the fake bw so far.
@@ -135,17 +166,25 @@ func bwCalls(t *testing.T, path string) int {
 }
 
 // slowLoginStore is a fake bw store for logins in the child broker: each
-// "run of bw" (sync, get item, list items) sleeps slowBWPause and adds a
+// "run of bw" (sync, get item, list items) sleeps its pause and adds a
 // line to the file bw-calls. Its one item is slowItem; the password is in
 // the file bw-password-of-item. Both files are next to the bin directory
 // of the program in the config.
 type slowLoginStore struct {
 	calls, password string
+	pause           time.Duration
 }
 
 func newSlowLoginStore(program string) (store.Store, error) {
 	dir := filepath.Dir(filepath.Dir(program))
-	return &slowLoginStore{calls: filepath.Join(dir, "bw-calls"), password: filepath.Join(dir, "bw-password-of-item")}, nil
+	s := &slowLoginStore{calls: filepath.Join(dir, "bw-calls"), password: filepath.Join(dir, "bw-password-of-item"), pause: slowBWPause}
+	// An optional file bw-pause sets another pause (TestLoginTimingReport).
+	if data, err := os.ReadFile(filepath.Join(dir, "bw-pause")); err == nil { //nolint:gosec // G304: a file of the test.
+		if s.pause, err = time.ParseDuration(string(data)); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
 }
 
 // run is one run of the fake bw.
@@ -162,7 +201,7 @@ func (s *slowLoginStore) run(ctx context.Context, step string) error {
 		return err
 	}
 	select {
-	case <-time.After(slowBWPause):
+	case <-time.After(s.pause):
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
