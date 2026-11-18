@@ -789,7 +789,7 @@ Delete the second bot in BotFather after the test.
 
 ## Results
 
-Copy this table into a comment on issue #17 (the rows of check 16: on
+Copy this table into a comment on issue #17 (the rows of check 18: on
 issue #125), and fill it in. The issue is
 public. Leave out the token, your user ID, the name of the bot, every
 raw answer of the Bot API, and the lines of the log with `user_id` or
