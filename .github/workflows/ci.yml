@@ -57,6 +57,10 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test -race ./...
+      - name: TEMPORARY (#205) the two tests, 20 runs in a row
+        run: go test -race -count=20 -run 'TestLoginRememberedTimer|TestFloodOfBadAnswers' ./internal/broker/ ./internal/ntfy/
+      - name: TEMPORARY (#210) TestLoginRememberedTimer, 200 runs, with 1 and 2 CPUs
+        run: go test -race -count=200 -cpu 1,2 -run TestLoginRememberedTimer ./internal/broker/
 
   lint:
     runs-on: ubuntu-latest

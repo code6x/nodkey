@@ -589,7 +589,7 @@ func (rq *request) sameLogin(page loginmatch.Page, item string, sel loginSel, l 
 // of now, and hands out its username and password. On a failure the
 // request is answered.
 func (rq *request) handOutLogin(ctx context.Context, rc receipt, page loginmatch.Page, item string, sel loginSel, l store.Login, from string) {
-	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item) {
+	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item, func() {}) {
 		rq.s.log.Warn("broker: the login item changed while the request waited; the request is denied",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		rq.ended = true
@@ -662,8 +662,12 @@ func (rq *request) fetchApproved(ctx context.Context, item string) (store.Login,
 
 // stillAllowedLogin checks, after the tap, that a reload did not take away
 // what the request uses: the client and its pin, and the rule of the item.
-func (rq *request) stillAllowedLogin(sel loginSel, item string) bool {
-	if !rq.stillAllowed(rq.decided, nil, "", nil) {
+// When a reload took the client or its pin away, it runs beforeDeny, then
+// denies the request and answers.
+func (rq *request) stillAllowedLogin(sel loginSel, item string, beforeDeny func()) bool {
+	if !rq.allowedNow(rq.decided, nil, "", nil) {
+		beforeDeny()
+		rq.denyReloaded()
 		return false // it has answered
 	}
 	l, ok := rq.s.view().cfg.Logins[sel.section]
@@ -960,7 +964,9 @@ func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveReque
 	// monotonic clock; the remembered login ends no later than that. The
 	// time since the tap includes the fetch.
 	end := rq.s.nowTime().Add(approval.LoginPreapproveTime - res.SinceTap())
-	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item) {
+	// Clear the copy of the request before any answer, as below.
+	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item, l.Clear) {
+		l.Clear()
 		rq.s.log.Warn("broker: the login item changed while the request waited; the pre-approval is denied",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		rq.ended = true
@@ -970,7 +976,12 @@ func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveReque
 	}
 	sel.meta = l.LoginItem // the item as the login will see it
 	rem := rememberedLogin{client: rq.client, item: item, origin: origin, from: from, sel: sel, end: end}
-	if why := rq.s.remember(res.GrantID, rem, l); why != "" {
+	why := rq.s.remember(res.GrantID, rem, l)
+	// remember keeps its own copy. Clear this one now, before the answer
+	// goes out, not after it: once the client has the answer, the broker
+	// holds only the copy that the login uses or that its end clears.
+	l.Clear()
+	if why != "" {
 		rq.s.log.Warn("broker: the login of a pre-approval cannot be kept, so the pre-approval is denied: "+string(why),
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		if why == keptNothingStop {

@@ -242,11 +242,21 @@ func TestFloodOfBadAnswers(t *testing.T) {
 	if n := strings.Count(h.logs.String(), "refused an answer"); n > refusedPerMinute {
 		t.Errorf("logged %d refused answers, want at most %d", n, refusedPerMinute)
 	}
-	h.a.mu.Lock()
-	n := len(h.a.pending)
-	h.a.mu.Unlock()
-	if n != 0 {
-		t.Errorf("the approver keeps %d values, want 0", n)
+	// The fake core gives the answer to the test inside answer(), and the
+	// approver forgets the value only after answer() returns (handle in
+	// run.go). So wait for it, up to a limit (#205).
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		h.a.mu.Lock()
+		n := len(h.a.pending)
+		h.a.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the approver keeps %d values 10 s after the answer, want 0", n)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

@@ -1641,7 +1641,10 @@ What nodkey does:
   the tap on the monotonic clock: a wall clock set back during the fetch
   does not make them longer. After a suspend of the host, the login may
   stay in memory longer, until the next request or the end of the grant
-  in the core, but it cannot be used. The TOTP seed is not kept.
+  in the core, but it cannot be used. The TOTP seed is not kept. The
+  pre-approval request clears its own copy of the item that it read
+  after the tap (the password and the seed) before it answers, also when
+  it denies (#205).
 - Logins and pre-approvals have a rate limit per client, before the
   store runs.
 - A reload keeps a login grant only when the item has the same rule.

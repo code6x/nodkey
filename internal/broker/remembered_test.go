@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -628,6 +629,98 @@ func TestLoginRememberedTimer(t *testing.T) {
 			t.Error("the remembered password is not cleared")
 		}
 		l.vs.checkCleared(t)
+	})
+}
+
+// TestLoginPreapproveClearsBeforeTheAnswer: the request of a login
+// pre-approval clears its own copy of the login before the answer goes
+// out, on the allow path and on the deny paths after the fetch. Only the
+// copy of the remembered login stays. Before #205, the copy of the
+// request was cleared after the answer, and a check right after the
+// answer sometimes found it not cleared.
+func TestLoginPreapproveClearsBeforeTheAnswer(t *testing.T) {
+	t.Run("allowed: before the grant starts", func(t *testing.T) {
+		l := newLoginEnv(t, nil)
+		l.svc.setNow(l.clock.Now)
+		var seen, cleared atomic.Bool
+		l.svc.startHook = func(point string) {
+			if point == "before" {
+				seen.Store(true)
+				cleared.Store(l.vs.allCleared())
+			}
+		}
+		mustStatus(t, l.loginPre(itemShop, pageShop), http.StatusOK)
+		if !seen.Load() || !cleared.Load() {
+			t.Errorf("before the grant started (hook ran: %v), the fetched values were not cleared", seen.Load())
+		}
+		if n := l.svc.rememberedCount(); n != 1 {
+			t.Errorf("the broker keeps %d logins, want 1", n)
+		}
+	})
+	// denied checks that the values are cleared when the denied entry is
+	// written, before the answer.
+	denied := func(t *testing.T, l *loginTest, cause audit.Cause, ask func() *result) {
+		t.Helper()
+		var seen, cleared atomic.Bool
+		l.audit.setFail(func(ev audit.Event) error {
+			// The first entry: it comes before the answer.
+			if d, is := ev.(audit.Denied); is && d.Cause == cause && seen.CompareAndSwap(false, true) {
+				cleared.Store(l.vs.allCleared())
+			}
+			return nil
+		})
+		if res := ask(); res.status == http.StatusOK {
+			t.Fatal("the pre-approval is allowed")
+		}
+		if !seen.Load() || !cleared.Load() {
+			t.Errorf("when the pre-approval was denied (entry written: %v), the fetched values were not cleared", seen.Load())
+		}
+		if n := l.svc.rememberedCount(); n != 0 {
+			t.Errorf("the broker keeps %d logins", n)
+		}
+	}
+	t.Run("denied: the fetch took too long", func(t *testing.T) {
+		l := newLoginEnv(t, nil)
+		l.svc.setNow(l.clock.Now)
+		l.vs.lmu.Lock()
+		l.vs.onFetch = func(n int) {
+			if n == 2 {
+				l.clock.Advance(61 * time.Second)
+			}
+		}
+		l.vs.lmu.Unlock()
+		denied(t, l, audit.CauseLimit, func() *result { return l.loginPre(itemShop, pageShop) })
+	})
+	t.Run("denied: a reload took the pin away during the fetch", func(t *testing.T) {
+		l := newLoginEnv(t, nil)
+		l.vs.lmu.Lock()
+		l.vs.onFetch = func(n int) {
+			if n != 2 {
+				return
+			}
+			next := *l.svc.view().cfg
+			next.Clients = maps.Clone(next.Clients)
+			c := next.Clients["laptop"]
+			c.Pin[0] ^= 0xff // another key
+			next.Clients["laptop"] = c
+			if _, err := l.svc.Reload(&next, l.svc.view().keys, strings.Repeat("a", 64)); err != nil {
+				t.Error(err)
+			}
+		}
+		l.vs.lmu.Unlock()
+		denied(t, l, audit.CauseNotAllowed, func() *result { return l.loginPre(itemShop, pageShop) })
+	})
+	t.Run("denied: the item changed during the tap", func(t *testing.T) {
+		l := newLoginEnv(t, nil)
+		denied(t, l, audit.CauseNotAllowed, func() *result {
+			p := l.start(l.laptp, api.PathPreapprove, api.PreapproveRequest{Login: itemShop, URL: pageShop, Uses: 1})
+			pr := l.waitAsked(1)[0].Prompt
+			l.vs.lmu.Lock()
+			l.shop.Username = "mallory@example.com"
+			l.vs.lmu.Unlock()
+			l.tap(pr.RequestID, audit.AnswerApproveOnce)
+			return p.wait(t)
+		})
 	})
 }
 
