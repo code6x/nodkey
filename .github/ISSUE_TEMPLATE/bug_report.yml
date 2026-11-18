@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in nodkey does not work as the docs say.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This repository is public.** Before you paste anything, remove every
+        token, key, secret, host name, domain name and IP address. Use
+        `laptop`, `web-1`, `example.com` or `192.0.2.1` instead.
+
+        A security problem is not a bug report: report it privately, as
+        [SECURITY.md](https://github.com/code6x/nodkey/blob/main/SECURITY.md) says.
+  - type: input
+    id: version
+    attributes:
+      label: nodkey version
+      description: The output of `nodkey version`.
+      placeholder: nodkey 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: The OS and its version, for example `Debian 13` or `macOS 15`.
+    validations:
+      required: true
+  - type: dropdown
+    id: side
+    attributes:
+      label: Where does it happen?
+      options:
+        - broker
+        - client
+        - both
+        - I do not know
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: The command you ran and what it did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: |
+        The error, and the journal lines if you have them: on the broker,
+        `journalctl -u nodkey`; for `nodkey ssh-agent`,
+        `journalctl --user -u nodkey-ssh-agent`. Remove tokens, keys, host
+        names and addresses first.
+      render: text
