@@ -56,6 +56,15 @@ linters:
 
   exclusions:
     rules:
+      # gosec finds G703 (a path from tainted input) with a taint analysis
+      # whose result changes from run to run, with the same code and the
+      # same version (#186). So nolintlint sometimes reports a G703
+      # directive as unused. Only that report is off, only for a directive
+      # that names G703 alone; any other unused directive is still
+      # reported, and gosec still reports a G703 without a directive.
+      - linters:
+          - nolintlint
+        text: '^directive `//nolint:gosec // G703: [^`]+` is unused for linter "gosec"$'
       # Code in cmd/ may print. Only the rules about printing and logging
       # (their messages start with "library code must not") are off there.
       - path: ^cmd/

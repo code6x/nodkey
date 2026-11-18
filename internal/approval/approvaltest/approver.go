@@ -300,6 +300,13 @@ func (a *Approver) WaitEnded(n int, timeout time.Duration) ([]Ended, error) {
 	return a.Ended(), err
 }
 
+// WaitAlarms waits until at least n alarms went out, and returns them. It
+// fails after timeout.
+func (a *Approver) WaitAlarms(n int, timeout time.Duration) ([]approval.Alarm, error) {
+	err := a.wait(func() bool { return len(a.alarms) >= n }, timeout)
+	return a.Alarms(), err
+}
+
 // WaitRunning waits until Run runs. It fails after timeout.
 func (a *Approver) WaitRunning(timeout time.Duration) error {
 	return a.wait(func() bool { return a.answer != nil }, timeout)
