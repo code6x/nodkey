@@ -15,6 +15,28 @@ From 2026-11-17 on, the release notes list such a change under
 ([docs/releasing.md](releasing.md#changes-in-behavior-for-callers)).
 Older releases listed it as a normal feature.
 
+## Updating from 0.7.0 or older
+
+**What changed (#214).** Nothing that a caller sees. The harness of the
+contract tests in `test/contract/` (#209, new after 0.7.0) now stops
+the trial broker (`nodkey try`) with SIGTERM alone. Before, it closed the
+stdin of `nodkey try` first, and sometimes `nodkey try` saw the end of
+its input before the signal and ended with exit status 1. No release had
+the old harness. A change to the harness
+counts as a change in behavior for callers
+([test/contract/README.md](../test/contract/README.md)), so it has this
+section. `nodkey run` and `nodkey try` did not change.
+
+**Who is affected.** No caller of `nodkey run`. A person who runs the
+contract tests gets the same tests, without the random failure at the
+end.
+
+**What to do.** Nothing. To run the contract tests:
+
+```sh
+go test -race -count=1 ./test/contract/
+```
+
 ## Updating from 0.5.0 or older
 
 **What changed (0.6.0, #171).** `nodkey run` masks the values that it
