@@ -2,6 +2,9 @@ package nodkey
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,5 +226,178 @@ func TestFragmentRefusesAnUnknownResult(t *testing.T) {
 	got, code := runScript(t, ".", "", "scripts/release-check/fragment.sh", "1 build", "maybe", "/nonexistent", out)
 	if code != 2 || !strings.Contains(got, "RESULT must be pass, fail or report") {
 		t.Errorf("exit %d, output %q", code, got)
+	}
+}
+
+// verifyFixture makes the files of a release 1.2.3 in a new folder, and
+// fake gh, go and docker programs in another, for verify-release.sh. The
+// nodkey of each tarball is a script that prints "nodkey 1.2.3".
+type verifyFixture struct {
+	dir, bin, commit string
+	head             bool // run without NODKEY_VERIFY_COMMIT
+}
+
+func newVerifyFixture(t *testing.T) *verifyFixture {
+	t.Helper()
+	f := &verifyFixture{dir: t.TempDir(), bin: t.TempDir(), commit: strings.Repeat("ab", 20)}
+	nodkey := []byte("#!/bin/sh\necho \"nodkey ${FAKE_VERSION:-1.2.3}\"\n")
+	var sums, subjects strings.Builder
+	for _, kind := range []string{"ansible", "linux_amd64", "linux_arm64", "pullgate"} {
+		name := "nodkey_1.2.3_" + kind + ".tar.gz"
+		data := tarGz(t, tarFile{name: "nodkey", mode: 0o755, data: nodkey})
+		writeFile(t, filepath.Join(f.dir, name), data, 0o600)
+		sum := sha256.Sum256(data)
+		fmt.Fprintf(&sums, "%x  %s\n", sum, name)
+		if subjects.Len() > 0 {
+			subjects.WriteString(",")
+		}
+		fmt.Fprintf(&subjects, `{"name":%q,"digest":{"sha256":"%x"}}`, name, sum)
+	}
+	writeFile(t, filepath.Join(f.dir, "SHA256SUMS"), []byte(sums.String()), 0o600)
+	payload := base64.StdEncoding.EncodeToString([]byte(`{"subject":[` + subjects.String() + `]}`))
+	writeFile(t, filepath.Join(f.dir, "nodkey_1.2.3.sigstore.json"), []byte(`{"dsseEnvelope":{"payload":"`+payload+`"}}`), 0o600)
+	writeFile(t, filepath.Join(f.bin, "gh"), []byte("#!/bin/sh\n[ ! -e \"$FAKE_FAIL/gh\" ]\n"), 0o700)
+	// go version -m: the arch is in the name of the folder of the binary.
+	writeFile(t, filepath.Join(f.bin, "go"), []byte(`#!/bin/sh
+arch=$(basename "$(dirname "$3")")
+printf '%s\n\tmod\tgithub.com/code6x/nodkey\tv1.2.3\t\n\tbuild\tGOARCH=%s\n\tbuild\tvcs.revision=%s\n\tbuild\tvcs.modified=false\n' "$3" "$arch" "$(cat "$FAKE_FAIL/../commit")"
+`), 0o700)
+	writeFile(t, filepath.Join(f.bin, "docker"), []byte("#!/bin/sh\n[ ! -e \"$FAKE_FAIL/docker\" ] || exit 1\necho \"nodkey ${FAKE_DOCKER_VERSION:-1.2.3}\"\n"), 0o700)
+	return f
+}
+
+// run runs verify-release.sh with the fakes first in PATH.
+func (f *verifyFixture) run(t *testing.T, fail ...string) (string, int) {
+	t.Helper()
+	state := t.TempDir()
+	failDir := filepath.Join(state, "fail")
+	mkdir(t, failDir, 0o700)
+	writeFile(t, filepath.Join(state, "commit"), []byte(f.commit), 0o600)
+	for _, name := range fail {
+		writeFile(t, filepath.Join(failDir, name), nil, 0o600)
+	}
+	gh := filepath.Join(t.TempDir(), "gh.tar.gz")
+	writeFile(t, gh, []byte("gh"), 0o600)
+	t.Setenv("PATH", f.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_FAIL", failDir)
+	t.Setenv("NODKEY_VERIFY_COMMIT", strings.Repeat("ab", 20))
+	if f.head {
+		// The script then takes the commit of HEAD.
+		if err := os.Unsetenv("NODKEY_VERIFY_COMMIT"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return runScript(t, ".", "", "scripts/verify-release.sh", f.dir, "1.2.3", gh)
+}
+
+func TestVerifyRelease(t *testing.T) {
+	for _, p := range []string{"jq", "openssl", "base64"} {
+		if _, err := exec.LookPath(p); err != nil {
+			skipOrFail(t, "%s is missing: %v", p, err)
+		}
+	}
+	t.Run("the default commit is HEAD", func(t *testing.T) {
+		head, err := exec.CommandContext(t.Context(), "git", "rev-parse", "HEAD").Output()
+		if err != nil {
+			skipOrFail(t, "git rev-parse HEAD: %v", err)
+		}
+		f := newVerifyFixture(t)
+		f.commit, f.head = strings.TrimSpace(string(head)), true
+		got, code := f.run(t)
+		if code != 0 || !strings.Contains(got, "commit "+f.commit) {
+			t.Errorf("exit %d, output:\n%s", code, got)
+		}
+	})
+	t.Run("good files pass", func(t *testing.T) {
+		got, code := newVerifyFixture(t).run(t)
+		if code != 0 || strings.Contains(got, "FAILED") || strings.Count(got, "ok: ") != 7 {
+			t.Errorf("exit %d, output:\n%s", code, got)
+		}
+	})
+	for _, c := range []struct {
+		name   string
+		change func(t *testing.T, f *verifyFixture) []string // returns the fakes that fail
+		want   string
+	}{
+		{"an extra file", func(t *testing.T, f *verifyFixture) []string {
+			writeFile(t, filepath.Join(f.dir, "extra.txt"), nil, 0o600)
+			return nil
+		}, "FAILED: 1 the files of the draft are not the expected ones"},
+		{"a missing file", func(t *testing.T, f *verifyFixture) []string {
+			if err := os.Remove(filepath.Join(f.dir, "nodkey_1.2.3_pullgate.tar.gz")); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}, "FAILED: 1 the files"},
+		{"a changed tarball", func(t *testing.T, f *verifyFixture) []string {
+			p := filepath.Join(f.dir, "nodkey_1.2.3_pullgate.tar.gz")
+			writeFile(t, p, append(readFile(t, p), 'x'), 0o600)
+			return nil
+		}, "FAILED: 2 a tarball does not match SHA256SUMS"},
+		{"SHA256SUMS without a tarball", func(t *testing.T, f *verifyFixture) []string {
+			p := filepath.Join(f.dir, "SHA256SUMS")
+			lines := strings.SplitAfter(string(readFile(t, p)), "\n")
+			writeFile(t, p, []byte(strings.Join(lines[1:], "")), 0o600)
+			return nil
+		}, "FAILED: 2 SHA256SUMS does not name each tarball exactly once"},
+		{"the attestation fails", func(*testing.T, *verifyFixture) []string { return []string{"gh"} },
+			"FAILED: 3 the attestation does not verify"},
+		{"the bundle names other files", func(t *testing.T, f *verifyFixture) []string {
+			payload := base64.StdEncoding.EncodeToString([]byte(`{"subject":[{"name":"other.tar.gz","digest":{"sha256":"00"}}]}`))
+			writeFile(t, filepath.Join(f.dir, "nodkey_1.2.3.sigstore.json"), []byte(`{"dsseEnvelope":{"payload":"`+payload+`"}}`), 0o600)
+			return nil
+		}, "FAILED: 3 the bundle does not name exactly the tarballs"},
+		{"a binary of another commit", func(_ *testing.T, f *verifyFixture) []string {
+			f.commit = strings.Repeat("cd", 20)
+			return nil
+		}, "FAILED: 4 nodkey_1.2.3_linux_amd64.tar.gz: the build info does not say"},
+		{"the install fails", func(*testing.T, *verifyFixture) []string { return []string{"docker"} },
+			"FAILED: 5 install.sh does not install"},
+		{"the install gives another version", func(t *testing.T, _ *verifyFixture) []string {
+			t.Setenv("FAKE_DOCKER_VERSION", "1.2.4")
+			return nil
+		}, "FAILED: 5 install.sh does not install"},
+		{"the amd64 binary says another version", func(t *testing.T, _ *verifyFixture) []string {
+			t.Setenv("FAKE_VERSION", "1.2.4")
+			return nil
+		}, "FAILED: 4 the amd64 binary says 'nodkey 1.2.4'"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newVerifyFixture(t)
+			got, code := f.run(t, c.change(t, f)...)
+			if code != 1 || !strings.Contains(got, c.want) {
+				t.Errorf("exit %d, output:\n%s\nwant exit 1 and %q", code, got, c.want)
+			}
+		})
+	}
+	for _, c := range []struct {
+		name string
+		env  []string
+		args []string
+		want string
+	}{
+		{"a bad version", nil, []string{"v1.2.3"}, "is not X.Y.Z"},
+		{"a bad commit", []string{"NODKEY_VERIFY_COMMIT=abc"}, nil, "is not a full SHA-1"},
+		{"an unknown kind", []string{"NODKEY_VERIFY_KINDS=linux_amd64 windows"}, nil, "unknown kind 'windows'"},
+		{"no amd64", []string{"NODKEY_VERIFY_KINDS=pullgate"}, nil, "must have linux_amd64"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newVerifyFixture(t)
+			gh := filepath.Join(t.TempDir(), "gh.tar.gz")
+			writeFile(t, gh, []byte("gh"), 0o600)
+			args := []string{f.dir, "1.2.3", gh}
+			if c.args != nil {
+				args[1] = c.args[0]
+			}
+			t.Setenv("NODKEY_VERIFY_COMMIT", strings.Repeat("ab", 20))
+			for _, kv := range c.env {
+				k, v, _ := strings.Cut(kv, "=")
+				t.Setenv(k, v)
+			}
+			got, code := runScript(t, ".", "", "scripts/verify-release.sh", args...)
+			if code != 2 || !strings.Contains(got, c.want) {
+				t.Errorf("exit %d, output %q; want exit 2 and %q", code, got, c.want)
+			}
+		})
 	}
 }

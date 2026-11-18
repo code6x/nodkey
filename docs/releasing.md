@@ -169,7 +169,7 @@ After every push to `main`, the **Release** workflow runs release-please.
    line of the changelog in it.** This text becomes the release notes.
 5. When you merge it, release-please creates the tag (for example `v0.2.0`)
    and a **draft** GitHub release with the release notes.
-6. Then two more jobs run in the same workflow:
+6. Then four more jobs run in the same workflow:
    - `build` can only read the repository. It checks that the tag is the
      commit of this workflow run. Then it runs
      [`scripts/build-release.sh`](../scripts/build-release.sh), the one
@@ -181,28 +181,75 @@ After every push to `main`, the **Release** workflow runs release-please.
      `nodkey_<version>_pullgate.tar.gz`. It makes the Ansible recipe
      with `contrib/ansible/build.sh` and packs it into
      `nodkey_<version>_ansible.tar.gz`, and writes `SHA256SUMS`.
-   - `publish` gets these files from `build`. It checks them against
+   - `upload` gets these files from `build`. It checks them against
      `SHA256SUMS` and checks the tag again. Then it makes a signed build
      provenance attestation for the tarballs. It saves the attestation as
      one more file, `nodkey_<version>.sigstore.json` (a Sigstore bundle
      for all tarballs), and checks all tarballs with it, with no login,
      as in [Verify a download](#verify-a-download). Then it uploads the
-     files to the draft release and publishes it.
+     files to the draft release, and downloads them back from the draft.
+   - `verify` checks the files of the draft before anybody can see them
+     (see [The verify gate](#the-verify-gate)). It can only read.
+   - `publish` runs only when `verify` passed. It publishes the draft.
 
 The release is never public without its files. Immutable releases are on
 for this repository: after a release is published, nobody can change its
 files or move its tag. This is why the files are added while the release is
 still a draft.
 
-### If `build` or `publish` fails
+### The verify gate
 
-The release stays a draft. **Re-run failed jobs** uses the same commit and
-the same workflow file as the first run. So a re-run only helps when the
-failure was temporary, for example a network error.
+The `verify` job ([`verify-release.yml`](../.github/workflows/verify-release.yml),
+with [`scripts/verify-release.sh`](../scripts/verify-release.sh)) checks
+the files of the draft release, as a user gets them:
 
-For any other problem, fix it in a new `fix:` pull request, then merge the
-next release pull request. That release gets a new version. You can delete
-the old draft release. Its tag stays, because tags cannot be deleted.
+1. The draft has exactly the expected files: the four tarballs,
+   `SHA256SUMS` and the bundle, and nothing else.
+2. `SHA256SUMS` names each tarball once, and each tarball matches it.
+3. The attestation in the bundle verifies each tarball, offline, with
+   the identity of [Verify a download](#verify-a-download). The bundle
+   names exactly the tarballs of `SHA256SUMS`.
+4. Each binary is built for its CPU, from the commit of the release, as
+   version `v<version>`, from a clean checkout (its build info). The
+   amd64 binary also runs and prints `nodkey <version>`.
+5. `install.sh` of the release installs the draft's tarball as root in a
+   clean `debian:trixie` container, with the same checks that a user
+   runs: the pinned gh and the real bundle. Only `github.com` and
+   `api.github.com` are a local HTTPS server there, because the files of
+   a draft are not public yet.
+
+`publish` needs `verify`. When `verify` fails, nothing is published: the
+release stays a draft, and nobody but the maintainers can see it.
+
+**Dry run.** To see the gate work without a release, run the
+**Verify release** workflow by hand (Actions, "Verify release", "Run
+workflow"), with a published version and a way to break a file:
+
+```sh
+gh workflow run verify-release.yml --repo code6x/nodkey -f version=0.7.0 -f break=tarball
+```
+
+It downloads the files of that release, breaks one if you ask, and runs
+the same checks. With `break=none` it passes, and the job
+`would-publish` runs. With a broken file, `verify` fails, and
+`would-publish` is skipped, as `publish` is in a release. A dry run
+publishes nothing.
+
+### If `build`, `upload`, `verify` or `publish` fails
+
+The release stays a draft. Nothing is public.
+
+1. **Look.** Open the failed job. For `verify`, the summary of the run
+   lists each check with `ok` or `FAILED`.
+2. **Re-run** only for a temporary failure, for example a network error.
+   **Re-run failed jobs** uses the same commit and the same workflow file
+   as the first run, so it does not help for any other problem.
+3. **Fix** any other problem in a new `fix:` pull request.
+4. **Delete the draft release** (Releases, the draft, Delete). The tag
+   stays: the ruleset for `v*` tags does not let anybody delete it (see
+   [Repository settings](#repository-settings)).
+5. **Release again**: merge the next release pull request. That release
+   gets a new version.
 
 ## Check a release candidate
 

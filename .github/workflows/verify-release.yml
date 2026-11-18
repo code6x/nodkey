@@ -1,0 +1,167 @@
+name: Verify release
+
+# The verify gate of a release (docs/releasing.md, "The verify gate").
+# release.yml calls it with the files of the draft release, between the
+# upload of the files and the publish. It can only read.
+#
+# Run by hand, it is a dry run: it checks the files of a published release,
+# with one file broken on purpose if you ask, and then shows whether the
+# publish would run. It publishes nothing.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The version X.Y.Z of the draft release
+        required: true
+        type: string
+      artifact:
+        description: The artifact with the files of the draft release
+        required: true
+        type: string
+    outputs:
+      verified:
+        description: true only when every check passed
+        value: ${{ jobs.verify.outputs.verified }}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: A published release X.Y.Z to check (dry run)
+        required: true
+        type: string
+      break:
+        description: Break a file on purpose; the verify must then fail
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - tarball # one byte more in the pullgate tarball
+          - tarball-and-sums # the same, and SHA256SUMS made to match it
+          - extra-file # one more file in the release
+
+permissions: {}
+
+jobs:
+  # Dry run only: the files of a published release, maybe broken.
+  dry-run-files:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Download the files of the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          BREAK: ${{ inputs.break }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$VERSION" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::The version is not X.Y.Z."
+            exit 1
+          fi
+          mkdir draft
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir draft
+          t="draft/nodkey_${VERSION}_pullgate.tar.gz"
+          case $BREAK in
+          none) ;;
+          tarball) printf x >>"$t" ;;
+          tarball-and-sums)
+            printf x >>"$t"
+            (cd draft && grep -v ' nodkey_.*_pullgate.tar.gz$' SHA256SUMS >sums && sha256sum "${t#draft/}" >>sums && mv sums SHA256SUMS) ;;
+          extra-file) echo "not a file of the release" >draft/extra.txt ;;
+          *) echo "::error::Unknown break '$BREAK'."; exit 1 ;;
+          esac
+          echo "broken on purpose: $BREAK"
+          ls -l draft
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dry-run-files
+          path: draft/
+          if-no-files-found: error
+
+  verify:
+    needs: dry-run-files
+    # On a call from release.yml, dry-run-files is skipped.
+    if: always() && (needs.dry-run-files.result == 'success' || (github.event_name != 'workflow_dispatch' && needs.dry-run-files.result == 'skipped'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.verify.outputs.verified }}
+    env:
+      VERSION: ${{ inputs.version }}
+      ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && 'dry-run-files' || inputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The tags: the dry run names the commit of an older release.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Only to read the build info of the binaries (go version -m).
+          go-version: stable
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: draft
+      - name: Get gh 2.102.0 for install.sh
+        # install.sh downloads this gh and checks it against the SHA-256 in
+        # install.sh. In the container, github.com is a local server, so
+        # the file is fetched here first.
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/gh"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "${RUNNER_TEMP}/gh/gh_2.102.0_linux_amd64.tar.gz" \
+            https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz
+      - name: Verify the files of the draft
+        id: verify
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$VERSION" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::The version is not X.Y.Z."
+            exit 1
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            # An older release: its own commit, and the kinds of files that
+            # it has.
+            export NODKEY_VERIFY_COMMIT NODKEY_VERIFY_KINDS
+            NODKEY_VERIFY_COMMIT="$(git rev-parse "refs/tags/v${VERSION}^{commit}")"
+            NODKEY_VERIFY_KINDS="linux_amd64 linux_arm64 pullgate"
+            if [ -n "$(git ls-tree "v${VERSION}" contrib/ansible/build.sh)" ]; then
+              NODKEY_VERIFY_KINDS="ansible $NODKEY_VERIFY_KINDS"
+            fi
+          fi
+          rc=0
+          sh scripts/verify-release.sh draft "$VERSION" "${RUNNER_TEMP}/gh/gh_2.102.0_linux_amd64.tar.gz" 2>&1 | tee verify.txt || rc=$?
+          {
+            echo "## Verify ${VERSION}"
+            echo
+            echo '```text'
+            cat verify.txt
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::A check of the draft failed; see the summary. The release stays a draft (docs/releasing.md)."
+            exit 1
+          fi
+          # publish needs this output: a skipped verify must not count as passed.
+          echo "verified=true" >>"$GITHUB_OUTPUT"
+
+  # Dry run only: in release.yml, the publish job needs verify in the same
+  # way. This job does nothing; it shows whether the publish would run.
+  would-publish:
+    if: github.event_name == 'workflow_dispatch' && needs.verify.outputs.verified == 'true'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "The verify passed, so release.yml would publish the release now. This dry run publishes nothing."
