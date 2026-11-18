@@ -86,7 +86,7 @@ jobs:
           (cd contrib/pullgate && "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh -x -- *.sh)
           "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh contrib/ansible/build.sh contrib/ansible/test/ci.sh
           # The release build and the checks of the Release check workflow.
-          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh scripts/build-release.sh scripts/release-check/*.sh
+          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh scripts/build-release.sh scripts/verify-release.sh scripts/release-check/*.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

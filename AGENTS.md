@@ -26,6 +26,9 @@ Planned. Each v1 issue adds its part.
   (`.github/workflows/release-check.yml`, docs/releasing.md "Check a
   release candidate"). Their tests are in `scripts_linux_test.go`, at the
   root of the module. CI checks them with shellcheck.
+  `scripts/verify-release.sh` is the verify gate of a release: release.yml
+  runs it through `.github/workflows/verify-release.yml` on the files of
+  the draft, before it publishes (docs/releasing.md "The verify gate").
 - `cmd/nodkey/` - the one binary. Subcommands: `broker`, `try`, `run`,
   `ssh-agent`, `ssh-grant`, `preapprove`, `agent-browser-plugin`, `keygen`,
   `audit verify`, `update`, `version`, `doctor`.

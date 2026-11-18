@@ -653,6 +653,12 @@ before they install anything (DESIGN.md section 18). What they trust:
   a file. Its update check uses a made-up bundle and a fake gh, so it
   proves nothing about the attestation; only the release workflow on
   `main` can make one.
+- The release is published only after the `verify` job has checked the
+  files of the draft, with read access only: their names, `SHA256SUMS`,
+  the attestation with the production identity, the version in each
+  binary, and an install with `install.sh` as a user does it
+  (docs/releasing.md, "The verify gate"). So a broken or wrong file stops
+  the release while it is still a draft, before anybody can download it.
 - Both trust root on the host where they run, and the way the person got
   root. As root, the script runs only the programs of the system, removes
   the variables that change what they do (such as `TAR_OPTIONS`), and
