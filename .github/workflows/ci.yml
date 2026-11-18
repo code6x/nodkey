@@ -57,8 +57,6 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test -race ./...
-      - name: TEMPORARY (#186) TestStandingOutsideWindowAlarmFails, 50 runs
-        run: go test -race -count=50 -run 'TestStandingOutsideWindow' ./internal/broker/
 
   lint:
     runs-on: ubuntu-latest
@@ -99,8 +97,6 @@ jobs:
           # With the tag e2e, the files of the end-to-end test are checked
           # too. No file needs the tag to be missing, so nothing is left out.
           args: --build-tags e2e
-      - name: TEMPORARY (#186) the linter 10 more times, each without a cache
-        run: for i in $(seq 10); do echo "lint $i"; golangci-lint cache clean; golangci-lint run --build-tags e2e || exit 1; done
 
   e2e:
     name: end-to-end test
