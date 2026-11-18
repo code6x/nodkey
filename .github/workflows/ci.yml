@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: shellcheck install.sh, contrib/pullgate and contrib/ansible
+      - name: shellcheck install.sh, contrib/pullgate, contrib/ansible and scripts
         # A fixed release of ShellCheck, checked by its SHA-256. Dependabot
         # does not update it. Update it by hand: the version and the SHA-256
         # of shellcheck-VERSION.linux.x86_64.tar.xz together.
@@ -85,6 +85,8 @@ jobs:
           # directory.
           (cd contrib/pullgate && "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh -x -- *.sh)
           "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh contrib/ansible/build.sh contrib/ansible/test/ci.sh
+          # The release build and the checks of the Release check workflow.
+          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh scripts/build-release.sh scripts/release-check/*.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

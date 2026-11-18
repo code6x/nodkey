@@ -150,11 +150,14 @@ func (p *proc) output() string {
 // lineLog holds the lines of an output as they come. It is the stdout
 // or the stderr of a program.
 type lineLog struct {
-	mu      sync.Mutex
-	lines   []string
-	partial []byte        // the start of the next line
-	done    bool          // the output is closed
-	changed chan struct{} // closed and made new on each change
+	mu    sync.Mutex
+	lines []string
+	// versionWarnings are the warnings about the version of the other
+	// side, kept apart (addLocked).
+	versionWarnings []string
+	partial         []byte        // the start of the next line
+	done            bool          // the output is closed
+	changed         chan struct{} // closed and made new on each change
 }
 
 func newLineLog() *lineLog { return &lineLog{changed: make(chan struct{})} }
@@ -170,7 +173,7 @@ func (l *lineLog) Write(p []byte) (int, error) {
 		if i < 0 {
 			break
 		}
-		l.lines = append(l.lines, string(l.partial[:i]))
+		l.addLocked(string(l.partial[:i]))
 		l.partial = l.partial[i+1:]
 	}
 	l.notifyLocked()
@@ -182,11 +185,24 @@ func (l *lineLog) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if len(l.partial) > 0 {
-		l.lines = append(l.lines, string(l.partial))
+		l.addLocked(string(l.partial))
 		l.partial = nil
 	}
 	l.done = true
 	l.notifyLocked()
+}
+
+// addLocked adds one line. When the client and the broker are two
+// different releases (NODKEY_E2E_BROKER_BIN, NODKEY_E2E_CLIENT_BIN), a
+// client warns about the other version on each request (DESIGN.md section
+// 10). Such a line is kept apart, so the checks of the output see the same
+// lines as with one build.
+func (l *lineLog) addLocked(line string) {
+	if w := versionWarning(); w != nil && w.MatchString(line) {
+		l.versionWarnings = append(l.versionWarnings, line)
+		return
+	}
+	l.lines = append(l.lines, line)
 }
 
 func (l *lineLog) notifyLocked() {
@@ -208,6 +224,19 @@ func (l *lineLog) text() string {
 		b.WriteString(line + "\n")
 	}
 	return b.String()
+}
+
+// fullText is text with the warnings about the version of the other side
+// (addLocked): the searches for leaks read every line.
+func (l *lineLog) fullText() string {
+	l.mu.Lock()
+	warnings := slices.Clone(l.versionWarnings)
+	l.mu.Unlock()
+	var b strings.Builder
+	for _, line := range warnings {
+		b.WriteString(line + "\n")
+	}
+	return l.text() + b.String()
 }
 
 // has reports whether a line holds s.

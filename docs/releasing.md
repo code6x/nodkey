@@ -171,7 +171,9 @@ After every push to `main`, the **Release** workflow runs release-please.
    and a **draft** GitHub release with the release notes.
 6. Then two more jobs run in the same workflow:
    - `build` can only read the repository. It checks that the tag is the
-     commit of this workflow run. Then it builds static `nodkey` binaries
+     commit of this workflow run. Then it runs
+     [`scripts/build-release.sh`](../scripts/build-release.sh), the one
+     build of the release files. It builds static `nodkey` binaries
      for Linux amd64 and arm64 (`CGO_ENABLED=0`, `-trimpath`), packs each
      one with `LICENSE` and `README.md` into
      `nodkey_<version>_linux_<arch>.tar.gz`. It packs the files of
@@ -201,6 +203,76 @@ failure was temporary, for example a network error.
 For any other problem, fix it in a new `fix:` pull request, then merge the
 next release pull request. That release gets a new version. You can delete
 the old draft release. Its tag stays, because tags cannot be deleted.
+
+## Check a release candidate
+
+Before you merge the release pull request, run the **Release check**
+workflow on its branch. It checks that the candidate works with the last
+two releases. Run it only when you want to release, not on each update
+of the release pull request. It publishes nothing and needs no secret.
+
+1. Open **Actions**, then **Release check**, then **Run workflow**.
+2. In "Use workflow from", choose the branch
+   `release-please--branches--main`. Then click **Run workflow**.
+
+Or with gh:
+
+```sh
+gh workflow run release-check.yml --repo code6x/nodkey --ref release-please--branches--main
+```
+
+The candidate is the newest commit of that branch, and its version is
+the one in `.release-please-manifest.json`. N-1 and N-2 are the two
+highest published releases below it. A draft, a prerelease, or a tag
+without a release do not count.
+
+### The checks
+
+| # | check | what passes |
+|---|---|---|
+| 1 | build | `scripts/build-release.sh` builds the candidate, and a second build gives the same files. |
+| 2 | N-1 and N-2 | Both are found, and their files pass `SHA256SUMS` and the attestation check. |
+| 3 | update path | In a container, the real N-1 and N-2 run `nodkey update`, and the `install.sh` of their own release, against a local HTTPS server with the candidate's files: both install the candidate. A wrong or missing checksum, a missing or changed file, and a failed attestation check are refused, and the old binary stays. The candidate has no attestation, so a fake `gh` stands for it. The release workflow checks the real one. |
+| 4 | configs | Each config in `test/compat/configs/` gives the same result with N-1 and the candidate (`nodkey broker check`). `ok-*` files must pass N-1, `bad-*` files must fail it. |
+| 5 | audit log | The end-to-end test with N-1 as the first broker: N-1 writes the audit log and stops, and the candidate goes on with it with no alarm. `nodkey audit verify` of both versions passes, and both refuse a changed or a cut copy. |
+| 6 | mixed versions | The end-to-end test three times: candidate broker and clients, N-1 broker with candidate clients, and candidate broker with N-1 clients. The test expects the version notices and warnings of two releases. |
+| 7 | stress | `go test -race -count=5 -cpu 1,2,4 ./...` |
+| 8 | changelog | Every pull request merged since N-1 is in the notes of the release pull request, or has a hidden type. Every `!` pull request has its section `## Updating from N-1` in [docs/updating.md](updating.md). |
+| 9 | timing report | A login of agent-browser with a fake `bw` that takes 6 s per run: without a pre-approval, the pre-approval on a cold broker, and the login after it. It shows the times, the limit of the plugin (12 s) and the runs of `bw`. **It never fails the workflow.** Timing on shared runners is not stable, so you read it. |
+
+The end-to-end test takes the binaries from these variables. Without
+them it builds nodkey from the source, as before:
+
+- `NODKEY_E2E_BROKER_BIN`: the broker;
+- `NODKEY_E2E_CLIENT_BIN`: the clients;
+- `NODKEY_E2E_FIRST_BROKER_BIN`: a broker for the first case only. Then
+  the broker of `NODKEY_E2E_BROKER_BIN` goes on with its audit log.
+
+Each one is the absolute path of a nodkey binary.
+
+### Read the result
+
+The summary of the run has a table with each check: `pass`, `fail`, or
+`report` for the timing report. Under it is the timing report. The
+artifact `release-check-result` has `release-check.json`:
+
+- `candidate`: the commit, the branch and the version that were checked;
+- `n1`, `n2`: the versions of N-1 and N-2;
+- `passed`: `true` when no check failed;
+- `checks`: each check with its `result` and its `evidence`, the end of
+  the log of the check.
+
+A check that did not run counts as `fail`. The workflow fails when a
+check fails, but never because of the timing report.
+
+For the timing report, look at `login_after_preapproval`: it must be
+`success: true`, well under `plugin_resolve_time_seconds`, with
+`bw_calls: 0`. A slow `preapproval_cold` is normal: the tap waits for
+the person, not for agent-browser.
+
+When a check fails, do not merge the release pull request. Read the
+evidence, fix the problem in a new pull request, and run the check
+again on the updated release pull request.
 
 ## Which types make a release
 

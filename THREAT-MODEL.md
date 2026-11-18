@@ -644,6 +644,15 @@ before they install anything (DESIGN.md section 18). What they trust:
   workflow, on which branch and on which kind of runner, signed: the
   identity `.github/workflows/release.yml@refs/heads/main` and
   `--deny-self-hosted-runners`.
+- The `build` job of the release workflow builds the files with
+  `scripts/build-release.sh` of the tagged commit, with read access only.
+  So the script is as trusted as the code of the release, which that job
+  builds anyway. The Release check workflow (docs/releasing.md) builds a
+  candidate with the same script, but it can only read: it has no
+  secret, no OIDC token and no write access, so it cannot sign or publish
+  a file. Its update check uses a made-up bundle and a fake gh, so it
+  proves nothing about the attestation; only the release workflow on
+  `main` can make one.
 - Both trust root on the host where they run, and the way the person got
   root. As root, the script runs only the programs of the system, removes
   the variables that change what they do (such as `TAR_OPTIONS`), and

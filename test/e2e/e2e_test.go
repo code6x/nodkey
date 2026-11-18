@@ -37,6 +37,7 @@ func TestEndToEnd(t *testing.T) {
 		run  func(*testing.T)
 	}{
 		{"nodkey run passes the secret into the command", e.runApproved},
+		{"the broker of the next version goes on with the audit log", e.nextBroker},
 		{"nodkey run denied", e.runDenied},
 		{"ssh login approved", e.loginApproved},
 		{"unknown host key refused", e.unknownHostKey},
@@ -44,6 +45,15 @@ func TestEndToEnd(t *testing.T) {
 		{"git over SSH", e.gitOverSSH},
 		{"ssh login denied, and the Deny ends the grants", e.loginDenied},
 	} {
+		if c.name == "the broker of the next version goes on with the audit log" {
+			// Not a subtest: the next broker must live until the end of
+			// the test, and the processes of a subtest end with it.
+			if run.first != "" {
+				e.audit.unchecked(t)
+				c.run(t)
+			}
+			continue
+		}
 		t.Run(c.name, func(t *testing.T) {
 			e.audit.unchecked(t)
 			c.run(t)
@@ -518,6 +528,29 @@ func (e *env) loginDenied(t *testing.T) {
 	e.audit.next(t, subject, "request", "denied:limit")
 }
 
+// nextBroker: the broker of NODKEY_E2E_FIRST_BROKER_BIN stops, as for an
+// update of the broker host, and the broker of NODKEY_E2E_BROKER_BIN starts
+// with the same files. It goes on with the audit log of the first: it
+// raises no alarm (searchClaimed fails on any alert), and its first entry
+// is broker_started with its own version. verifyAudit then checks the
+// whole log, with the journals of both, with each of the two versions.
+func (e *env) nextBroker(t *testing.T) {
+	e.broker.signal(t, syscall.SIGTERM)
+	e.broker.mustExit(t, 0)
+	e.audit.next(t, map[string]string{}, "broker_stopped")
+	e.journal += e.broker.stderr.text()
+	e.brokerBin = run.broker
+	e.startBroker(t)
+	e.audit.next(t, map[string]string{"version": run.brokerVersion}, "broker_started")
+	// The Release check looks for this line: it proves that check 5 ran.
+	t.Logf("next broker: nodkey %s goes on with the audit log of nodkey %s", run.brokerVersion, run.firstVersion)
+	for _, bad := range []string{"torn", "alert"} {
+		if e.broker.stderr.has(bad) {
+			t.Errorf("the next broker logs %q at its start; its log:\n%s", bad, redact(e.broker.stderr.text()))
+		}
+	}
+}
+
 // stop stops nodkey ssh-agent and nodkey broker with SIGTERM, as systemd
 // does, and checks that each ends as DESIGN.md section 15 says.
 func (e *env) stop(t *testing.T) {
@@ -564,13 +597,21 @@ func (e *env) verifyAudit(t *testing.T) {
 	data := readFile(t, e.auditPath)
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	n := len(lines)
-	journal := e.broker.stderr.text()
+	journal := e.journal + e.broker.stderr.text()
 	if got := strings.Count("\n"+journal, "\naudit anchor "); got != n {
 		t.Errorf("the journal has %d anchors, want one for each of the %d entries", got, n)
 	}
-	verify := func(name, path string) *proc {
+	bins := []string{e.brokerBin}
+	if run.first != "" {
+		bins = append(bins, run.first) // the old version must read the new entries too
+	}
+	verifyWith := func(bin, name, path string) *proc {
 		return e.procs.start(t, name, "", append([]string{"PATH=" + clientPath}, quickExit()...),
-			strings.NewReader(journal), e.bin, "audit", "verify", path, "--anchors", "-")
+			strings.NewReader(journal), bin, "audit", "verify", path, "--anchors", "-")
+	}
+	verify := func(name, path string) *proc { return verifyWith(e.brokerBin, name, path) }
+	for _, bin := range bins[1:] {
+		verifyWith(bin, "nodkey audit verify (the first broker)", e.auditPath).mustExit(t, 0)
 	}
 	p := verify("nodkey audit verify", e.auditPath)
 	p.mustExit(t, 0)
@@ -594,6 +635,16 @@ func (e *env) verifyAudit(t *testing.T) {
 	lines[i] = strings.Replace(lines[i], `"client":"`, `"client":"x`, 1)
 	changed := filepath.Join(e.dir, "state", "changed.jsonl")
 	writeFile(t, changed, []byte(strings.Join(lines, "\n")+"\n"))
+	for _, bin := range bins[1:] {
+		verifyWith(bin, "nodkey audit verify (the first broker, a changed entry)", changed).mustExit(t, 65)
+	}
+	// A cut copy: the line in the middle is gone.
+	lines[i] = strings.Replace(lines[i], `"client":"x`, `"client":"`, 1)
+	cut := filepath.Join(e.dir, "state", "cut.jsonl")
+	writeFile(t, cut, []byte(strings.Join(slices.Delete(slices.Clone(lines), n/2, n/2+1), "\n")+"\n"))
+	for _, bin := range bins {
+		verifyWith(bin, "nodkey audit verify (a cut log)", cut).mustExit(t, 65)
+	}
 	p = verify("nodkey audit verify (a changed entry)", changed)
 	p.mustExit(t, 65)
 	// The changed line fails its anchor, or the line after it fails its
@@ -621,6 +672,48 @@ func firstOf(text string, parts []string) string {
 	return ""
 }
 
+// otherBrokers returns the versions of the brokers of the test that are
+// releases and differ from the version of the clients, which is a release
+// too. The clients then warn about the version, and the broker sends a
+// notice about it (DESIGN.md section 10).
+func otherBrokers() []string {
+	if !releasePattern.MatchString(run.clientVersion) {
+		return nil
+	}
+	var out []string
+	for _, v := range []string{run.brokerVersion, run.firstVersion} {
+		if v != run.clientVersion && releasePattern.MatchString(v) && !slices.Contains(out, regexp.QuoteMeta(v)) {
+			out = append(out, regexp.QuoteMeta(v))
+		}
+	}
+	return out
+}
+
+// versionNotice returns the pattern of the notice about the version of a
+// client, or nil when no such notice goes out.
+func versionNotice() *regexp.Regexp {
+	b := otherBrokers()
+	if b == nil {
+		return nil
+	}
+	return regexp.MustCompile(`^ℹ️ nodkey: The client (laptop|ci) says that it runs nodkey ` + regexp.QuoteMeta(run.clientVersion) +
+		`, which is (older|newer) than nodkey (` + strings.Join(b, "|") + `) on the broker\. ` +
+		`(To update it, run (there as root|as root there): nodkey update|To update the broker, run as root on the broker host: nodkey update)$`)
+}
+
+// versionWarning returns the pattern of the warning of a client about the
+// version of the broker, or nil when no such warning comes.
+func versionWarning() *regexp.Regexp {
+	b := otherBrokers()
+	if b == nil {
+		return nil
+	}
+	c, bs := regexp.QuoteMeta(run.clientVersion), "("+strings.Join(b, "|")+")"
+	return regexp.MustCompile(`^nodkey: warning: (this machine runs nodkey ` + c + `, which is (older|newer) than nodkey ` + bs +
+		` on the broker|the broker runs nodkey ` + bs + `, which is (older|newer) than nodkey ` + c + ` on this machine); ` +
+		`to update (this machine, run "nodkey update" as root \(docs/setup\.md section 2\)|the broker, run "nodkey update" as root on the broker host)$`)
+}
+
 // searchClaimed checks where the claimed text of the cases went. DESIGN.md
 // section 7 shows claimed text only in the message of a request, and
 // section 9 keeps it in the audit log. So no other call to Telegram holds
@@ -628,14 +721,20 @@ func firstOf(text string, parts []string) string {
 // nodkey: not the broker's journal, not nodkey ssh-agent, and not the
 // lines of nodkey run, nodkey ssh-grant, nodkey keygen and nodkey audit
 // verify. The config of the test has no "never ask" rule, so no notice
-// goes out, and nothing in the test makes an alert. The client and the
-// broker are the same build from the source, so no notice about a version
-// goes out either (DESIGN.md section 10): every message must have
-// buttons. It runs after the broker has stopped, when its alerts in the
-// background have gone out too.
+// goes out, and nothing in the test makes an alert. When the client and
+// the broker are the same build, no notice about a version goes out
+// either (DESIGN.md section 10): every message must have buttons. When
+// they are two releases (NODKEY_E2E_BROKER_BIN and NODKEY_E2E_CLIENT_BIN),
+// the only messages without buttons are the notices about the version of
+// a client, and there must be one. It runs after the broker has stopped,
+// when its alerts in the background have gone out too.
 func (e *env) searchClaimed(t *testing.T) {
 	for _, text := range e.tg.unasked(t) {
 		t.Errorf("a message without buttons went out, an alert or a notice:\n%s", redact(text))
+	}
+	if versionNotice() != nil && e.tg.versionNotices() == 0 {
+		t.Errorf("the client runs nodkey %s and the broker nodkey %s, but no notice about the version of a client went out (DESIGN.md section 10)",
+			run.clientVersion, run.brokerVersion)
 	}
 	if len(e.reasons) == 0 {
 		t.Fatal("no case sent claimed text; the search does not test")
@@ -651,7 +750,7 @@ func (e *env) searchClaimed(t *testing.T) {
 		if !strings.HasPrefix(p.name, "nodkey ") {
 			continue // ssh and git print what the person ran
 		}
-		outputs := map[string]string{"stderr": p.stderr.text()}
+		outputs := map[string]string{"stderr": p.stderr.fullText()}
 		if p.name != "nodkey run" { // its stdout is the command's
 			outputs["stdout"] = p.stdout.text()
 		}
@@ -694,7 +793,7 @@ func (e *env) searchCanaries(t *testing.T) {
 	}
 	for i, p := range e.procs.all() {
 		texts["stdout of "+p.name+" #"+strconv.Itoa(i)] = p.stdout.text()
-		texts["stderr of "+p.name+" #"+strconv.Itoa(i)] = p.stderr.text()
+		texts["stderr of "+p.name+" #"+strconv.Itoa(i)] = p.stderr.fullText()
 	}
 	for i, b := range e.tg.bodies() {
 		texts["call "+strconv.Itoa(i)+" to Telegram"] = b

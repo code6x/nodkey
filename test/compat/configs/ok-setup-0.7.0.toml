@@ -1,0 +1,84 @@
+listen = "192.0.2.10:7743"          # an address on your private network only
+tls_key = "${CREDENTIALS_DIRECTORY}/broker-tls-key"
+audit_log = "/var/lib/nodkey/audit.jsonl"
+known_hosts = "/etc/nodkey/known_hosts"
+
+[telegram]
+token_file = "${CREDENTIALS_DIRECTORY}/telegram-token"
+user_id = 123456789                 # the approver
+notice_chat_id = 123456789          # optional; default: the approver's chat
+timeout = "120s"                    # secrets
+ssh_timeout = "90s"                 # SSH signatures
+
+[updates]
+check = true                        # optional; false: never ask GitHub for a newer release
+
+# [preapprove], [standing] and preapprove = true are new in 0.3.0; leave them out for 0.2.0
+[preapprove]                        # optional; the limits of scheduled grants
+max_ahead = "168h"                  # how far ahead a grant may start; default 7 days
+max_open = "8h"                     # the longest time from start to end
+max_uses = 10                       # the most uses of one grant
+max_grants = 5                      # the most per client: approved, not ended, plus waiting
+
+[standing]                          # optional; the limits of standing grants (DESIGN.md section 8)
+summary = "mon 09:00"               # the weekly list of standing grants, in broker local time
+
+[client.laptop]
+pin = "sha256:xWsaGUsjjvJzyoihBxnypn7sumBRkcAfZJtjeiDRycc"     # printed by `nodkey keygen`
+
+[store.main]                         # any name; `type` picks the program
+type = "bws"
+program = "/usr/local/bin/bws"
+token_file = "${CREDENTIALS_DIRECTORY}/bws-token"
+
+[store.backup-job]                   # a second machine account, one project
+type = "bws"
+program = "/usr/local/bin/bws"
+token_file = "${CREDENTIALS_DIRECTORY}/bws-token-backup"
+
+[store.vault]
+type = "bw"
+program = "/usr/local/bin/bw"
+password_file = "${CREDENTIALS_DIRECTORY}/bw-master-password"
+
+[store.op]                           # 1Password: no `program`
+type = "1password"
+vault = "abcdefghijklmnopqrstuvwxyz" # the ID of the vault, 26 small letters and digits
+token_file = "${CREDENTIALS_DIRECTORY}/op-token"
+
+[store.inf]                          # Infisical: no `program`
+type = "infisical"
+server = "https://app.infisical.com"
+client_id = "00000000-0000-0000-0000-000000000000" # of the machine identity
+client_secret_file = "${CREDENTIALS_DIRECTORY}/infisical-secret"
+
+[secret.github-token]
+store = "main"
+id = "00000000-0000-0000-0000-000000000000"
+clients = ["laptop"]
+ask = "window"
+window = "15m"
+preapprove = true                   # new in 0.3.0; optional; default false: allows `nodkey preapprove`
+
+[secret.deploy-token]
+store = "op"
+id = "abcdefghijklmnopqrstuvwxyz"   # the ID of the item, never its name
+field = "password"                  # optional; a field's ID or title; default "password"
+clients = ["laptop"]
+ask = "always"
+
+[secret.ci-token]
+store = "inf"
+project = "00000000-0000-0000-0000-000000000000" # the ID of the project
+environment = "prod"                # the slug
+path = "/"                          # required; no default
+name = "CI_TOKEN"
+clients = ["laptop"]
+ask = "always"
+
+[key.deploy]
+file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
+clients = ["laptop"]
+ask = "window"
+window = "15m"
+hosts = ["web-1", "web-2"]          # optional; empty means any known host
