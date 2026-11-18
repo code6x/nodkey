@@ -161,3 +161,13 @@ func TestPrefixRoom(t *testing.T) {
 		t.Fatalf("a notice with the prefix has %d UTF-16 code units, more than %d", n, maxTextUnits)
 	}
 }
+
+// IsCallError is true only for an error of a Bot API call.
+func TestIsCallError(t *testing.T) {
+	if !IsCallError(fmt.Errorf("wrapped: %w", &apiError{method: "getMe", reason: "no answer"})) {
+		t.Error("an error of a call is not a call error")
+	}
+	if IsCallError(errors.New("other")) || IsCallError(nil) {
+		t.Error("another error is a call error")
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/store"
+	"github.com/code6x/nodkey/internal/telegram"
 )
 
 // tryFiles are the files of nodkey try. Only they may use its parts.
@@ -276,5 +277,28 @@ func TestTryLinesConcurrent(t *testing.T) {
 	wg.Wait()
 	if want := strings.Repeat("TRY MODE line\n", 400); b.String() != want {
 		t.Fatal("lines are mixed")
+	}
+}
+
+// Each error of the Telegram part says how to fix it, once: only an error
+// of a Bot API call gets the hint about the network.
+func TestTryTelegramErr(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "start nodkey try --telegram again"},
+		{telegram.ErrPollConflict, "never the broker's bot"},
+		{telegram.ErrTokenRefused, "from @BotFather again"},
+		{errors.New("telegram: this is not a bot token; copy it again"), "telegram: this is not a bot token; copy it again"},
+	} {
+		got := tryTelegramErr(tc.err)
+		if !strings.Contains(got, tc.want) || strings.Count(got, "start nodkey try --telegram again") > 1 {
+			t.Errorf("tryTelegramErr(%v) = %q", tc.err, got)
+		}
+		if tc.err != nil && !errors.Is(tc.err, telegram.ErrPollConflict) && !errors.Is(tc.err, telegram.ErrTokenRefused) &&
+			strings.Contains(got, "api.telegram.org") {
+			t.Errorf("tryTelegramErr(%v) adds the network hint: %q", tc.err, got)
+		}
 	}
 }

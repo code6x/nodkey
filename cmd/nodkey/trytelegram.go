@@ -37,13 +37,17 @@ const tryConflictText = "Telegram says another program polls this bot, maybe a n
 // tryTelegramErr is the text of an error of the Telegram part of the trial.
 func tryTelegramErr(err error) string {
 	switch {
+	case err == nil:
+		return "the Telegram approver stopped; start nodkey try --telegram again"
 	case errors.Is(err, telegram.ErrPollConflict):
 		return tryConflictText
 	case errors.Is(err, telegram.ErrTokenRefused):
 		return "Telegram does not accept the bot token; copy the token of the new bot from @BotFather again, " +
 			"then start nodkey try --telegram again"
+	case telegram.IsCallError(err):
+		return err.Error() + "; check that this machine can reach api.telegram.org, then start nodkey try --telegram again"
 	}
-	return err.Error() + "; check that this machine can reach api.telegram.org, then start nodkey try --telegram again"
+	return err.Error()
 }
 
 // tryInputErr is the error of a line that the person did not type.

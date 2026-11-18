@@ -260,7 +260,7 @@ func newApprover(cfg config.Telegram, opts Options, read func(string) ([]byte, e
 		return nil, errors.New("telegram: the approver's user ID must be more than 0")
 	}
 	if utf16Len(opts.Prefix) > maxPrefixUnits {
-		return nil, fmt.Errorf("telegram: the message prefix is longer than %d characters; use a shorter Options.Prefix", maxPrefixUnits)
+		return nil, fmt.Errorf("telegram: the message prefix is longer than %d characters (UTF-16 code units); use a shorter Options.Prefix", maxPrefixUnits)
 	}
 	if cfg.NoticeChatID == 0 {
 		return nil, errors.New("telegram: the notice chat ID must not be 0")

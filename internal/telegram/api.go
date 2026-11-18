@@ -91,6 +91,13 @@ func parseToken(data []byte) (botToken, error) {
 // apiError is an error of one Bot API call. Its text names the method and
 // a fixed reason, never Go's error text, the URL, the token or Telegram's
 // description.
+// IsCallError reports whether err comes from a call of the Bot API that
+// failed: no answer, or an answer that is not ok.
+func IsCallError(err error) bool {
+	var e *apiError
+	return errors.As(err, &e)
+}
+
 type apiError struct {
 	method     string
 	reason     string        // a fixed text
