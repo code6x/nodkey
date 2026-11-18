@@ -352,6 +352,8 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTelegram(w, http.StatusOK, message(p.MessageID))
 	case "answerCallbackQuery":
 		writeTelegram(w, http.StatusOK, `{"ok":true,"result":true}`)
+	case "getMe":
+		writeTelegram(w, http.StatusOK, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"try_test_bot"}}`)
 	default:
 		writeTelegram(w, http.StatusNotFound, `{"ok":false,"error_code":404,"description":"Not Found"}`)
 	}
@@ -607,6 +609,28 @@ func (f *fakeTelegram) tap(msgID int64, data string) string {
 	f.updates = append(f.updates, tgUpdate{id: f.nextUpdate, raw: raw})
 	f.notifyLocked()
 	return id
+}
+
+// sendStart queues the message "/start code" from the approver, in a
+// private chat with the bot.
+func (f *fakeTelegram) sendStart(code string) {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextUpdate++
+	raw, err := json.Marshal(map[string]any{
+		"update_id": f.nextUpdate,
+		"message": map[string]any{
+			"message_id": 1, "date": 1, "text": "/start " + code,
+			"chat": map[string]any{"id": approverID, "type": "private"},
+			"from": map[string]any{"id": approverID, "is_bot": false, "first_name": "Test", "username": "test_user"},
+		},
+	})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.updates = append(f.updates, tgUpdate{id: f.nextUpdate, raw: raw})
+	f.notifyLocked()
 }
 
 // waitTapAnswer waits for the answer to the press id
