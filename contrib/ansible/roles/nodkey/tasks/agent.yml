@@ -1,0 +1,107 @@
+---
+# The agent side: nodkey ssh-agent as a user unit of one account
+# (docs/setup.md section 11). All files are in /etc/systemd/user, owned by
+# root. The role never writes into the home directory of the account,
+# which the agent can change.
+
+# When the account changes, or is removed, stop the agent of the old
+# account: ConditionUser= does not stop a unit that runs.
+- name: Read the user unit of an earlier run
+  ansible.builtin.slurp:
+    src: /etc/systemd/user/nodkey-ssh-agent.service
+  register: nodkey_agent_old_unit
+  failed_when: false
+
+- name: Set the account of the earlier run
+  ansible.builtin.set_fact:
+    nodkey_agent_old_user: >-
+      {{ ((nodkey_agent_old_unit.content | default('') | b64decode)
+          | regex_findall('(?m)^ConditionUser=([a-z_][a-z0-9_-]{0,31})$') + [''])[0] }}
+
+- name: Stop nodkey ssh-agent of the old account
+  ansible.builtin.shell: |
+    set -eu
+    run="/run/user/$(id -u -- "$NODKEY_USER")" || exit 0
+    [ -d "$run/systemd" ] || exit 0
+    runuser -u "$NODKEY_USER" -- env XDG_RUNTIME_DIR="$run" systemctl --user stop nodkey-ssh-agent.service
+  environment:
+    NODKEY_USER: "{{ nodkey_agent_old_user }}"
+  changed_when: true
+  when:
+    - nodkey_agent_old_user != ''
+    - nodkey_agent_old_user != nodkey_ssh_agent_user
+    - not ansible_check_mode
+
+- name: Set up the user unit
+  when: nodkey_ssh_agent_user != ''
+  block:
+    - name: Read the account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ nodkey_ssh_agent_user }}"
+        fail_key: false
+
+    - name: Check that the account is there
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['getent_passwd'][nodkey_ssh_agent_user] is not none
+        fail_msg: >-
+          nodkey role: the account {{ nodkey_ssh_agent_user }} of
+          nodkey_ssh_agent_user is not on the host. Make it first, or set
+          nodkey_ssh_agent_user to "".
+        quiet: true
+
+    - name: Install the user unit nodkey-ssh-agent
+      ansible.builtin.template:
+        src: nodkey-ssh-agent.service.j2
+        dest: /etc/systemd/user/nodkey-ssh-agent.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: nodkey_agent_unit
+
+    - name: Make /etc/systemd/user/default.target.wants
+      ansible.builtin.file:
+        path: /etc/systemd/user/default.target.wants
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # The same link as "systemctl --global enable nodkey-ssh-agent".
+    # force: in check mode, the unit is not there yet.
+    - name: Enable the user unit
+      ansible.builtin.file:
+        src: ../nodkey-ssh-agent.service
+        dest: /etc/systemd/user/default.target.wants/nodkey-ssh-agent.service
+        state: link
+        force: true
+        owner: root
+        group: root
+      register: nodkey_agent_link
+
+    - name: Note that a restart is due
+      ansible.builtin.include_tasks: restart-due.yml
+      when: nodkey_agent_unit is changed or nodkey_agent_link is changed
+
+    # Linger starts the user manager of the account at boot, and with it
+    # the agent. Without it, the agent starts only at a login. The role
+    # never turns linger off: the account may need it for other units.
+    - name: Turn on linger for the account
+      ansible.builtin.command:
+        argv:
+          - loginctl
+          - enable-linger
+          - "{{ nodkey_ssh_agent_user }}"
+        creates: "/var/lib/systemd/linger/{{ nodkey_ssh_agent_user }}"
+      when: nodkey_ssh_agent_linger | bool
+
+# No account: no user unit. This removes one that an earlier run made.
+- name: Remove the user unit
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/user/default.target.wants/nodkey-ssh-agent.service
+    - /etc/systemd/user/nodkey-ssh-agent.service
+  when: nodkey_ssh_agent_user == ''

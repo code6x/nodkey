@@ -1,0 +1,249 @@
+---
+# The nodkey role: it installs nodkey on the broker host or on an agent
+# machine, as docs/setup.md says, with the checks of install.sh. How it
+# works, and why: contrib/ansible/README.md and DESIGN.md section 18.
+
+- name: Check that this is a role from a release
+  ansible.builtin.assert:
+    that:
+      - nodkey_role_version is defined
+      - nodkey_install_sh_sha256 is defined
+      - nodkey_unit_sha256 is defined
+    fail_msg: >-
+      nodkey role: this is the source of the role, without the install.sh
+      and the unit of a release. Use the role from the release file
+      nodkey_X.Y.Z_ansible.tar.gz, or build it with contrib/ansible/build.sh
+      (contrib/ansible/README.md, "Get the role").
+    quiet: true
+
+- name: Check nodkey_side
+  ansible.builtin.assert:
+    that:
+      - nodkey_side in ['broker', 'agent']
+    fail_msg: >-
+      nodkey role: nodkey_side is "{{ nodkey_side }}"; set it to broker or
+      agent (contrib/ansible/README.md, "Settings").
+    quiet: true
+
+- name: Check nodkey_version
+  ansible.builtin.assert:
+    that:
+      - nodkey_version is string
+      - nodkey_version is match('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+      - nodkey_version == nodkey_role_version
+    fail_msg: >-
+      nodkey role: nodkey_version is "{{ nodkey_version }}", but this is the
+      role of nodkey {{ nodkey_role_version }}, and it installs only that
+      release, with the install.sh and the unit of its tag. Set
+      nodkey_version to {{ nodkey_role_version }}, or get the role of the
+      release you want (contrib/ansible/README.md, "Update").
+    quiet: true
+
+- name: Check the other settings
+  ansible.builtin.assert:
+    that:
+      - nodkey_restart is boolean
+      - nodkey_ssh_agent_linger is boolean
+      - nodkey_broker_config is string
+      - nodkey_broker_config == '' or nodkey_broker_config is match('^/[^\n]*$')
+      - nodkey_ssh_agent_user is string
+      - nodkey_ssh_agent_user == '' or nodkey_ssh_agent_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - nodkey_ssh_agent_user != 'root'
+    fail_msg: >-
+      nodkey role: a setting has a wrong value. nodkey_restart and
+      nodkey_ssh_agent_linger are true or false; nodkey_broker_config is
+      empty or an absolute path; nodkey_ssh_agent_user is empty or the name
+      of an account other than root. See contrib/ansible/README.md,
+      "Settings".
+    quiet: true
+
+- name: Check the host
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['system'] == 'Linux'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: >-
+      nodkey role: the host must run Linux with systemd. Gather the facts
+      (gather_facts: true) and run the role on such a host.
+    quiet: true
+
+# The pins: the SHA-256 of install.sh and of the unit, which build.sh
+# wrote into vars/main.yml from the tag. This runs before any change.
+- name: Check the SHA-256 of install.sh in the role
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.file', 'install.sh', rstrip=false) | hash('sha256') == nodkey_install_sh_sha256
+    fail_msg: >-
+      nodkey role: files/install.sh of the role does not have the SHA-256 of
+      vars/main.yml. Nothing was installed. Get the role again from the
+      release and check it (contrib/ansible/README.md, "Get the role").
+    quiet: true
+
+- name: Check the SHA-256 of the unit in the role
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.file', 'nodkey.service', rstrip=false) | hash('sha256') == nodkey_unit_sha256
+    fail_msg: >-
+      nodkey role: files/nodkey.service of the role does not have the
+      SHA-256 of vars/main.yml. Nothing was installed. Get the role again
+      from the release and check it (contrib/ansible/README.md, "Get the
+      role").
+    quiet: true
+
+- name: Read the installed nodkey
+  ansible.builtin.include_tasks: installed.yml
+
+- name: Check the installed nodkey
+  ansible.builtin.assert:
+    that:
+      - nodkey_installed == '' or nodkey_installed is match('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+    fail_msg: >-
+      nodkey role: /usr/local/bin/nodkey is there, but "nodkey version" does
+      not name a release (exit {{ nodkey_installed_out.rc | default('-') }}).
+      The role updates only a release. As root, install a release by hand
+      (docs/setup.md section 2), or remove the file; then run the role
+      again.
+    quiet: true
+
+# Forward only: a host never goes back to an older release through the
+# role. To go back, a person does it by hand (docs/setup.md section 13).
+- name: Refuse a version older than the installed one
+  ansible.builtin.assert:
+    that:
+      - nodkey_installed == '' or nodkey_installed is version(nodkey_version, '<=')
+    fail_msg: >-
+      nodkey role: nodkey {{ nodkey_installed }} is installed, which is newer
+      than nodkey_version {{ nodkey_version }}. The role never goes back to
+      an older release. Use the role of nodkey {{ nodkey_installed }} or
+      newer, or go back by hand as root (docs/setup.md section 13).
+    quiet: true
+
+- name: Set what to do
+  ansible.builtin.set_fact:
+    nodkey_action: >-
+      {{ 'install' if nodkey_installed == ''
+         else ('update' if nodkey_installed is version(nodkey_version, '<') else 'none') }}
+
+- name: Show the change in check mode
+  ansible.builtin.debug:
+    msg: >-
+      nodkey: would {{ nodkey_action }} nodkey {{ nodkey_version }}
+      {{ '(installed: ' ~ nodkey_installed ~ ')' if nodkey_installed else '' }}
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - nodkey_action != 'none'
+
+# The first install: the install.sh of the tag, checked above and again
+# on the host. It checks the SHA-256 of the release, its attestation and
+# the version of the new binary, and installs nothing if a check fails.
+- name: Install nodkey with the install.sh of the tag
+  when:
+    - nodkey_action == 'install'
+    - not ansible_check_mode
+  block:
+    - name: Make a temporary directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: nodkey-role.
+      register: nodkey_tmp
+
+    - name: Copy install.sh to the host
+      ansible.builtin.copy:
+        src: install.sh
+        dest: "{{ nodkey_tmp.path }}/install.sh"
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Read the SHA-256 of install.sh on the host
+      ansible.builtin.stat:
+        path: "{{ nodkey_tmp.path }}/install.sh"
+        checksum_algorithm: sha256
+      register: nodkey_install_sh
+
+    - name: Check the SHA-256 of install.sh on the host
+      ansible.builtin.assert:
+        that:
+          - nodkey_install_sh.stat.checksum == nodkey_install_sh_sha256
+        fail_msg: >-
+          nodkey role: install.sh on the host does not have the pinned
+          SHA-256. Nothing was installed. Run the role again.
+        quiet: true
+
+    - name: Run install.sh
+      ansible.builtin.command:
+        argv:
+          - /bin/sh
+          - "{{ nodkey_tmp.path }}/install.sh"
+          - --version
+          - "{{ nodkey_version }}"
+      changed_when: true
+      register: nodkey_install_run
+  always:
+    - name: Remove the temporary directory
+      ansible.builtin.file:
+        path: "{{ nodkey_tmp.path }}"
+        state: absent
+      when: nodkey_tmp.path is defined
+
+# An update: only the installed, checked binary, with the installer that
+# is built into it. The role brings no check of its own for an update.
+- name: Update nodkey with the installed nodkey
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/nodkey
+      - update
+      - --version
+      - "{{ nodkey_version }}"
+  changed_when: true
+  register: nodkey_update_run
+  when:
+    - nodkey_action == 'update'
+    - not ansible_check_mode
+
+- name: Note that a restart is due
+  ansible.builtin.include_tasks: restart-due.yml
+  when: nodkey_install_run is changed or nodkey_update_run is changed
+
+- name: Read the version of the new nodkey
+  ansible.builtin.command: /usr/local/bin/nodkey version
+  register: nodkey_new_out
+  changed_when: false
+  check_mode: false
+  when: not (ansible_check_mode and nodkey_action == 'install')
+
+- name: Check that nodkey is the pinned version
+  ansible.builtin.assert:
+    that:
+      - (nodkey_new_out.stdout_lines + [''])[0] == 'nodkey ' ~ nodkey_version
+    fail_msg: >-
+      nodkey role: /usr/local/bin/nodkey says "{{ (nodkey_new_out.stdout_lines + [''])[0] }}",
+      not "nodkey {{ nodkey_version }}". Check the host as root with
+      "nodkey version" (docs/setup.md section 2).
+    quiet: true
+  when:
+    - not ansible_check_mode or nodkey_action == 'none'
+
+- name: Set up the broker side
+  ansible.builtin.include_tasks: broker.yml
+  when: nodkey_side == 'broker'
+
+- name: Set up the agent side
+  ansible.builtin.include_tasks: agent.yml
+  when: nodkey_side == 'agent'
+
+# A restart is due until a handler did it. The mark stays when the play
+# fails before the handlers, so the next run restarts. Else a failed
+# config check after an update would leave the old binary running.
+- name: Look for a restart that is due
+  ansible.builtin.stat:
+    path: /var/lib/nodkey-ansible/restart-due
+  register: nodkey_restart_due
+
+- name: Restart at the end of the play
+  ansible.builtin.debug:
+    msg: "nodkey: a restart is due; it runs at the end of the play."
+  changed_when: true
+  notify: nodkey restart due
+  when: nodkey_restart_due.stat.exists or (ansible_check_mode and nodkey_action != 'none')

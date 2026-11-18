@@ -1827,6 +1827,72 @@ What nodkey does not do:
 - The git host is one more outbound connection of the broker host.
 Risk that remains: low, when the owner reads every `⚠` line.
 
+**T53. The Ansible role installs a changed nodkey or unit, as root.**
+The role in `contrib/ansible/` (DESIGN.md section 18) runs as root on
+the broker host or an agent machine, and downloads a release. The new
+parties: the copy of the role on the machine that runs Ansible, and,
+with the playbooks, the data file of the host and who can write it.
+What nodkey does:
+- **The same checks as `install.sh`, and no way to skip them.** The
+  first install runs the `install.sh` of the tag, which checks the
+  SHA-256 in `SHA256SUMS`, the attestation with `gh attestation verify`
+  and the version of the new binary (T20). An update runs only
+  `nodkey update --version X` of the installed nodkey, so its checks
+  come from the checked binary on the host, not from the role, a play or
+  a repo. The role has no setting to skip the attestation or any other
+  check.
+- **The role comes checked, from the release.** The release file
+  `nodkey_VERSION_ansible.tar.gz` holds the role, the playbooks and
+  `check-data`, with the `install.sh` and the unit of the tag in the
+  role, and their SHA-256 pinned in `roles/nodkey/vars/main.yml`. It is
+  in `SHA256SUMS` and covered by the build attestation of the release,
+  as the binaries are. The guide (`contrib/ansible/README.md`) checks it
+  with both, and unpacks it into a directory that only root can change.
+  The role checks the pinned SHA-256 of its `install.sh` and unit before
+  any change, and the source in the repository refuses to run.
+- **It runs no file that someone else can change.** Before it runs the
+  installed `/usr/local/bin/nodkey` as root, the role and the playbooks
+  check that it is a plain file, no link, and that only root can change
+  it and each directory above it, as `install.sh` does. On an agent
+  machine, the agent may be able to change such a file.
+- **Forward only.** The role refuses a version older than the installed
+  one, so a change of the version cannot take a host back to an older
+  release with a known bug. It installs only the version of its own
+  release, with the unit of the same tag.
+- **The data file is only data.** The playbooks copy the file to a
+  private directory, run `check-data` on the copy, and read the same
+  copy with `include_vars name:` into one variable: only known keys,
+  each with its type. A key of the file cannot set a pin or another
+  setting of the role. Ansible renders a text value with `{{` as a
+  template; `check-data` allows only the characters of a path or an
+  account name, so no value of the file is a template. A config path of
+  the file must be in `/etc/nodkey/`, so a failed check shows no line of
+  a file elsewhere. Keep no secret in `/etc/nodkey/` that the user
+  `nodkey` can read: the credentials are in `credentials/`, which only
+  root can enter. The role writes no
+  `broker.toml`, no drop-in and no credential; the credential directory
+  stays an empty slot (`0700`, root).
+- On an agent machine, the role writes no file in the home directory of
+  the account, which the agent controls: a link there would turn a
+  write as root into a write anywhere.
+What nodkey does not do:
+- It cannot protect a role that is run from a place that someone else
+  can change: then that person can change any task, which runs as root.
+  Run it only from the checked release file, from a directory that only
+  root can change.
+- Who can write the data file can only confirm the version of the
+  recipe that is installed on the host, turn the restart on or off,
+  and, on an agent machine, choose the account of the user unit. Who
+  installs a newer recipe on the host chooses the release. A restart
+  ends all grants. Nobody can choose an older release or a file that is
+  not checked through the data file.
+- A version that the role pins was checked only by its build; a bad
+  release is a bad release (T20).
+- When a play fails after an update, the old binary may still run until
+  the next run that passes: the mark `/var/lib/nodkey-ansible/restart-due`
+  makes that run restart it.
+Risk that remains: low, when the role comes from a checked release file.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

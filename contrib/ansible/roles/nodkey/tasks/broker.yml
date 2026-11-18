@@ -1,0 +1,92 @@
+---
+# The broker side: the user, the directories and the unit of
+# docs/setup.md sections 3, 7 and 8. The role never writes broker.toml,
+# known_hosts or a credential.
+
+- name: Make the group nodkey
+  ansible.builtin.group:
+    name: nodkey
+    system: true
+
+- name: Make the user nodkey
+  ansible.builtin.user:
+    name: nodkey
+    group: nodkey
+    system: true
+    home: /var/lib/nodkey
+    create_home: false
+    shell: /usr/sbin/nologin
+  register: nodkey_user
+
+- name: Make /etc/nodkey
+  ansible.builtin.file:
+    path: /etc/nodkey
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# An empty slot: the role never writes a credential into it.
+- name: Make /etc/nodkey/credentials
+  ansible.builtin.file:
+    path: /etc/nodkey/credentials
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# The unit of the tag, unchanged. Fit it to the host with a drop-in in
+# /etc/systemd/system/nodkey.service.d/, which the role never changes.
+# A unit changed by hand is kept as a backup file next to it. The mark
+# is a task, not a handler, so that it stays when the play fails later.
+- name: Install the unit of the tag
+  ansible.builtin.copy:
+    src: nodkey.service
+    dest: /etc/systemd/system/nodkey.service
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  register: nodkey_unit_copy
+
+- name: Note that a restart is due  # noqa: no-handler
+  ansible.builtin.include_tasks: restart-due.yml
+  when: nodkey_unit_copy is changed
+
+- name: Check the config of the host
+  when: nodkey_broker_config != ''
+  block:
+    - name: Look for the config file
+      ansible.builtin.stat:
+        path: "{{ nodkey_broker_config }}"
+      register: nodkey_config_file
+
+    - name: Check that the config file is there
+      ansible.builtin.assert:
+        that:
+          - nodkey_config_file.stat.exists
+          - nodkey_config_file.stat.isreg
+        fail_msg: >-
+          nodkey role: nodkey_broker_config is {{ nodkey_broker_config }},
+          but that is not a file on the host. The role never writes it: put
+          the config there (docs/setup.md section 7), or set
+          nodkey_broker_config to "".
+        quiet: true
+
+    # In check mode before the first install, there is no nodkey and no
+    # user nodkey yet to run the check.
+    - name: Check the config with nodkey broker check
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - nodkey
+          - --
+          - /usr/local/bin/nodkey
+          - broker
+          - check
+          - --config
+          - "{{ nodkey_broker_config }}"
+      changed_when: false
+      check_mode: false
+      when: not (ansible_check_mode and (nodkey_action == 'install' or nodkey_user is changed))

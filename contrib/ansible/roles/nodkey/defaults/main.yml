@@ -1,0 +1,30 @@
+---
+# The defaults of the nodkey role. README.md (next to the playbooks)
+# explains each one.
+
+# broker: the broker host. agent: an agent machine (a client).
+nodkey_side: agent
+
+# The release to install, X.Y.Z. It must be the version of this role:
+# the role of release X.Y.Z installs nodkey X.Y.Z, with the install.sh
+# and the unit of the same tag. The release tarball sets
+# nodkey_role_version in vars/main.yml.
+nodkey_version: "{{ nodkey_role_version | default('') }}"
+
+# A changed binary or unit restarts the broker (only if it runs), and the
+# nodkey ssh-agent user unit. A restart of the broker ends all grants:
+# set false to restart it yourself.
+nodkey_restart: true
+
+# Broker side: the config file that the host provides. The role never
+# writes it. When set, the role checks it with nodkey broker check, as
+# the user nodkey. Empty: no check.
+nodkey_broker_config: ""
+
+# Agent side: the account that runs nodkey ssh-agent as a user unit.
+# Empty: no user unit.
+nodkey_ssh_agent_user: ""
+
+# Agent side: turn on linger for that account, so its user manager, and
+# the agent, start at boot and not only at a login.
+nodkey_ssh_agent_linger: true

@@ -1,0 +1,16 @@
+# Made by the nodkey Ansible role (contrib/ansible in the nodkey
+# repository). The role changes this file again at its next run.
+#
+# The unit of docs/setup.md (section 11), for one account only: it is a
+# user unit of every account, but ConditionUser= lets it start only for
+# this one. It is in /etc/systemd/user, owned by root, so the role never
+# writes into the home directory of the account.
+[Unit]
+Description=nodkey ssh-agent: SSH logins with the keys of the broker
+ConditionUser={{ nodkey_ssh_agent_user }}
+
+[Service]
+ExecStart=/usr/local/bin/nodkey ssh-agent
+
+[Install]
+WantedBy=default.target

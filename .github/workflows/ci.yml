@@ -35,14 +35,15 @@ jobs:
         with:
           go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
           go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
-      - name: Install ssh and sshd for the SSH tests
-        # The tests of internal/sshauth run the real ssh and sshd. GitHub
+      - name: Install ssh and sshd for the SSH tests, and PyYAML
+        # The tests of internal/sshauth run the real ssh and sshd, and the
+        # tests of contrib/ansible/check-data need PyYAML. GitHub
         # sets CI=true, and then these tests fail instead of skip when a
         # program is missing.
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends openssh-client openssh-server
+          sudo apt-get install --yes --no-install-recommends openssh-client openssh-server python3-yaml
           # The package starts the system ssh service; the tests run their
           # own sshd, so stop it and keep port 22 closed.
           sudo systemctl disable --now ssh.socket ssh.service || true
@@ -63,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: shellcheck install.sh and contrib/pullgate
+      - name: shellcheck install.sh, contrib/pullgate and contrib/ansible
         # A fixed release of ShellCheck, checked by its SHA-256. Dependabot
         # does not update it. Update it by hand: the version and the SHA-256
         # of shellcheck-VERSION.linux.x86_64.tar.xz together.
@@ -83,6 +84,7 @@ jobs:
           # The scripts of the pullgate recipe source lib.sh from their own
           # directory.
           (cd contrib/pullgate && "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh -x -- *.sh)
+          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh contrib/ansible/build.sh contrib/ansible/test/ci.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -120,6 +122,41 @@ jobs:
         # of test/e2e/testdata/sshd, and removes every container, network
         # and image that it makes. It fails if one is left.
         run: go test -race -tags e2e ./test/e2e/...
+
+  ansible:
+    name: ansible role
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Two releases with a Sigstore bundle: the test installs OLD, updates
+      # it to NEW, and installs NEW. Update both by hand after a release.
+      ANSIBLE_TEST_OLD: 0.6.0
+      ANSIBLE_TEST_NEW: 0.7.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The test takes install.sh and the unit from the tags.
+          fetch-depth: 0
+      - name: Install ansible-lint
+        # Fixed versions. Dependabot does not update them. Update them by
+        # hand, both together.
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/ansible"
+          "${RUNNER_TEMP}/ansible/bin/pip" install --quiet ansible-core==2.21.6 ansible-lint==26.11.0
+      - name: ansible-lint
+        working-directory: contrib/ansible
+        run: |
+          set -euo pipefail
+          export PATH="${RUNNER_TEMP}/ansible/bin:$PATH"
+          ansible-lint --version
+          ansible-lint --strict --profile production .
+      - name: The role in a Debian container with systemd
+        # contrib/ansible/test/ci.sh: both sides, a second run with no
+        # change, the unit of the tag, a wrong SHA-256, an older and a
+        # newer version. It removes the containers and the image.
+        run: sh contrib/ansible/test/ci.sh "$ANSIBLE_TEST_OLD" "$ANSIBLE_TEST_NEW"
 
   vuln:
     runs-on: ubuntu-latest

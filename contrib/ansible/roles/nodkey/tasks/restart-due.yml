@@ -1,0 +1,19 @@
+---
+# Mark that a restart is due: the handlers remove the mark after the
+# restart. The directory is the role's own, and only root can enter it.
+
+- name: Make /var/lib/nodkey-ansible
+  ansible.builtin.file:
+    path: /var/lib/nodkey-ansible
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Mark that a restart is due
+  ansible.builtin.copy:
+    content: "nodkey {{ nodkey_version }}\n"
+    dest: /var/lib/nodkey-ansible/restart-due
+    owner: root
+    group: root
+    mode: "0600"

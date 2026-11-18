@@ -1,0 +1,96 @@
+---
+# The fixed playbook of the broker side, for a host that keeps only data
+# in its repository (README.md, "The data file"). Run it as root:
+#
+#   ansible-playbook -i localhost, --connection local \
+#     playbooks/broker-host.yml -e nodkey_data_file=/path/to/host.yml
+#
+# It reads the data file itself, into one variable, after check-data
+# passed. So a key of the file can never change a setting of the role
+# that the file must not set, such as a pinned SHA-256. Do not pass the
+# file with -e @host.yml: then each key would become a variable.
+
+- name: Install nodkey, the broker side, from a data file
+  hosts: all
+  gather_facts: true
+  gather_subset:
+    - "!all"
+    - "min"
+  tasks:
+    - name: Check nodkey_data_file
+      ansible.builtin.assert:
+        that:
+          - nodkey_data_file is defined
+          - nodkey_data_file is string
+          - nodkey_data_file is match('^/')
+        fail_msg: >-
+          Give the absolute path of the data file:
+          -e nodkey_data_file=/path/to/host.yml (README.md, "The data file").
+        quiet: true
+
+    # The same safe read as the role: only a nodkey that only root can
+    # change runs here.
+    - name: Read the installed nodkey
+      ansible.builtin.include_tasks: ../roles/nodkey/tasks/installed.yml
+
+    # Read the file once: check-data and include_vars both read a
+    # private copy, so the file cannot change between the check and the
+    # read. Ansible renders a value with "{{" as a template; check-data
+    # lets no such value through.
+    - name: Check and read the data file
+      delegate_to: localhost
+      become: false
+      block:
+        - name: Make a private directory for the copy
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: nodkey-data.
+          register: nodkey_data_tmp
+          # A scratch copy, removed below: not a change of the host.
+          changed_when: false
+          check_mode: false
+
+        - name: Copy the data file
+          ansible.builtin.copy:
+            src: "{{ nodkey_data_file }}"
+            dest: "{{ nodkey_data_tmp.path }}/host.yml"
+            mode: "0600"
+          changed_when: false
+          check_mode: false
+          diff: false
+
+        - name: Check the data file with check-data
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/../check-data"
+              - --side
+              - broker
+              - --installed
+              - "{{ nodkey_installed if nodkey_installed is match('^[0-9]+[.][0-9]+[.][0-9]+$') else 'none' }}"
+              - "{{ nodkey_data_tmp.path }}/host.yml"
+          changed_when: false
+          check_mode: false
+
+        - name: Read the data file
+          ansible.builtin.include_vars:
+            file: "{{ nodkey_data_tmp.path }}/host.yml"
+            name: nodkey_data
+      always:
+        - name: Remove the copy
+          ansible.builtin.file:
+            path: "{{ nodkey_data_tmp.path }}"
+            state: absent
+          changed_when: false
+          check_mode: false
+          when: nodkey_data_tmp.path is defined
+
+    # The role next to the playbooks, so it needs no roles_path.
+    - name: Run the nodkey role  # noqa: role-name[path]
+      ansible.builtin.include_role:
+        name: "{{ playbook_dir }}/../roles/nodkey"
+      vars:
+        nodkey_side: broker
+        nodkey_version: "{{ nodkey_data.nodkey_version }}"
+        nodkey_restart: "{{ nodkey_data.nodkey_restart | default(true) }}"
+        nodkey_broker_config: "{{ nodkey_data.nodkey_broker_config | default('') }}"

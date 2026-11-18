@@ -66,6 +66,14 @@ Planned. Each v1 issue adds its part.
   "Change the config from git with pullgate"; THREAT-MODEL.md T52). Its
   tests are in `contrib_pullgate_linux_test.go`, at the root of the
   module. The release packs it as `nodkey_VERSION_pullgate.tar.gz`.
+- `contrib/ansible/` - the Ansible recipe: the role `roles/nodkey` (broker
+  or agent side), the playbooks `broker-host.yml` and `agent-host.yml`
+  for a data file, `check-data`, and `build.sh`, which makes the recipe
+  of a release with the `install.sh` and the unit of the tag (DESIGN.md
+  section 18, THREAT-MODEL.md T53). Its tests are in
+  `contrib_ansible_linux_test.go`, at the root of the module, and
+  `contrib/ansible/test/ci.sh`, which runs the role in a container with
+  systemd. The release packs it as `nodkey_VERSION_ansible.tar.gz`.
 - `contrib/systemd/` - the example systemd unit of the broker, with
   encrypted credentials and a sandbox (DESIGN.md section 16).
 - `docs/` - the guides for people:

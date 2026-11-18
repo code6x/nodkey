@@ -1,0 +1,73 @@
+---
+# Read the version of the installed nodkey, safely. It runs as root, so
+# it first checks, as install.sh does, that only root can change the
+# file and each directory above it, and that the file is no link. Else
+# whoever can change it (on an agent machine: maybe the agent) would run
+# a program as root here. The playbooks run this file too, before
+# check-data. Sets nodkey_installed: "" (none), a version X.Y.Z, or
+# "not a release".
+
+- name: Look at the directories of /usr/local/bin/nodkey
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop: [/, /usr, /usr/local, /usr/local/bin]
+  register: nodkey_dirs
+
+- name: Check that only root can change these directories
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - not item.stat.wgrp
+      - not item.stat.woth
+    fail_msg: >-
+      nodkey role: {{ item.item }} is not a directory that only root can
+      change (owner root, no write for group and others, no link). Nothing
+      was run or installed. Fix it as root, such as with
+      chown root:root {{ item.item }} and chmod go-w {{ item.item }}.
+    quiet: true
+  loop: "{{ nodkey_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Look for an installed nodkey
+  ansible.builtin.stat:
+    path: /usr/local/bin/nodkey
+    follow: false
+    get_checksum: false
+  register: nodkey_binary
+
+- name: Check that only root can change the installed nodkey
+  ansible.builtin.assert:
+    that:
+      - nodkey_binary.stat.isreg
+      - not nodkey_binary.stat.islnk
+      - nodkey_binary.stat.uid == 0
+      - not nodkey_binary.stat.wgrp
+      - not nodkey_binary.stat.woth
+    fail_msg: >-
+      nodkey role: /usr/local/bin/nodkey is not a file that only root can
+      change (a plain file, owner root, no write for group and others).
+      It was not run. Check it as root; if you did not put it there,
+      remove it and run the role again.
+    quiet: true
+  when: nodkey_binary.stat.exists
+
+- name: Read the version of the installed nodkey
+  ansible.builtin.command: /usr/local/bin/nodkey version
+  register: nodkey_installed_out
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: nodkey_binary.stat.exists
+
+- name: Set the installed version
+  ansible.builtin.set_fact:
+    nodkey_installed: >-
+      {{ '' if not nodkey_binary.stat.exists
+         else ((((nodkey_installed_out.stdout_lines | default([])) + [''])[0] | regex_replace('^nodkey ', ''))
+               if nodkey_installed_out.rc == 0 else 'not a release') }}

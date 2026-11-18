@@ -1,0 +1,73 @@
+---
+# Handlers run at the end of the play, in this order, and only after
+# every task passed: a failed config check restarts nothing. The mark
+# /var/lib/nodkey-ansible/restart-due stays then, so the next run that
+# passes does the restart.
+
+# try-restart: only a broker that runs. A restart ends all grants. The
+# systemd_service module has no try-restart.
+- name: Restart the broker
+  ansible.builtin.shell: |
+    set -eu
+    systemctl daemon-reload
+    systemctl try-restart nodkey.service
+  changed_when: true
+  when:
+    - nodkey_side == 'broker'
+    - nodkey_restart | bool
+  listen: nodkey restart due
+
+- name: Reload the units without a restart
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - nodkey_side == 'broker'
+    - not (nodkey_restart | bool)
+  listen: nodkey restart due
+
+- name: Say that the broker needs a restart
+  ansible.builtin.debug:
+    msg: >-
+      nodkey: the binary or the unit changed, and nodkey_restart is false.
+      If the broker runs, restart it as root when it suits you:
+      systemctl restart nodkey. The restart ends all grants.
+  when:
+    - nodkey_side == 'broker'
+    - not (nodkey_restart | bool)
+  listen: nodkey restart due
+
+# Only when the user manager of the account runs. As the account, it
+# needs no D-Bus. It reads the unit again, and starts the agent, or
+# starts it again with the new binary.
+- name: Restart nodkey ssh-agent of the account
+  ansible.builtin.shell: |
+    set -eu
+    run="/run/user/$(id -u -- "$NODKEY_USER")"
+    [ -d "$run/systemd" ] || exit 0
+    runuser -u "$NODKEY_USER" -- env XDG_RUNTIME_DIR="$run" systemctl --user daemon-reload
+    runuser -u "$NODKEY_USER" -- env XDG_RUNTIME_DIR="$run" systemctl --user restart nodkey-ssh-agent.service
+  environment:
+    NODKEY_USER: "{{ nodkey_ssh_agent_user }}"
+  changed_when: true
+  when:
+    - nodkey_side == 'agent'
+    - nodkey_ssh_agent_user != ''
+    - nodkey_restart | bool
+  listen: nodkey restart due
+
+- name: Say that nodkey ssh-agent needs a restart
+  ansible.builtin.debug:
+    msg: >-
+      nodkey: the binary or the unit changed, and nodkey_restart is false.
+      Restart nodkey ssh-agent of the account when it suits you.
+  when:
+    - nodkey_side == 'agent'
+    - nodkey_ssh_agent_user != ''
+    - not (nodkey_restart | bool)
+  listen: nodkey restart due
+
+- name: Remove the mark of the restart
+  ansible.builtin.file:
+    path: /var/lib/nodkey-ansible/restart-due
+    state: absent
+  listen: nodkey restart due
