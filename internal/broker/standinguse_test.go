@@ -188,6 +188,7 @@ func TestStandingOldToken(t *testing.T) {
 func TestStandingOutsideWindow(t *testing.T) {
 	e, tok0, id := useEnv(t)
 	e.clock.Advance(3 * time.Hour) // 15:00
+	e.waitMissedAlarm()
 	for range 2 {
 		res, _ := e.useToken("laptop", tok0)
 		mustStatus(t, res, http.StatusForbidden)
@@ -451,19 +452,32 @@ func TestStandingForeignToken(t *testing.T) {
 func TestStandingOutsideWindowAlarmFails(t *testing.T) {
 	e, tok0, id := useEnv(t)
 	e.clock.Advance(3 * time.Hour) // 15:00
+	e.waitMissedAlarm()
 	e.approver.FailAlarm(errors.New("made-up: the alarm cannot be sent"))
 	res, _ := e.useToken("laptop", tok0)
 	mustStatus(t, res, http.StatusForbidden)
-	if n := len(e.approver.Alarms()); n != 0 {
-		t.Fatalf("%d alarms went out", n)
+	if n := len(e.approver.Alarms()); n != 1 {
+		t.Fatalf("%d alarms went out, want only the missed-window alarm", n)
 	}
 	e.approver.FailAlarm(nil)
 	for range 2 {
 		res, _ = e.useToken("laptop", tok0)
 		mustStatus(t, res, http.StatusForbidden)
 	}
-	if as := e.approver.Alarms(); len(as) != 1 || as[0].Cause != audit.AlarmOutsideWindow || as[0].GrantID != id {
+	if as := e.approver.Alarms(); len(as) != 2 || as[1].Cause != audit.AlarmOutsideWindow || as[1].GrantID != id {
 		t.Errorf("the alarms: %+v", as)
+	}
+}
+
+// waitMissedAlarm waits for the alarm of the window of 11:00-13:00 of
+// useEnv, after the clock went past 13:00 with no use in it. The core
+// sends it from its own goroutine, at a time that the test does not
+// control; a test that counts alarms waits for it first (#186).
+func (e *env) waitMissedAlarm() {
+	e.t.Helper()
+	as, err := e.approver.WaitAlarms(1, waitLimit)
+	if err != nil || len(as) != 1 || as[0].Cause != audit.AlarmMissedWindow {
+		e.t.Fatalf("the missed-window alarm: %+v, %v", as, err)
 	}
 }
 
