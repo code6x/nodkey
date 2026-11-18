@@ -91,7 +91,7 @@ func runTests(m *testing.M) int {
 	}
 	code := m.Run()
 	if err := tr.stop(); err != nil {
-		_, _ = fmt.Fprintln(stderr, "contract: the trial broker did not stop cleanly:", err)
+		_, _ = fmt.Fprintf(stderr, "contract: the trial broker did not stop cleanly: %v; nodkey try wrote:\n%s", err, tr.output())
 		code = 1
 	}
 	_ = os.RemoveAll(tr.dir)
@@ -191,6 +191,8 @@ func startTrial(dir string) (*trial, error) {
 	// Not with the context of a test: the trial lives for all of them.
 	tr.cmd = exec.CommandContext(context.Background(), setup.nodkey, "try") //nolint:gosec // G204: the nodkey binary of the test.
 	tr.cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+run)
+	// Wait ends at most this long after nodkey try, even if a pipe stays open.
+	tr.cmd.WaitDelay = waitLimit
 	in, err := tr.cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -264,11 +266,25 @@ func (tr *trial) output() string {
 	return tr.out.String()
 }
 
-// stop ends nodkey try with SIGTERM: it removes its files.
+// stop ends nodkey try with SIGTERM: it removes its files, and ends
+// with exit status 0. It does not close the stdin of nodkey try first:
+// at the end of its input, nodkey try stops with exit status 1, because
+// no answer can come any more (TestTryStopsWhenTheInputEnds in
+// cmd/nodkey). A closed stdin before the signal was a race between the
+// two, and nodkey try sometimes saw the end of its input first (#214).
+// cmd.Wait closes the stdin after nodkey try has ended.
 func (tr *trial) stop() error {
-	// No more answers: a request that comes now expires.
-	_ = tr.in.Close()
-	_ = tr.cmd.Process.Signal(syscall.SIGTERM)
+	if err := tr.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("cannot send SIGTERM to nodkey try: %w", err)
+	}
+	// Read all that nodkey try wrote before Wait closes its stdout.
+	select {
+	case <-tr.done:
+	case <-time.After(waitLimit):
+		_ = tr.cmd.Process.Kill()
+		_ = tr.cmd.Wait()
+		return fmt.Errorf("the stdout of nodkey try did not close within %s after SIGTERM", waitLimit)
+	}
 	waited := make(chan error, 1)
 	go func() { waited <- tr.cmd.Wait() }()
 	select {
@@ -276,7 +292,7 @@ func (tr *trial) stop() error {
 		return err
 	case <-time.After(waitLimit):
 		_ = tr.cmd.Process.Kill()
-		return errors.New("nodkey try did not end after SIGTERM")
+		return fmt.Errorf("nodkey try closed its stdout, but did not exit within %s after SIGTERM", waitLimit)
 	}
 }
 

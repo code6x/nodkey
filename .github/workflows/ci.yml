@@ -57,6 +57,8 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test -race ./...
+      - name: TEMPORARY (#214) the contract tests in 20 separate runs
+        run: for i in $(seq 20); do echo "run $i"; go test -race -count=1 ./test/contract/ || exit 1; done
 
   lint:
     runs-on: ubuntu-latest
