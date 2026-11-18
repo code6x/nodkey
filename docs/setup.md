@@ -136,7 +136,8 @@ broker, which trusts nothing from the client: a changed client binary
 gets no more than what you approve on the phone
 ([THREAT-MODEL.md T20](../THREAT-MODEL.md)).
 
-There are two ways to install: the installer, or by hand.
+There are three ways to install: the installer, the Ansible role, or by
+hand.
 
 ### The installer
 
@@ -183,6 +184,21 @@ copy, add `--reinstall`.
 Later, `nodkey update` runs the copy of the installer that is built into
 the installed nodkey ([section 13](#a-new-version-of-nodkey)). It takes
 `--version`, `--gh` and `--reinstall` too.
+
+### The Ansible role
+
+For hosts that you run with Ansible, the release file
+`nodkey_<version>_ansible.tar.gz` (from 0.8.0 on) holds a role that
+does the steps of this guide: it installs nodkey with the installer of
+the same tag, and the same checks. On the broker host, it also makes the
+user `nodkey`, `/etc/nodkey`, an empty `/etc/nodkey/credentials` and the
+unit of section 8. On an agent machine, it can add the `nodkey ssh-agent`
+user unit of section 11. Later, it updates nodkey only with
+`nodkey update` of the installed nodkey, and never to an older version.
+It never writes the config or a credential. Two fixed playbooks run it
+from a data file, for a host that keeps only data in its repository.
+How to get it, check it and use it:
+[contrib/ansible/README.md](../contrib/ansible/README.md).
 
 ### By hand
 
@@ -2713,6 +2729,12 @@ get a silent notice that names that client.
    [section 2](#2-get-nodkey), install the same version, such as with
    `nodkey update --version 0.2.0`. Then restart `nodkey ssh-agent`
    there.
+
+With the Ansible role ([section 2](#the-ansible-role)), get the role of
+the new release, and run it instead of steps 2 to 5. It runs
+`nodkey update`, installs the unit of the new tag, and restarts the
+broker and `nodkey ssh-agent`, unless you set `nodkey_restart: false`. Keep your changes to the unit in a
+drop-in, as its README says.
 
 A restart ends all grants. Rarely, right after a restart, Telegram
 reports a polling conflict, and the broker stops with exit code 76: a

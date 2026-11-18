@@ -4609,8 +4609,9 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   version and creates the GitHub Release. A job then builds static Linux
   binaries (`CGO_ENABLED=0`, amd64 and arm64, `-trimpath`), the tarball
   of the pullgate recipe (`nodkey_<version>_pullgate.tar.gz`: the files
-  of `contrib/pullgate/` and `LICENSE`), a `SHA256SUMS` file of all
-  tarballs, and a build provenance attestation of all of them. The
+  of `contrib/pullgate/` and `LICENSE`), the tarball of the Ansible
+  recipe (`nodkey_<version>_ansible.tar.gz`, below), a `SHA256SUMS` file
+  of all tarballs, and a build provenance attestation of all of them. The
   attestation is also a file of the release
   (`nodkey_<version>.sigstore.json`), so it can be checked with no GitHub
   login.
@@ -4643,6 +4644,70 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   tests (`contrib_pullgate_linux_test.go`) run the scripts with `/bin/sh`
   against a fake `systemctl` and a fake `nodkey broker reload`, with the
   real `nodkey` for the check and the diff. CI runs shellcheck on them.
+- The Ansible recipe (`contrib/ansible/`, issue #193) installs nodkey
+  on the broker host or an agent machine (THREAT-MODEL.md T53). It is a
+  plain role, `contrib/ansible/roles/nodkey`, not an Ansible collection:
+  a host uses it from a checked release file by its path, with no Galaxy
+  and no second place to publish. Two fixed playbooks
+  (`playbooks/broker-host.yml`, `playbooks/agent-host.yml`) run it from
+  one data file, and `check-data` checks that file. `build.sh` makes the
+  recipe of one release: it copies `install.sh` and
+  `contrib/systemd/nodkey.service` of the tag into the role, and writes
+  their SHA-256 and the version into `roles/nodkey/vars/main.yml`. The
+  release packs it as `nodkey_<version>_ansible.tar.gz`. The source in
+  the repository has none of these files, and refuses to run. The rules:
+  - The role of release X installs only nodkey X, with the `install.sh`
+    and the unit of the tag vX. `nodkey_version` must be X.
+  - Before any change, the role checks the SHA-256 of its `install.sh`
+    and its unit against the pins, and the SHA-256 of `install.sh` again
+    after the copy to the host. Before it runs the installed nodkey
+    (`tasks/installed.yml`, also run by the playbooks), it checks that the
+    file is a plain file and no link, and that only root can change it
+    and `/`, `/usr`, `/usr/local` and `/usr/local/bin`.
+  - The first install runs that `install.sh` with `--version X`: the
+    checks of the SHA-256 in `SHA256SUMS`, of the attestation and of the
+    version. An update runs only `nodkey update --version X` of the
+    installed binary, so the checks come from the checked nodkey on the
+    host, never from the role. Forward only: the role refuses a version
+    older than the installed one, and an installed nodkey that is not a
+    release. Then `nodkey version` must print X.
+  - Broker side: the user and group `nodkey`, `/etc/nodkey` (root,
+    `0755`), `/etc/nodkey/credentials` (root, `0700`, left empty) and the
+    unit of the tag, unchanged, in `/etc/systemd/system/nodkey.service`.
+    It never writes `broker.toml`, `known_hosts`, a drop-in or a
+    credential. With `nodkey_broker_config`, it runs
+    `nodkey broker check --config` as the user `nodkey`. A changed binary
+    or unit writes the mark `/var/lib/nodkey-ansible/restart-due` at once,
+    and a handler at the end of the play runs `systemctl daemon-reload`
+    and `systemctl try-restart nodkey` (only a `daemon-reload` and a
+    message when `nodkey_restart` is false), then removes the mark. A run
+    that finds the mark does the restart, so a play that failed after an
+    update does not leave it undone. It never enables or starts the
+    broker. A unit that differs is kept as a backup file.
+  - Agent side, with `nodkey_ssh_agent_user`: the user unit
+    `/etc/systemd/user/nodkey-ssh-agent.service` with `ConditionUser=`,
+    enabled for all accounts by a link in
+    `/etc/systemd/user/default.target.wants`, and linger for the
+    account. The role never writes into a home directory, which the
+    agent can change (a link there would turn a write as root into a
+    write anywhere). With no account, it removes the unit and its link.
+  - The playbooks take the path of the data file
+    (`-e nodkey_data_file=PATH`), copy it to a private temporary
+    directory, run `check-data` on the copy, and only then read the same
+    copy into one variable with `include_vars name:`. So no key of the
+    file becomes a variable of its own, which could change a pin of the
+    role. `check-data` accepts only the keys of the side, each with its
+    type, refuses a key that is there twice, and a version older than
+    the installed one (`--installed`, which is required; it never runs
+    nodkey). A text value may hold only the characters of a path or an
+    account name, so no value is an Ansible template, and a config path
+    must be in `/etc/nodkey/`. It prints no value of the file, and a key
+    name only if it is plain. The role needs ansible-core 2.19 or newer.
+  - Its tests: `contrib_ansible_linux_test.go` tests `check-data` and
+    `build.sh`; `contrib/ansible/test/ci.sh`, in the CI job `ansible`,
+    runs both sides in a Debian stable container with systemd, against
+    two real releases. CI runs `ansible-lint` with the `production`
+    profile on it.
 - `install.sh`, at the root of the repository, installs a release on the
   host itself, as root: the broker host or an agent machine. It needs
   `sh`, `curl`, `tar`, `gzip`, `sha256sum`, `install`, `mktemp`, `stat`

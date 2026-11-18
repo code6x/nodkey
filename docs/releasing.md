@@ -176,7 +176,9 @@ After every push to `main`, the **Release** workflow runs release-please.
      one with `LICENSE` and `README.md` into
      `nodkey_<version>_linux_<arch>.tar.gz`. It packs the files of
      `contrib/pullgate/` with `LICENSE` into
-     `nodkey_<version>_pullgate.tar.gz`, and writes `SHA256SUMS`.
+     `nodkey_<version>_pullgate.tar.gz`. It makes the Ansible recipe
+     with `contrib/ansible/build.sh` and packs it into
+     `nodkey_<version>_ansible.tar.gz`, and writes `SHA256SUMS`.
    - `publish` gets these files from `build`. It checks them against
      `SHA256SUMS` and checks the tag again. Then it makes a signed build
      provenance attestation for the tarballs. It saves the attestation as
@@ -400,6 +402,10 @@ A release has these files:
 - `nodkey_<version>_pullgate.tar.gz`: the pullgate recipe, the files of
   `contrib/pullgate/` and `LICENSE` (docs/setup.md, "Change the config
   from git with pullgate"). Releases before 0.7.0 do not have it;
+- `nodkey_<version>_ansible.tar.gz`: the Ansible recipe, the role, the
+  playbooks and `check-data` of `contrib/ansible/`, with the `install.sh`
+  and the unit of the tag in the role, and `LICENSE`
+  (contrib/ansible/README.md). Releases before 0.8.0 do not have it;
 - `SHA256SUMS`: the SHA-256 of all tarballs;
 - `nodkey_<version>.sigstore.json`: the build provenance attestation of
   all tarballs, as a Sigstore bundle. 0.1.0 does not have this file.

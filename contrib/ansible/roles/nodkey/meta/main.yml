@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: nodkey
+  namespace: code6x
+  author: nodkey contributors
+  description: >-
+    Install nodkey, the broker or an agent machine, from a checked release.
+  license: Apache-2.0
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

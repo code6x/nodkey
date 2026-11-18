@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""check-data checks a data file of the nodkey playbooks.
+
+    check-data --side broker|agent --installed X.Y.Z|none FILE
+
+The playbooks broker-host.yml and agent-host.yml run it before they read
+the file. Run it in CI or in a pullgate check too. The schema is in
+README.md, "The data file". It accepts only the keys of the side, each
+with its type, and a nodkey_version that is not older than the installed
+nodkey, which --installed names ("none": no nodkey is installed). It
+never runs nodkey itself.
+
+It prints no value of the file, and the name of a key only if it is a
+plain name.
+
+Exit codes: 0 good, 1 the file is not good, 64 wrong usage.
+"""
+
+import re
+import sys
+
+try:
+    import yaml
+except ImportError:
+    print(
+        "check-data: Python has no PyYAML; run check-data with the Python of"
+        " Ansible, or install python3-yaml as root (exit 1)",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+PATH_RE = re.compile(r"/[A-Za-z0-9._/@+-]*")
+
+# The keys of each side, with what they must be. README.md, "The data
+# file", lists the same keys; change both together.
+COMMON = {
+    "nodkey_version": "version",
+    "nodkey_restart": "bool",
+}
+SIDES = {
+    "broker": dict(COMMON, nodkey_broker_config="path"),
+    "agent": dict(COMMON, nodkey_ssh_agent_user="user", nodkey_ssh_agent_linger="bool"),
+}
+REQUIRED = ("nodkey_version",)
+MAX_SIZE = 65536
+KEY_RE = re.compile(r"[a-z_][a-z0-9_]{0,63}")
+
+
+class Bad(Exception):
+    """The data file is not good."""
+
+
+class StrictLoader(yaml.SafeLoader):
+    """A safe loader that refuses a key that is there twice."""
+
+
+def _mapping(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str):
+            raise Bad("line %d: a key is not a text" % (key_node.start_mark.line + 1))
+        if key in seen:
+            raise Bad("the key %s is there twice" % key_name(key, key_node.start_mark.line + 1))
+        seen.add(key)
+    return loader.construct_mapping(node, deep=deep)
+
+
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
+
+
+def usage_error(msg):
+    print(
+        'check-data: %s; usage: check-data --side broker|agent --installed X.Y.Z|none FILE (exit 64)' % msg,
+        file=sys.stderr,
+    )
+    sys.exit(64)
+
+
+def parse_args(argv):
+    side = None
+    installed = None
+    files = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("--side", "--installed"):
+            if i + 1 >= len(argv):
+                usage_error("%s needs a value" % arg)
+            if arg == "--side":
+                side = argv[i + 1]
+            else:
+                installed = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("-"):
+            usage_error("unknown option %s" % arg)
+        files.append(arg)
+        i += 1
+    if side not in SIDES:
+        usage_error("give --side broker or --side agent")
+    if len(files) != 1:
+        usage_error("give one data file")
+    if installed is None or (installed != "none" and not VERSION_RE.fullmatch(installed)):
+        usage_error("give --installed X.Y.Z, the version of the installed nodkey, or --installed none")
+    return side, installed, files[0]
+
+
+def key_name(key, line=None):
+    """The name of a key for an error, only if it is a plain name."""
+    if isinstance(key, str) and KEY_RE.fullmatch(key):
+        return key
+    return "at line %d" % line if line else "with a name that is not plain"
+
+
+def as_tuple(version):
+    return tuple(int(p) for p in version.split("."))
+
+
+def check_value(key, kind, value):
+    fix = 'see README.md, "The data file"'
+    if kind == "bool":
+        if not isinstance(value, bool):
+            raise Bad("%s must be true or false; %s" % (key, fix))
+    elif kind == "version":
+        if not isinstance(value, str) or not VERSION_RE.fullmatch(value):
+            raise Bad('%s must be a version X.Y.Z in quotes, such as "0.8.0"; %s' % (key, fix))
+    elif kind == "path":
+        if not isinstance(value, str) or not (value == "" or (PATH_RE.fullmatch(value) and value.startswith("/etc/nodkey/"))):
+            raise Bad("%s must be the path of a file in /etc/nodkey/, or empty; %s" % (key, fix))
+        if "/../" in value + "/" or "/./" in value + "/":
+            raise Bad("%s must not have . or .. in it; %s" % (key, fix))
+    elif kind == "user":
+        if not isinstance(value, str) or not (value == "" or USER_RE.fullmatch(value)):
+            raise Bad("%s must be the name of an account, or empty; %s" % (key, fix))
+        if value == "root":
+            raise Bad("%s must not be root: run the agent as a normal account; %s" % (key, fix))
+
+
+def check(side, installed, path):
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(MAX_SIZE + 1)
+    except OSError as err:
+        raise Bad("cannot read it (%s); check the path" % err.strerror) from None
+    if len(raw) > MAX_SIZE:
+        raise Bad("it is larger than %d bytes; a data file has only a few keys" % MAX_SIZE)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Bad("it is not UTF-8 text") from None
+    try:
+        data = yaml.load(text, Loader=StrictLoader)  # noqa: S506 - a safe loader
+    except yaml.YAMLError as err:
+        mark = getattr(err, "problem_mark", None)
+        where = "line %d" % (mark.line + 1) if mark else "somewhere"
+        raise Bad("it is not valid YAML (%s); fix that line" % where) from None
+    if not isinstance(data, dict):
+        raise Bad('it must be a map of keys, such as nodkey_version: "0.8.0"; see README.md, "The data file"')
+    schema = SIDES[side]
+    for key in data:
+        if key not in schema:
+            raise Bad(
+                'the key %s is not a key of the %s side; remove it (README.md, "The data file", lists the keys)'
+                % (key_name(key), side)
+            )
+    for key in REQUIRED:
+        if key not in data:
+            raise Bad('it has no %s; add it, such as nodkey_version: "0.8.0"' % key)
+    for key, value in data.items():
+        check_value(key, schema[key], value)
+    if installed == "none":
+        installed = None
+    want = data["nodkey_version"]
+    if installed is not None and as_tuple(want) < as_tuple(installed):
+        raise Bad(
+            "nodkey_version %s is older than the installed nodkey %s; the playbooks never go back:"
+            " set nodkey_version to %s or newer" % (want, installed, installed)
+        )
+
+
+def main(argv):
+    side, installed, path = parse_args(argv)
+    try:
+        check(side, installed, path)
+    except Bad as err:
+        print("check-data: %s: %s (exit 1)" % (path, err), file=sys.stderr)
+        return 1
+    print("check-data: %s: good for the %s side" % (path, side))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
