@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.8.0](https://github.com/code6x/nodkey/compare/v0.7.0...v0.8.0) (2026-11-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **contract:** stop the trial broker with SIGTERM alone ([#218](https://github.com/code6x/nodkey/issues/218))
+
+### Features
+
+* an Ansible role that installs nodkey from a checked release ([#213](https://github.com/code6x/nodkey/issues/213)) ([f9e53c7](https://github.com/code6x/nodkey/commit/f9e53c769037f9c2180ad20b5c01de7e8db8f3a5)), closes [#193](https://github.com/code6x/nodkey/issues/193)
+* **run:** hand out a TOTP code to a command with --totp ([#223](https://github.com/code6x/nodkey/issues/223)) ([bf0d37d](https://github.com/code6x/nodkey/commit/bf0d37da52cebb38b521550915f128939a965fda))
+
+
+### Bug Fixes
+
+* **broker:** clear the login of a pre-approval before the answer ([#219](https://github.com/code6x/nodkey/issues/219)) ([4175660](https://github.com/code6x/nodkey/commit/417566085cafb392fb15f015fdacbc8099721672)), closes [#205](https://github.com/code6x/nodkey/issues/205) [#210](https://github.com/code6x/nodkey/issues/210)
+* **broker:** write one denied entry when a reload denies a login ([#222](https://github.com/code6x/nodkey/issues/222)) ([5ee093c](https://github.com/code6x/nodkey/commit/5ee093cb6ba6e6deed5cc7ac877f3f98a966215c)), closes [#220](https://github.com/code6x/nodkey/issues/220)
+
+
+### Documentation
+
+* complete GitHub's community standards ([#166](https://github.com/code6x/nodkey/issues/166)) ([8ebe354](https://github.com/code6x/nodkey/commit/8ebe35451e60b4cb12f593e210f1b1c1656e4036)), closes [#97](https://github.com/code6x/nodkey/issues/97)
+
+
+### Tests
+
+* **contract:** stop the trial broker with SIGTERM alone ([#218](https://github.com/code6x/nodkey/issues/218)) ([a2fac55](https://github.com/code6x/nodkey/commit/a2fac550f19a1a2fa6ec776640e92398ac659525)), closes [#214](https://github.com/code6x/nodkey/issues/214)
+
 ## [0.7.0](https://github.com/code6x/nodkey/compare/v0.6.0...v0.7.0) (2026-11-17)
 
 
