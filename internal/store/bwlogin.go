@@ -44,6 +44,37 @@ type LoginStore interface {
 	FetchLoginNoSync(ctx context.Context, id string) (Login, error)
 }
 
+// ErrNoTOTP is returned for a login item with no TOTP seed (login.totp).
+var ErrNoTOTP = errors.New("the item has no TOTP seed in its login.totp field")
+
+// TOTPStore is a store that hands the TOTP seed of a login item to the
+// broker, which makes the code (DESIGN.md section 5, "TOTP codes"). Only
+// the bw store is one.
+type TOTPStore interface {
+	// FetchTOTP runs "bw sync --force" and "bw get item ID" and returns
+	// the seed of login.totp. An item in the trash is ErrTrashed, an
+	// archived item ErrArchived, an item that is not a login ErrNotLogin,
+	// and an item with no seed ErrNoTOTP. The caller must Clear the seed.
+	FetchTOTP(ctx context.Context, id string) (Value, error)
+}
+
+// FetchTOTP implements TOTPStore.
+func (s *bwStore) FetchTOTP(ctx context.Context, id string) (Value, error) {
+	if !isUUID(id) {
+		return Value{}, stepError(s.run.store, stepGetItem, ErrBadID)
+	}
+	out, err := s.synced(ctx, true, stepGetItem, "get", "item", id)
+	if err != nil {
+		return Value{}, err
+	}
+	defer clear(out)
+	v, err := parseBWTOTP(out, id)
+	if err != nil {
+		return Value{}, stepError(s.run.store, stepGetItem, err)
+	}
+	return v, nil
+}
+
 // LoginURI is one URI of a login item: login.uris[].uri, and
 // login.uris[].match (nil when the item has none).
 type LoginURI struct {
@@ -347,6 +378,49 @@ func parseBWLoginList(data []byte, collection string) ([]LoginItem, error) {
 // parseBWLogin reads the answer of "bw get item ID" for a login. "id" must
 // be id. It keeps the password and the TOTP seed.
 func parseBWLogin(data []byte, id string) (Login, error) {
+	f, err := parseBWLoginFields(data, id)
+	if err != nil {
+		return Login{}, err
+	}
+	totp := f.totp
+	f.totp = nil
+	password, err := keepValue(f.password, nil)
+	f.password = nil
+	if err != nil {
+		clear(totp)
+		return Login{}, err
+	}
+	l := Login{LoginItem: f.item, Password: password}
+	if len(totp) > 0 {
+		l.TOTP = newValue(totp)
+	}
+	return l, nil
+}
+
+// parseBWTOTP reads the answer of "bw get item ID" for a TOTP code
+// (DESIGN.md section 5, "TOTP codes"): the item id, a login item that is
+// not in the trash and not archived. It returns the seed of login.totp
+// and clears the password at once. An item with no seed is ErrNoTOTP. A
+// login with no password is fine: the code needs only the seed.
+func parseBWTOTP(data []byte, id string) (Value, error) {
+	f, err := parseBWLoginFields(data, id)
+	if err != nil {
+		return Value{}, err
+	}
+	clear(f.password)
+	f.password = nil
+	if len(f.totp) == 0 {
+		return Value{}, ErrNoTOTP
+	}
+	totp := f.totp
+	f.totp = nil
+	return newValue(totp), nil
+}
+
+// parseBWLoginFields reads one login item with its secrets and checks
+// that it is the item id, a login, and not in the trash or archived. On
+// an error, the secrets are cleared.
+func parseBWLoginFields(data []byte, id string) (loginFields, error) {
 	f := loginFields{wantSecrets: true}
 	r := &jsonReader{data: data}
 	r.space()
@@ -370,21 +444,9 @@ func parseBWLogin(data []byte, id string) (Login, error) {
 	}
 	if err != nil {
 		f.clearSecrets()
-		return Login{}, err
+		return loginFields{}, err
 	}
-	totp := f.totp
-	f.totp = nil
-	password, err := keepValue(f.password, nil)
-	f.password = nil
-	if err != nil {
-		clear(totp)
-		return Login{}, err
-	}
-	l := Login{LoginItem: f.item, Password: password}
-	if len(totp) > 0 {
-		l.TOTP = newValue(totp)
-	}
-	return l, nil
+	return f, nil
 }
 
 // hasID reports whether ids holds id, in upper or lower case.

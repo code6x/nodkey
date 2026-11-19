@@ -283,6 +283,24 @@ root on the broker host on the agent machine
    `GH_TOKEN`, and prints only its length, so the agent's screen shows
    only that length.
 
+**A 2FA code for a CLI tool.** Some tools need a one-time code for a
+write, such as `npm publish` and `npm trust` (they fail with `EOTP`).
+nodkey can make the code from the TOTP seed of a Bitwarden login item,
+on the broker, after a tap. The seed never leaves the broker; the
+command gets only the code:
+
+```sh
+nodkey run --secret NPM_TOKEN=npm-token --totp NPM_OTP=npm-otp -- \
+  sh -c 'npm publish pkg.tgz --otp "$NPM_OTP"'
+```
+
+The broker hands out a code only for a `[secret.*]` section with
+`totp = true`. For many packages with one tap, use
+`nodkey preapprove --secret npm-token --secret npm-otp --uses 8 ...`
+(both secrets need `preapprove = true`): each run gets its own fresh
+code. See
+[docs/setup.md](docs/setup.md#a-2fa-code-for-a-cli-tool-nodkey-run---totp).
+
 Before real use, read
 [docs/setup.md](docs/setup.md): above all the safety of your Telegram
 and Bitwarden accounts and of the broker host

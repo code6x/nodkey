@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/store"
+	"github.com/code6x/nodkey/internal/totp"
 	"github.com/code6x/nodkey/internal/transport"
 )
 
@@ -121,20 +123,34 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 // checkSecrets checks the variables and the secret names of req: 1 to
 // api.MaxSecrets variables, each with a valid name that is not on the
 // deny list (api.DeniedVar), none twice, and each secret in the config and
-// allowed for client. It returns the secret names in the order of the
+// allowed for client. The kind of each variable must match the config: a
+// secret with totp = true only as api.KindTOTP, and api.KindTOTP only for
+// such a secret, at most once in a request (DESIGN.md section 5, "TOTP
+// codes"). It returns the secret names in the order of the
 // request, for the core, and the names that passed, once each, for the
 // audit log.
 func (s *Service) checkSecrets(client string, req *api.SecretsRequest) (names, passed []string, ok bool) {
 	ok = len(req.Secrets) > 0 && len(req.Secrets) <= api.MaxSecrets
 	vars := make(map[string]bool, len(req.Secrets))
 	seen := make(map[string]bool, len(req.Secrets))
+	cfg := s.view().cfg
+	codes := 0
 	for _, ref := range req.Secrets {
 		_, denied := api.DeniedVar(ref.Var)
 		if !api.ValidVar(ref.Var) || denied || vars[ref.Var] {
 			ok = false
 		}
 		vars[ref.Var] = true
-		if !secretAllowed(s.view().cfg, client, ref.Name) {
+		if !secretAllowed(cfg, client, ref.Name) {
+			ok = false
+			continue
+		}
+		if ref.Kind == api.KindTOTP {
+			codes++
+		}
+		// A project secret is never a TOTP code: its Secrets entry is
+		// missing, so its TOTP is false.
+		if wantTOTP := ref.Kind == api.KindTOTP; wantTOTP != cfg.Secrets[ref.Name].TOTP || codes > 1 {
 			ok = false
 			continue
 		}
@@ -244,6 +260,9 @@ func (rq *request) fetcher(name string) (string, func(context.Context) (store.Va
 		}
 	}
 	sec := rq.v.cfg.Secrets[name]
+	if sec.TOTP {
+		return sec.Store, func(ctx context.Context) (store.Value, error) { return rq.totpCode(ctx, name, sec) }
+	}
 	ref := sec.ID
 	switch {
 	case sec.Field != "":
@@ -289,4 +308,52 @@ func (rq *request) decideStanding(ctx context.Context, names []string, cl approv
 		return res, rc, false
 	}
 	return res, rc, true
+}
+
+// errBadTOTPSeed is the error of a login.totp field that internal/totp
+// does not read. It never holds the field.
+var errBadTOTPSeed = errors.New("the TOTP seed in the item's login.totp field is not in a form nodkey reads; " +
+	"see DESIGN.md section 21.5")
+
+// totpCode makes the current TOTP code of the secret sec, a secret with
+// totp = true (DESIGN.md section 5, "TOTP codes"). The store hands the
+// seed only to the broker; the broker makes the code and clears the seed
+// and the key at once. Each call fetches the item again, so each use of a
+// grant gets the code of its own moment. Any error means deny. The error
+// names the store and the secret and says how to fix it; it never holds
+// the seed or the code.
+func (rq *request) totpCode(ctx context.Context, name string, sec config.Secret) (store.Value, error) {
+	ts, ok := rq.s.stores[sec.Store].(store.TOTPStore)
+	if !ok {
+		return store.Value{}, fmt.Errorf("store %q: secret %q: the store cannot hand out TOTP codes; "+
+			`totp = true needs a store of type = "bw"`, sec.Store, name)
+	}
+	seed, err := ts.FetchTOTP(ctx, sec.ID)
+	defer seed.Clear()
+	switch {
+	case errors.Is(err, store.ErrNoTOTP):
+		return store.Value{}, fmt.Errorf("%w; put the seed into the item in Bitwarden, or remove "+
+			"totp = true from [secret.%s]", err, name)
+	case err != nil:
+		return store.Value{}, err
+	}
+	key, err := totp.Parse(seed.Bytes())
+	if err != nil {
+		// The errors of totp.Parse are fixed texts that say what to fix;
+		// they never hold the field. Any other error gets errBadTOTPSeed.
+		known := errBadTOTPSeed
+		for _, e := range []error{totp.ErrEmpty, totp.ErrForm, totp.ErrBase32, totp.ErrAlgorithm, totp.ErrDigits,
+			totp.ErrPeriod} {
+			if errors.Is(err, e) {
+				known = e
+			}
+		}
+		return store.Value{}, fmt.Errorf("store %q: secret %q: %w", sec.Store, name, known)
+	}
+	defer key.Clear()
+	code, err := key.Code(rq.s.nowTime())
+	if err != nil {
+		return store.Value{}, fmt.Errorf("store %q: secret %q: %w", sec.Store, name, err)
+	}
+	return store.NewValue([]byte(code)), nil
 }

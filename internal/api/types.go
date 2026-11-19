@@ -142,15 +142,46 @@ type SecretRef struct {
 	Var string `json:"var"`
 	// Name is the name of a [secret.*] section, such as "github-token".
 	Name string `json:"name"`
+	// Kind is "" for a secret value (--secret), or KindTOTP for a TOTP
+	// code (--totp). The broker checks it against the config: a secret
+	// with totp = true is handed out only as KindTOTP, and KindTOTP only
+	// for such a secret (DESIGN.md section 5, "TOTP codes"). A request
+	// with no TOTP code has no "kind" field, as before.
+	Kind string `json:"kind"`
 }
 
-// UnmarshalJSON decodes strictly.
+// MarshalJSON writes no field "kind" for a secret value, so such a
+// request is the same as before TOTP codes.
+func (s SecretRef) MarshalJSON() ([]byte, error) {
+	type plain SecretRef
+	if s.Kind == "" {
+		return json.Marshal(struct {
+			plain
+			Kind *struct{} `json:"kind,omitempty"`
+		}{plain: plain(s)})
+	}
+	return json.Marshal(plain(s))
+}
+
+// KindTOTP is the Kind of a SecretRef that asks for a TOTP code.
+const KindTOTP = "totp"
+
+// UnmarshalJSON decodes strictly. "kind" is optional; when it is there,
+// it must be KindTOTP.
 func (s *SecretRef) UnmarshalJSON(data []byte) error {
 	var v SecretRef
-	err := decodeObject(data, map[string]field{
+	hasKind := false
+	err := decodeObjectOptional(data, map[string]field{
 		"var":  text(&v.Var),
 		"name": text(&v.Name),
-	})
+		"kind": func(raw json.RawMessage) error {
+			hasKind = true
+			return decodeText(raw, &v.Kind)
+		},
+	}, map[string]bool{"kind": true})
+	if err == nil && hasKind && v.Kind != KindTOTP {
+		err = errUnknownKind
+	}
 	if err != nil {
 		return err
 	}

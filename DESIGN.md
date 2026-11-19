@@ -510,6 +510,85 @@ The list has limits:
   sees. It does not stop a hostile agent (THREAT-MODEL.md section 5,
   item 1).
 
+### TOTP codes
+
+Issue #212 (owner, 2026-11-19). Some CLI tools need a 2FA code for a
+write, for example `npm publish` of a new package and `npm trust`: they
+fail with `EOTP` without one. nodkey hands such a tool one TOTP code, as
+a `run` secret:
+
+```sh
+nodkey run --totp NPM_OTP=npm-otp \
+  -- sh -c 'npm publish pkg.tgz --otp "$NPM_OTP"'
+```
+
+- **The config allows it** (closed by default). A `[secret.*]` section
+  with `totp = true` is the TOTP code of a Bitwarden login item, not its
+  password:
+
+  ```toml
+  [secret.npm-otp]
+  store = "vault"                     # a store of type bw
+  id = "11111111-1111-1111-1111-111111111111"   # the login item
+  totp = true
+  clients = ["laptop"]
+  ask = "always"
+  preapprove = true                   # optional; a batch with one tap
+  ```
+
+  `totp` is allowed only with a store of type `bw`. A secret with
+  `totp = true` needs `ask = "always"` and no `standing = true`: one tap
+  gives one code, and a window grant or a standing grant would hand out
+  codes without one. `preapprove = true` is allowed (see below). An item
+  in a `[logins.*]` collection is not a CLI code for that: only a
+  `[secret.*]` section with `totp = true` makes one. A change of `totp`
+  in a reload ends the grants of the secret, and `config-diff` marks it
+  as a change that widens.
+- **The client asks for a code with `--totp VAR=NAME`.** NAME is a
+  `[secret.*]` section, never `PROJECT/KEY`. The request carries the
+  variable with `"kind": "totp"` (`api.KindTOTP`); a `--secret` has no
+  `kind` field, as before. At most one `--totp` in a request; it counts
+  as one of the 32 secrets. An older broker refuses the field: its
+  decoding is strict, so it fails closed.
+- **The broker checks the kind against the config** in step 3, as for
+  any other check: a secret with `totp = true` only with `--totp`, and
+  `--totp` only for such a secret, at most once. A request that fails
+  gets 403 with no message, and the entries `request` and `denied` with
+  cause `not_allowed`.
+- **The message is the message of a run secret** (section 7): it names
+  the secret, as in `✅ secrets: npm-otp`, and shows the variable, the
+  command line, the directory and the reason as claimed text. Give the
+  section a name that says what the code is for, such as `npm-otp`.
+- **After the tap, the broker makes the code.** It runs
+  `bw sync --force` and `bw get item ID`, as for a password (section
+  21.9), and checks that the item is the item of `id`, a login item, not
+  in the trash and not archived. It reads `login.totp` and clears the
+  password at once; a login with no password is fine. It reads the seed
+  with `internal/totp` (section 21.5), makes the code of the broker's
+  clock of now, and clears the seed and the key. **The seed never leaves
+  the broker**; the client gets only the code, as the value of VAR. An
+  item with no seed, a seed in a form that nodkey does not read, or a
+  store failure denies the request with `error` code `store_failed`
+  (status 503). The journal says what is wrong and how to fix it, with
+  no seed and no code.
+- **The code is fresh at each use.** The broker fetches the item and
+  makes the code for each approved request; it keeps no code and no
+  seed. Two uses in the same time step (30 s for most sites) get the
+  same code. Some sites take a code only once; then wait for the next
+  step between two uses.
+- **A batch with one tap** is a scheduled grant: `nodkey preapprove
+  --secret npm-otp --until TIME --uses N` (section 8). As for any
+  scheduled grant, it must name every secret of the command, for example
+  `--secret npm-token` too. Each `nodkey run
+  --totp` in its time span takes one use and gets its own code of that
+  moment, with a silent notice, up to N uses. The grant ends at its last
+  use; the next request asks for a tap again.
+- **Audit**: one `secret_sent` entry per code, as for any run secret
+  (section 9). It names the secret, never the code or the seed.
+- **The risks** are in THREAT-MODEL.md, T54: a code works for any write
+  of that account in its time step (about 30 s), not only for the
+  command in the message, and the command line is claimed by the client.
+
 ## 6. Flow: an SSH login
 
 ```
@@ -2954,6 +3033,14 @@ name = "CI_TOKEN"                   # the name of the secret
 clients = ["laptop"]
 ask = "always"
 
+[secret.npm-otp]                    # the TOTP code of a bw login item (section 5, "TOTP codes")
+store = "vault"
+id = "11111111-1111-1111-1111-111111111111"
+totp = true                         # optional; default false; only for a store of type bw
+clients = ["laptop"]
+ask = "always"                      # needed with totp = true
+preapprove = true
+
 [key.deploy]
 file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
 clients = ["laptop"]
@@ -3338,7 +3425,7 @@ nodkey broker [--config FILE]
 nodkey broker reload [--config FILE] [--timeout DURATION]
 nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
 nodkey broker config-diff [--short] [--max-chars N] OLD NEW
-nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
+nodkey run [--secret VAR=NAME]... [--totp VAR=NAME] [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
@@ -4953,7 +5040,9 @@ broker cannot check that the browser is on that page.
    and no standing grant hands it out. A pre-approval is a tap for that
    one login, so it works.
 3. **TOTP code.** When the item has `login.totp`, the broker makes the
-   current code itself (*built*: `internal/totp`). The seed never leaves
+   current code itself (*built*: `internal/totp`). This code is only for
+   the login on the page; a code for a CLI tool is a `run` secret with
+   `totp = true` (section 5, "TOTP codes"). The seed never leaves
    the broker. The client asks for the code after the password step,
    when the site shows its code page. It sends the same page origin and
    item ID.

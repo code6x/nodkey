@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +39,7 @@ const (
 )
 
 // runUsage is the help of nodkey run.
-const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
+const runUsage = `Usage: nodkey run [--secret VAR=NAME]... [--totp VAR=NAME] [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 
 Ask the broker for secrets, and wait until a person approves the request
 on the phone. Then run COMMAND, with the value of the secret NAME in the
@@ -50,6 +51,11 @@ environment variable VAR. nodkey never prints a value.
                      LD_PRELOAD or GIT_SSH_COMMAND, in any case. NAME is
                      a secret of the broker, or PROJECT/KEY for the
                      secret KEY of a project of the broker.
+  --totp VAR=NAME    the current TOTP code of the secret NAME, a secret of
+                     the broker with totp = true, such as a code for
+                     "npm publish --otp". The broker makes the code; the
+                     TOTP seed never leaves it. At most one --totp; it
+                     counts as one of the 32 secrets.
   --grant-token FILE the token file of a standing grant (nodkey preapprove).
                      With it, no tap is needed inside a window of the grant.
                      nodkey replaces the token in FILE with a new one before
@@ -226,6 +232,9 @@ func (r runner) run(ctx context.Context, args []string, w io.Writer, beforeExec 
 		_, _ = fmt.Fprintf(stderr, "nodkey: waiting for approval (request %s)\n", code)
 	}, hdr)
 	if err != nil {
+		if ctx.Err() == nil {
+			err = totpHint(err, o.secrets)
+		}
 		return requestFailed(ctx, stderr, err)
 	}
 	// The new token is saved before the values are used (DESIGN.md section
@@ -401,6 +410,7 @@ type runOptions struct {
 func parseArgs(args []string) (*runOptions, error) {
 	o := &runOptions{}
 	vars := make(map[string]bool)
+	hasTOTP := false
 	for rest := args; len(rest) > 0; {
 		arg := rest[0]
 		rest = rest[1:]
@@ -410,13 +420,13 @@ func parseArgs(args []string) (*runOptions, error) {
 			case len(o.command) == 0:
 				return nil, errors.New(`no command after "--"`)
 			case len(o.secrets) == 0:
-				return nil, errors.New("give at least one --secret VAR=NAME")
+				return nil, errors.New("give at least one --secret VAR=NAME or --totp VAR=NAME")
 			}
 			return o, nil
 		}
 		name, value, hasValue := splitOption(arg)
 		switch name {
-		case "secret", "reason", "grant-token":
+		case "secret", "totp", "reason", "grant-token":
 		case "mask":
 			switch {
 			case hasValue:
@@ -473,21 +483,43 @@ func parseArgs(args []string) (*runOptions, error) {
 			o.reason, o.reasonSet = value, true
 			continue
 		}
-		ref, err := parseSecret(value)
+		ref, err := parseSecret(name, value)
 		if err != nil {
 			return nil, err
 		}
+		if name == "totp" {
+			if hasTOTP {
+				return nil, errors.New("--totp is given twice; one command gets at most one TOTP code")
+			}
+			hasTOTP = true
+			ref.Kind = api.KindTOTP
+		}
 		switch {
 		case vars[ref.Var]:
-			return nil, fmt.Errorf("--secret: the variable %s is given twice", ref.Var)
+			return nil, fmt.Errorf("--%s: the variable %s is given twice", name, ref.Var)
 		case len(o.secrets) == api.MaxSecrets:
-			return nil, fmt.Errorf("at most %d --secret options", api.MaxSecrets)
+			return nil, fmt.Errorf("at most %d --secret and --totp options", api.MaxSecrets)
 		}
 		vars[ref.Var] = true
 		o.secrets = append(o.secrets, ref)
 	}
 	return nil, errors.New(`put "--" before the command, as in: ` +
 		`nodkey run --secret GH_TOKEN=github-token -- gh release create v1.2.0`)
+}
+
+// totpHint adds a hint to the 400 answer of a request with --totp: a
+// broker older than --totp refuses the field "kind" (DESIGN.md section 5,
+// "TOTP codes"). Any other error is returned as it is.
+func totpHint(err error, refs []api.SecretRef) error {
+	var e *Error
+	if !errors.As(err, &e) || e.Status != http.StatusBadRequest ||
+		!slices.ContainsFunc(refs, func(r api.SecretRef) bool { return r.Kind == api.KindTOTP }) {
+		return err
+	}
+	c := *e
+	c.text += "; --totp needs a broker that hands out TOTP codes: " +
+		"if the broker is older than this client, update it (docs/setup.md, section 2)"
+	return &c
 }
 
 // splitOption splits an option such as --secret=VALUE or -reason into its
@@ -503,21 +535,26 @@ func splitOption(arg string) (name, value string, hasValue bool) {
 	return strings.Cut(s, "=")
 }
 
-// parseSecret reads the value of --secret: VAR=NAME.
-func parseSecret(value string) (api.SecretRef, error) {
+// parseSecret reads the value of --secret or --totp (opt): VAR=NAME. A
+// TOTP code is never a project secret, so --totp takes only NAME.
+func parseSecret(opt, value string) (api.SecretRef, error) {
 	v, name, ok := strings.Cut(value, "=")
 	prefix, denied := api.DeniedVar(v)
 	switch {
+	case !ok && opt == "totp":
+		return api.SecretRef{}, errors.New("--totp needs VAR=NAME, such as NPM_OTP=npm-otp")
 	case !ok:
 		return api.SecretRef{}, errors.New("--secret needs VAR=NAME, such as GH_TOKEN=github-token")
 	case !api.ValidVar(v):
-		return api.SecretRef{}, fmt.Errorf("--secret: the variable name %.64q must match [A-Za-z_][A-Za-z0-9_]{0,63}", v)
+		return api.SecretRef{}, fmt.Errorf("--%s: the variable name %.64q must match [A-Za-z_][A-Za-z0-9_]{0,63}", opt, v)
 	case denied && prefix != "":
-		return api.SecretRef{}, fmt.Errorf("--secret %s=...: nodkey refuses variables that start with %s, "+
-			"because programs show or run their values", v, prefix)
+		return api.SecretRef{}, fmt.Errorf("--%s %s=...: nodkey refuses variables that start with %s, "+
+			"because programs show or run their values", opt, v, prefix)
 	case denied:
-		return api.SecretRef{}, fmt.Errorf("--secret %s=...: nodkey refuses the variable %s, "+
-			"because programs show or run its value", v, v)
+		return api.SecretRef{}, fmt.Errorf("--%s %s=...: nodkey refuses the variable %s, "+
+			"because programs show or run its value", opt, v, v)
+	case opt == "totp" && !grantNamePattern.MatchString(name):
+		return api.SecretRef{}, fmt.Errorf("--totp %s=...: the secret name must be NAME, %s", v, grantNameRule)
 	case len(name) > api.MaxSecretName || !validSecretName(name):
 		return api.SecretRef{}, fmt.Errorf("--secret %s=...: the secret name must be NAME or PROJECT/KEY, "+
 			"each part %s", v, grantNameRule)

@@ -2361,6 +2361,69 @@ check that fails before a message, such as a host that is not in
 sent`. Plain `denied` comes after the `waiting for approval` line: the
 person denied it, or nobody answered in time.
 
+### A 2FA code for a CLI tool: nodkey run --totp
+
+Some CLI tools ask for a 2FA code on a write. For example `npm publish`
+of a new package and `npm trust` fail with `EOTP` without `--otp CODE`.
+nodkey can hand one code to such a command, after a tap. The broker
+makes the code from the TOTP seed of a Bitwarden login item. The seed
+never leaves the broker: the command gets only the code.
+
+1. **Put the seed into the item.** In Bitwarden, the login item of the
+   account has the TOTP seed in its "Authenticator key" field
+   (`login.totp`): a base32 secret or an `otpauth://totp/` URI. The item
+   must be in a collection that the `bw` store can read (see "bw: a
+   separate Bitwarden account" in section 5).
+2. **Allow it in `broker.toml`.** It is off by default. A `[logins.*]`
+   collection does not allow it.
+
+   ```toml
+   [secret.npm-otp]
+   store = "vault"                     # a store of type bw
+   id = "11111111-1111-1111-1111-111111111111"   # the ID of the login item
+   totp = true
+   clients = ["laptop"]
+   ask = "always"                      # needed: one tap per code
+   preapprove = true                   # optional: a batch with one tap
+   ```
+
+   `totp = true` works only with a `bw` store, and needs
+   `ask = "always"` and no `standing = true`. Name the section after what
+   the code is for: the message shows the name.
+3. **Use it**, on the agent machine:
+
+   ```sh
+   nodkey run --secret NPM_TOKEN=npm-token --totp NPM_OTP=npm-otp -- \
+     sh -c 'npm publish pkg.tgz --otp "$NPM_OTP"'
+   ```
+
+   The message shows `npm-otp` and the command. After **Approve once**,
+   the broker runs `bw sync --force` and `bw get item`, makes the code
+   of now, and the command gets it in `NPM_OTP`. At most one `--totp` in
+   one command.
+4. **Many packages with one tap:** a scheduled grant with one use per
+   package. Each `nodkey run` in its time takes one use and gets its own
+   fresh code. The grant must name every secret of the command, so here
+   `npm-token` too, and both need `preapprove = true` (see "A job that
+   runs later" below):
+
+   ```sh
+   nodkey preapprove --secret npm-token --secret npm-otp \
+     --until 2026-11-19T18:00 --uses 8 \
+     --reason "publish the 8 new packages"
+   ```
+
+Things to know:
+
+- A code works for **any** write of that account, for its time step
+  (about 30 s), not only for the command in the message. The command
+  line is what the agent claims (THREAT-MODEL.md T54). Tap only when the
+  agent should make a write with that account now.
+- Two runs in the same 30 s get the same code. Some sites take a code
+  only once: then wait 30 s between two runs.
+- An item with no seed, or a seed in a form that nodkey does not read,
+  denies the request. The journal says which secret and what to fix.
+
 ### A job that runs later: nodkey preapprove
 
 New in 0.3.0: nodkey 0.2.0 does not have it.
