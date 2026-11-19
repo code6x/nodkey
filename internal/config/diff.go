@@ -283,6 +283,10 @@ func (d *differ) secrets(old, next *Broker) {
 					q(p.old), q(p.new), secretRef(n))
 			}
 		}
+		if o.TOTP != n.TOTP {
+			d.add("secret", name, true, "%s: now another value: totp changed from %t to %t, %s", what,
+				o.TOTP, n.TOTP, secretRef(n))
+		}
 		d.clientList("secret", name, what, "ask for it", o.Clients, n.Clients)
 		d.rule("secret", name, what, o.Rule, n.Rule)
 	}
@@ -472,6 +476,9 @@ func secretRef(s Secret) string {
 	ref := "item " + idText(s.ID)
 	if s.Field != "" && s.Field != "password" {
 		ref += ", field " + q(s.Field)
+	}
+	if s.TOTP {
+		ref += ", its TOTP code"
 	}
 	return ref
 }
@@ -709,7 +716,7 @@ var compared = map[reflect.Type][]string{
 	reflect.TypeFor[Client](): {"Name", "Pin"},
 	reflect.TypeFor[Store](): {"Name", "Type", "Program", "TokenFile", "PasswordFile", "Vault", "Server", "ClientID",
 		"ClientSecretFile"},
-	reflect.TypeFor[Secret](): {"Name", "Store", "ID", "Field", "Project", "Environment", "Path", "SecretName",
+	reflect.TypeFor[Secret](): {"Name", "Store", "ID", "Field", "TOTP", "Project", "Environment", "Path", "SecretName",
 		"Clients"},
 	reflect.TypeFor[Key]():           {"Name", "File", "Clients", "Hosts"},
 	reflect.TypeFor[Logins]():        {"Name", "Store", "Collection", "Clients"},

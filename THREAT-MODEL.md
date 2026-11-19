@@ -1911,6 +1911,41 @@ What nodkey does not do:
   makes that run restart it.
 Risk that remains: low, when the role comes from a checked release file.
 
+**T54. A TOTP code for a CLI command is used for another write.**
+`nodkey run --totp` (DESIGN.md section 5, "TOTP codes") hands the
+current TOTP code of a Bitwarden login item to one command, for example
+`npm publish --otp`. A code is a second factor for **any** write of that
+account, not only for the command in the message, for as long as the
+site takes it: its time step (about 30 s), often one step more. The
+command line in the message is claimed by the client: an agent can show
+`npm publish pkg.tgz` and run something else with the code, or read it
+from the command's environment, and the agent's session with the site
+then has both factors (section 5, item 1).
+What nodkey does:
+- **Closed by default.** Only a `[secret.*]` section with `totp = true`
+  hands out a code, for the clients in its list. An item that is allowed
+  for website logins (`[logins.*]`) is not allowed for CLI codes.
+- **One tap per code.** Such a secret needs `ask = "always"`: no window
+  grant and no standing grant. A scheduled grant (`nodkey preapprove`)
+  has a time span and a number of uses that the owner approved with one
+  tap, and each use has a silent notice.
+- **The seed never leaves the broker.** The broker makes the code and
+  clears the seed; the client gets the code only, so a leak of it ends
+  with its time step. A leaked seed would give codes for ever.
+- **The kind is checked.** The broker refuses `--totp` for a secret that
+  is not a TOTP code, and `--secret` for one that is, before any
+  message. At most one code per request.
+- **One `secret_sent` entry per code**, with no code and no seed.
+What nodkey does not do:
+- It cannot bind a code to the command in the message, or to one write.
+  The approver reads the command as a claim and taps only when the agent
+  should have one write with that account in the next 30 s.
+- The password or the token of the account is a separate matter: a code
+  alone does not log in. Keep the token (such as `NPM_TOKEN`) as its own
+  `[secret.*]`, with its own rule.
+Risk that remains: medium for one approved code (any write of that
+account for about 30 s), and the number of uses for a scheduled grant.
+
 ## 7. Assumptions
 
 - The broker host is patched, has no agent on it, and only the owner has

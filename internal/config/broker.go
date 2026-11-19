@@ -255,6 +255,10 @@ type Secret struct {
 	Store string // a name in Broker.Stores
 	ID    string // the item's ID in the store: a UUID, or for 1password a 1Password ID
 	Field string // 1password only: the field's ID or title; "password" when the config has none
+	// TOTP is true when the secret is the current TOTP code of a bw login
+	// item, made on the broker from its login.totp field, not the
+	// item's password (key "totp"; DESIGN.md section 5, "TOTP codes").
+	TOTP bool
 	// The secret in Infisical: infisical only. ID is empty then.
 	Project     string   // the project's ID
 	Environment string   // the environment's slug, such as "prod"
@@ -345,6 +349,7 @@ type (
 		Store string  `toml:"store"`
 		ID    string  `toml:"id"`
 		Field *string `toml:"field"`
+		TOTP  *bool   `toml:"totp"`
 		// The keys of a secret of an infisical store.
 		Project     *string  `toml:"project"`
 		Environment *string  `toml:"environment"`
@@ -1077,6 +1082,9 @@ func (b *Broker) addSecrets(m map[string]secretSection) error {
 		if _, ok := b.Stores[s.Store]; !ok {
 			return fmt.Errorf("%s: no [store.*] section has this name", place(sec, "store"))
 		}
+		if s.TOTP != nil && b.Stores[s.Store].Type != StoreBW {
+			return fmt.Errorf(`%s: is allowed only with a store of type = "bw"`, place(sec, "totp"))
+		}
 		if b.Stores[s.Store].Type == StoreInfisical {
 			inf, err := infisicalSecret(sec, s)
 			if err != nil {
@@ -1120,7 +1128,7 @@ func (b *Broker) addSecrets(m map[string]secretSection) error {
 					place(sec, "id"))
 			}
 		}
-		secret := Secret{ID: s.ID, Field: field}
+		secret := Secret{ID: s.ID, Field: field, TOTP: s.TOTP != nil && *s.TOTP}
 		if err := b.addSecret(name, sec, s, secret, never, strings.ToLower(s.ID)); err != nil {
 			return err
 		}
@@ -1139,6 +1147,17 @@ func (b *Broker) addSecret(name, sec string, s secretSection, secret Secret, nev
 	rule, err := parseRule(sec, s.ruleKeys)
 	if err != nil {
 		return err
+	}
+	if secret.TOTP && (rule.Ask != AskAlways || rule.Standing) {
+		// One tap per code: a code works for any write of its account
+		// (DESIGN.md section 5, "TOTP codes"). A scheduled grant is a tap
+		// with a number of uses, so preapprove = true is allowed.
+		key := "ask"
+		if rule.Standing {
+			key = "standing"
+		}
+		return fmt.Errorf(`%s: a secret with totp = true needs ask = "always" and no standing grants; `+
+			`use "nodkey preapprove" for a batch (DESIGN.md section 5, "TOTP codes")`, place(sec, key))
 	}
 	if rule.Ask == AskNever {
 		if len(clients) != 1 {

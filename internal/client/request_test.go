@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,7 +49,13 @@ func TestRunUsage(t *testing.T) {
 		{"two slashes", []string{"--secret", "GH_TOKEN=a/b/c", "--", "gh"}, "the secret name must be NAME or PROJECT/KEY"},
 		{"a variable twice", []string{"--secret", "GH_TOKEN=a", "--secret", "GH_TOKEN=b", "--", "gh"},
 			"the variable GH_TOKEN is given twice"},
-		{"too many", append(thirtyThree, "--", "gh"), "at most 32 --secret options"},
+		{"too many", append(thirtyThree, "--", "gh"), "at most 32 --secret and --totp options"},
+		{"totp no =", []string{"--totp", "NPM_OTP", "--", "npm"}, "--totp needs VAR=NAME"},
+		{"two totps", []string{"--totp", "A=x", "--totp", "B=y", "--", "npm"}, "--totp is given twice"},
+		{"totp project name", []string{"--totp", "A=p/k", "--", "npm"}, "--totp A=...: the secret name must be NAME"},
+		{"totp denied var", []string{"--totp", "PATH=x", "--", "npm"}, "--totp PATH=...: nodkey refuses the variable PATH"},
+		{"totp and secret one var", []string{"--secret", "A=x", "--totp", "A=y", "--", "npm"},
+			"--totp: the variable A is given twice"},
 		{"two reasons", []string{"--reason", "a", "--reason=b", "--secret", "A=b", "--", "gh"}, "--reason is given twice"},
 		{"a value for --mask", []string{"--secret", "A=b", "--mask=yes", "--", "gh"}, "--mask takes no value"},
 		{"two masks", []string{"--mask", "--secret", "A=b", "-mask", "--", "gh"}, "--mask is given twice"},
@@ -174,6 +181,51 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+// TestTOTPHint: a 400 answer to a request with --totp says that the broker
+// may be older; other answers and requests keep their text.
+func TestTOTPHint(t *testing.T) {
+	t.Parallel()
+	code := []api.SecretRef{{Var: "A", Name: "a", Kind: api.KindTOTP}}
+	plain := []api.SecretRef{{Var: "A", Name: "a"}}
+	bad := statusError(http.StatusBadRequest)
+	if got := totpHint(bad, code).Error(); !strings.Contains(got, "400") || !strings.Contains(got, "update it") {
+		t.Errorf("400 with --totp: %q", got)
+	}
+	for _, tc := range []struct {
+		err  error
+		refs []api.SecretRef
+	}{{bad, plain}, {statusError(http.StatusForbidden), code}, {errors.New("x"), code}} {
+		if got := totpHint(tc.err, tc.refs); got.Error() != tc.err.Error() {
+			t.Errorf("%v: changed to %v", tc.err, got)
+		}
+	}
+}
+
+// TestParseArgsTOTP: --totp VAR=NAME asks for a TOTP code. It is sent
+// with the kind "totp"; a --secret is sent with no kind field, as before.
+func TestParseArgsTOTP(t *testing.T) {
+	t.Parallel()
+	o, err := parseArgs([]string{"--secret", "A=a", "--totp=NPM_OTP=npm-otp", "--", "npm", "publish", "--otp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []api.SecretRef{{Var: "A", Name: "a"}, {Var: "NPM_OTP", Name: "npm-otp", Kind: api.KindTOTP}}
+	if !slices.Equal(o.secrets, want) {
+		t.Fatalf("secrets = %+v, want %+v", o.secrets, want)
+	}
+	if _, err := parseArgs([]string{"-totp", "NPM_OTP=npm-otp", "--", "npm"}); err != nil {
+		t.Errorf("--totp alone: %v", err)
+	}
+	body, err := encodeRequest(newRequest(o.secrets, []string{"npm"}, "/", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `{"var":"A","name":"a"}`) ||
+		!strings.Contains(string(body), `{"var":"NPM_OTP","name":"npm-otp","kind":"totp"}`) {
+		t.Errorf("the request is %s", body)
+	}
+}
+
 // TestNewRequest: a claimed field over 64 KiB, and a command line with
 // more than 4096 arguments or more than 64 KiB in all, become "[hidden:
 // too long]" (DESIGN.md section 10). Fields at the limit stay.
@@ -226,6 +278,7 @@ func TestLargestRequestFits(t *testing.T) {
 		v := strings.Repeat("V", api.MaxName-2) + string(rune('A'+i/26)) + string(rune('A'+i%26))
 		secrets = append(secrets, api.SecretRef{Var: v, Name: strings.Repeat("\x01", api.MaxName)})
 	}
+	secrets[0].Kind = api.KindTOTP // one --totp at most
 	command := make([]string, api.MaxArgs)
 	for i := range command {
 		command[i] = strings.Repeat("\x01", api.MaxText/api.MaxArgs)

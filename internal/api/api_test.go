@@ -945,3 +945,30 @@ func TestKeyWindow(t *testing.T) {
 		}
 	}
 }
+
+// TestSecretRefKind: "kind" is optional. "totp" is the only kind; any
+// other value, a null, a number and two kinds are refused. A SecretRef
+// with no kind is written with no "kind" field, as before.
+func TestSecretRefKind(t *testing.T) {
+	var r SecretRef
+	if err := json.Unmarshal([]byte(`{"var":"A","name":"a","kind":"totp"}`), &r); err != nil || r.Kind != KindTOTP {
+		t.Errorf("kind totp: %+v, %v", r, err)
+	}
+	for _, bad := range []string{
+		`{"var":"A","name":"a","kind":"TOTP"}`,
+		`{"var":"A","name":"a","kind":""}`,
+		`{"var":"A","name":"a","kind":"password"}`,
+		`{"var":"A","name":"a","kind":null}`,
+		`{"var":"A","name":"a","kind":1}`,
+		`{"var":"A","name":"a","kind":"totp","kind":"totp"}`,
+	} {
+		var r SecretRef
+		if err := json.Unmarshal([]byte(bad), &r); err == nil {
+			t.Errorf("%s was accepted", bad)
+		}
+	}
+	b, err := json.Marshal(SecretRef{Var: "A", Name: "a"})
+	if err != nil || string(b) != `{"var":"A","name":"a"}` {
+		t.Errorf("a plain secret is written as %s, %v", b, err)
+	}
+}
