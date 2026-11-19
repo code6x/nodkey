@@ -589,7 +589,10 @@ func (rq *request) sameLogin(page loginmatch.Page, item string, sel loginSel, l 
 // of now, and hands out its username and password. On a failure the
 // request is answered.
 func (rq *request) handOutLogin(ctx context.Context, rc receipt, page loginmatch.Page, item string, sel loginSel, l store.Login, from string) {
-	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item, func() {}) {
+	if ok, answered := rq.loginStillSame(page, item, sel, l, from, func() {}); !ok {
+		if answered {
+			return // the reload check has written the one denied entry
+		}
 		rq.s.log.Warn("broker: the login item changed while the request waited; the request is denied",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		rq.ended = true
@@ -660,26 +663,39 @@ func (rq *request) fetchApproved(ctx context.Context, item string) (store.Login,
 	return store.Login{}, "", false
 }
 
+// loginStillSame runs sameLogin and then stillAllowedLogin. ok is false
+// when either fails. answered is true when the reload check denied the
+// request: it has written the one denied entry and answered, so the
+// caller must not write a second entry (#220). When ok is false and
+// answered is false, the caller writes the entry and answers.
+func (rq *request) loginStillSame(page loginmatch.Page, item string, sel loginSel, l store.Login, from string, beforeDeny func()) (ok, answered bool) {
+	if !rq.sameLogin(page, item, sel, l, from) {
+		return false, false
+	}
+	return rq.stillAllowedLogin(sel, item, beforeDeny)
+}
+
 // stillAllowedLogin checks, after the tap, that a reload did not take away
 // what the request uses: the client and its pin, and the rule of the item.
 // When a reload took the client or its pin away, it runs beforeDeny, then
-// denies the request and answers.
-func (rq *request) stillAllowedLogin(sel loginSel, item string, beforeDeny func()) bool {
+// denies the request and answers, and answered is true. When only the
+// rule changed, ok and answered are both false: the caller denies.
+func (rq *request) stillAllowedLogin(sel loginSel, item string, beforeDeny func()) (ok, answered bool) {
 	if !rq.allowedNow(rq.decided, nil, "", nil) {
 		beforeDeny()
 		rq.denyReloaded()
-		return false // it has answered
+		return false, true
 	}
-	l, ok := rq.s.view().cfg.Logins[sel.section]
-	if !ok {
-		return false
+	l, found := rq.s.view().cfg.Logins[sel.section]
+	if !found {
+		return false, false
 	}
-	clients, rule, ok := l.RuleFor(item)
+	clients, rule, found := l.RuleFor(item)
 	if sel.meta.Reprompt {
 		rule.Ask = config.AskAlways // as in checkLoginItem
 	}
-	return ok && slices.Equal(clients, sel.clients) && slices.Contains(clients, rq.client) &&
-		reflect.DeepEqual(rule, sel.rule)
+	return found && slices.Equal(clients, sel.clients) && slices.Contains(clients, rq.client) &&
+		reflect.DeepEqual(rule, sel.rule), false
 }
 
 // listLogins answers a request for the list of logins of a page. It needs
@@ -965,8 +981,11 @@ func (rq *request) preapproveLogin(ctx context.Context, req *api.PreapproveReque
 	// time since the tap includes the fetch.
 	end := rq.s.nowTime().Add(approval.LoginPreapproveTime - res.SinceTap())
 	// Clear the copy of the request before any answer, as below.
-	if !rq.sameLogin(page, item, sel, l, from) || !rq.stillAllowedLogin(sel, item, l.Clear) {
+	if ok, answered := rq.loginStillSame(page, item, sel, l, from, l.Clear); !ok {
 		l.Clear()
+		if answered {
+			return // the reload check has written the one denied entry
+		}
 		rq.s.log.Warn("broker: the login item changed while the request waited; the pre-approval is denied",
 			slog.String("request_id", rq.sub.RequestID), slog.String("client", rq.client))
 		rq.ended = true
