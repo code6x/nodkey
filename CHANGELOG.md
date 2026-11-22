@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/code6x/nodkey/compare/v0.8.0...v0.9.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **broker:** ask a project secret by its ID (PROJECT/ID) ([#226](https://github.com/code6x/nodkey/issues/226))
+
+### Features
+
+* **ansible:** make missing broker SSH keys on the broker host ([#228](https://github.com/code6x/nodkey/issues/228)) ([3967bb8](https://github.com/code6x/nodkey/commit/3967bb8d78f853c8a59458a6c2f6551b98aac57c)), closes [#206](https://github.com/code6x/nodkey/issues/206)
+* **broker:** ask a project secret by its ID (PROJECT/ID) ([#226](https://github.com/code6x/nodkey/issues/226)) ([8846250](https://github.com/code6x/nodkey/commit/884625086f8688fd0c1e28f19f7c8c20bf5be1aa)), closes [#225](https://github.com/code6x/nodkey/issues/225)
+
 ## [0.8.0](https://github.com/code6x/nodkey/compare/v0.7.0...v0.8.0) (2026-11-19)
 
 
