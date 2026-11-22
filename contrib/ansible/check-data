@@ -32,6 +32,10 @@ except ImportError:
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 PATH_RE = re.compile(r"/[A-Za-z0-9._/@+-]*")
+SSH_KEY_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+SSH_KEY_TYPES = ("ed25519", "ecdsa-p256", "ecdsa-p384", "ecdsa-p521")
+SSH_KEY_WITH = ("auto", "host", "host+tpm2")
+MAX_SSH_KEYS = 64
 
 # The keys of each side, with what they must be. README.md, "The data
 # file", lists the same keys; change both together.
@@ -40,7 +44,12 @@ COMMON = {
     "nodkey_restart": "bool",
 }
 SIDES = {
-    "broker": dict(COMMON, nodkey_broker_config="path"),
+    "broker": dict(
+        COMMON,
+        nodkey_broker_config="path",
+        nodkey_ssh_keys="ssh_keys",
+        nodkey_ssh_key_with_key="with_key",
+    ),
     "agent": dict(COMMON, nodkey_ssh_agent_user="user", nodkey_ssh_agent_linger="bool"),
 }
 REQUIRED = ("nodkey_version",)
@@ -132,11 +141,44 @@ def check_value(key, kind, value):
             raise Bad("%s must be the path of a file in /etc/nodkey/, or empty; %s" % (key, fix))
         if "/../" in value + "/" or "/./" in value + "/":
             raise Bad("%s must not have . or .. in it; %s" % (key, fix))
+    elif kind == "ssh_keys":
+        check_ssh_keys(key, value, fix)
+    elif kind == "with_key":
+        if not isinstance(value, str) or value not in SSH_KEY_WITH:
+            raise Bad("%s must be auto, host or host+tpm2; %s" % (key, fix))
     elif kind == "user":
         if not isinstance(value, str) or not (value == "" or USER_RE.fullmatch(value)):
             raise Bad("%s must be the name of an account, or empty; %s" % (key, fix))
         if value == "root":
             raise Bad("%s must not be root: run the agent as a normal account; %s" % (key, fix))
+
+
+def check_ssh_keys(key, value, fix):
+    """A list of maps, each with a name and an optional type."""
+    if not isinstance(value, list):
+        raise Bad("%s must be a list, such as [{name: deploy, type: ed25519}]; %s" % (key, fix))
+    if len(value) > MAX_SSH_KEYS:
+        raise Bad("%s has more than %d keys; %s" % (key, MAX_SSH_KEYS, fix))
+    names = set()
+    for i, item in enumerate(value, 1):
+        where = "%s, item %d" % (key, i)
+        if not isinstance(item, dict):
+            raise Bad("%s must be a map with a name, such as {name: deploy}; %s" % (where, fix))
+        for k in item:
+            if k not in ("name", "type"):
+                raise Bad("%s has the key %s; a key has only name and type; %s" % (where, key_name(k), fix))
+        name = item.get("name")
+        if not isinstance(name, str) or not SSH_KEY_NAME_RE.fullmatch(name):
+            raise Bad(
+                '%s: the name must have 1 to 32 characters, a-z, 0-9 and "-", and not start with "-"; %s'
+                % (where, fix)
+            )
+        if name in names:
+            raise Bad("%s: the name %s is there twice; %s" % (where, name, fix))
+        names.add(name)
+        kind = item.get("type", "ed25519")
+        if not isinstance(kind, str) or kind not in SSH_KEY_TYPES:
+            raise Bad("%s: the type must be one of %s; %s" % (where, ", ".join(SSH_KEY_TYPES), fix))
 
 
 def check(side, installed, path):

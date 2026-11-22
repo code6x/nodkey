@@ -1,0 +1,104 @@
+---
+# Make one SSH key of the broker, nodkey_ssh_key, on the host. The
+# private key is born in a private directory on tmpfs, is encrypted at
+# once with systemd-creds, and never leaves the host. It never goes
+# into a variable, a register or a log: one task, with no_log, does it.
+# The credential is written last, under a temporary name, and then
+# linked to its name: it is the mark that the key is done, and it is
+# never half. An existing credential is never replaced.
+
+- name: Make the SSH key {{ nodkey_ssh_key.name }}
+  block:
+    - name: Make a private directory on tmpfs
+      ansible.builtin.tempfile:
+        state: directory
+        path: /run
+        prefix: nodkey-ssh-key.
+      register: nodkey_ssh_tmp
+
+    - name: Make the key, its credential and its public key
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        cred="/etc/nodkey/credentials/ssh-$NODKEY_NAME.cred"
+        new="/etc/nodkey/credentials/.ssh-$NODKEY_NAME.cred.new"
+        pub="/etc/nodkey/ssh-$NODKEY_NAME.pub"
+        cleanup() { rm -f -- "$NODKEY_TMP/key" "$new"; }
+        trap cleanup EXIT
+        trap 'cleanup; exit 1' HUP INT TERM
+        # One run at a time makes keys: the temporary names are fixed.
+        install -d -o root -g root -m 0700 /var/lib/nodkey-ansible
+        exec 9>/var/lib/nodkey-ansible/ssh-keys.lock
+        flock -n 9 || exit 4
+        if [ -e "$cred" ] || [ -L "$cred" ]; then exit 3; fi
+        case $NODKEY_TYPE in
+        ed25519) set -- -t ed25519 ;;
+        ecdsa-p256) set -- -t ecdsa -b 256 ;;
+        ecdsa-p384) set -- -t ecdsa -b 384 ;;
+        ecdsa-p521) set -- -t ecdsa -b 521 ;;
+        *) exit 2 ;;
+        esac
+        rm -f -- "$new" "$pub.new"
+        ssh-keygen -q "$@" -N '' -C "nodkey-$NODKEY_NAME" -f "$NODKEY_TMP/key" </dev/null >/dev/null
+        systemd-creds encrypt --with-key="$NODKEY_WITH" --name="ssh-$NODKEY_NAME" \
+          "$NODKEY_TMP/key" "$new" >/dev/null
+        rm -f -- "$NODKEY_TMP/key"
+        install -o root -g root -m 0644 "$NODKEY_TMP/key.pub" "$pub.new"
+        mv -f -- "$pub.new" "$pub"
+        chown root:root "$new"
+        chmod 0600 "$new"
+        sync -- "$new"
+        # ln fails if the credential is there: it never replaces one.
+        ln -- "$new" "$cred"
+        rm -f -- "$new"
+        sync -- /etc/nodkey /etc/nodkey/credentials
+      environment:
+        NODKEY_NAME: "{{ nodkey_ssh_key.name }}"
+        NODKEY_TYPE: "{{ nodkey_ssh_key.type | default('ed25519') }}"
+        NODKEY_WITH: "{{ nodkey_ssh_with }}"
+        NODKEY_TMP: "{{ nodkey_ssh_tmp.path }}"
+      changed_when: true
+      no_log: true
+  rescue:
+    - name: Say why the key was not made
+      ansible.builtin.fail:
+        msg: >-
+          nodkey role: the SSH key {{ nodkey_ssh_key.name }} was not made. The
+          output is hidden, so that no key can show. This run linked no
+          /etc/nodkey/credentials/ssh-{{ nodkey_ssh_key.name }}.cred. If
+          another run of the role makes keys at the same time, wait for it.
+          The next run tries again. Check as root that
+          "systemd-creds encrypt --with-key={{ nodkey_ssh_with }}" works on
+          this host (docs/setup.md section 3), or make the key by hand
+          (docs/setup.md section 6).
+  always:
+    - name: Remove the private directory
+      ansible.builtin.file:
+        path: "{{ nodkey_ssh_tmp.path }}"
+        state: absent
+      when: nodkey_ssh_tmp.path is defined
+
+    - name: Remove a half credential
+      ansible.builtin.file:
+        path: "/etc/nodkey/credentials/.ssh-{{ nodkey_ssh_key.name }}.cred.new"
+        state: absent
+
+# Only after the key was made: a later key that fails stops the play.
+- name: Note that a restart is due for the key {{ nodkey_ssh_key.name }}
+  ansible.builtin.include_tasks: restart-due.yml
+
+# The public key and its fingerprint, for the report of the run: add the
+# key to authorized_keys on the target hosts (setup.md section 6).
+- name: Read the public key {{ nodkey_ssh_key.name }}
+  ansible.builtin.shell: |
+    set -eu
+    cat -- "$NODKEY_PUB"
+    ssh-keygen -l -f "$NODKEY_PUB"
+  environment:
+    NODKEY_PUB: "/etc/nodkey/ssh-{{ nodkey_ssh_key.name }}.pub"
+  register: nodkey_ssh_pub
+  changed_when: false
+
+- name: Show the public key {{ nodkey_ssh_key.name }}
+  ansible.builtin.debug:
+    msg: "{{ ['nodkey: made the SSH key ' ~ nodkey_ssh_key.name ~ ', /etc/nodkey/ssh-' ~ nodkey_ssh_key.name ~ '.pub:'] + nodkey_ssh_pub.stdout_lines }}"

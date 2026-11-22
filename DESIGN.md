@@ -4792,10 +4792,10 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
     older than the installed one, and an installed nodkey that is not a
     release. Then `nodkey version` must print X.
   - Broker side: the user and group `nodkey`, `/etc/nodkey` (root,
-    `0755`), `/etc/nodkey/credentials` (root, `0700`, left empty) and the
+    `0755`), `/etc/nodkey/credentials` (root, `0700`) and the
     unit of the tag, unchanged, in `/etc/systemd/system/nodkey.service`.
-    It never writes `broker.toml`, `known_hosts`, a drop-in or a
-    credential. With `nodkey_broker_config`, it runs
+    It never writes `broker.toml`, `known_hosts` or a credential from
+    outside. With `nodkey_broker_config`, it runs
     `nodkey broker check --config` as the user `nodkey`. A changed binary
     or unit writes the mark `/var/lib/nodkey-ansible/restart-due` at once,
     and a handler at the end of the play runs `systemctl daemon-reload`
@@ -4804,6 +4804,38 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
     that finds the mark does the restart, so a play that failed after an
     update does not leave it undone. It never enables or starts the
     broker. A unit that differs is kept as a backup file.
+  - Broker side, SSH keys (issue #206): for each name of
+    `nodkey_ssh_keys` whose `/etc/nodkey/credentials/ssh-NAME.cred` is
+    not there, the role makes the key on the host, as
+    docs/setup.md section 6 does by hand. One task with `no_log` does
+    it: `ssh-keygen` (Ed25519, or ECDSA P-256, P-384 or P-521; no
+    passphrase; the comment `nodkey-NAME`) into a private directory on
+    tmpfs (`/run`), `systemd-creds encrypt --with-key=… --name=ssh-NAME`
+    to a temporary name in the credentials directory, the public key to
+    `/etc/nodkey/ssh-NAME.pub` (`0644`), and last a hard link of the
+    credential (`0600`, root) to its name, which fails if a file is
+    there. So the `.cred` is the mark that the key is done, and is never
+    half. An `always` block and a trap remove the private directory and
+    the temporary credential, and each run first removes what a killed
+    run left there. A lock (`flock`) lets one run at a time make keys.
+    The role refuses a name whose credential ID the unit already loads
+    from another file (read with `busctl`), so it never swaps the key
+    behind a name. The private key is never in a variable, a
+    register or a log, and never leaves the host. `--with-key` is
+    `nodkey_ssh_key_with_key`: `auto` (the default) takes `host+tpm2`
+    when `systemd-creds has-tpm2` says yes, else `host`. The role never
+    replaces or removes a key, also when its type in the list changed.
+    It writes one drop-in, `nodkey.service.d/ssh-keys.conf`, with a
+    `LoadCredentialEncrypted=ssh-NAME:…` line for each listed name, and
+    removes it when the list is empty. The line for `ssh-deploy` is the
+    same as the line of the stock unit, with the same file, and systemd
+    loads that credential once. The file sorts after `local.conf` and `override.conf`, so
+    an empty `LoadCredentialEncrypted=` there does not remove its lines.
+    A new key or a changed drop-in writes the restart mark (above). A
+    name that leaves the list keeps its files; the role warns once, on
+    the run that takes its line out. It prints each new public key and
+    its fingerprint. In `--check` mode it makes nothing and says what it
+    would make. It never writes `[key.NAME]` into `broker.toml`.
   - Agent side, with `nodkey_ssh_agent_user`: the user unit
     `/etc/systemd/user/nodkey-ssh-agent.service` with `ConditionUser=`,
     enabled for all accounts by a link in
@@ -4821,12 +4853,15 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
     the installed one (`--installed`, which is required; it never runs
     nodkey). A text value may hold only the characters of a path or an
     account name, so no value is an Ansible template, and a config path
-    must be in `/etc/nodkey/`. It prints no value of the file, and a key
+    must be in `/etc/nodkey/`. An SSH key name must match
+    `^[a-z0-9][a-z0-9-]{0,31}$`, and its type is one of the four above. It prints no value of the file, and a key
     name only if it is plain. The role needs ansible-core 2.19 or newer.
   - Its tests: `contrib_ansible_linux_test.go` tests `check-data` and
     `build.sh`; `contrib/ansible/test/ci.sh`, in the CI job `ansible`,
     runs both sides in a Debian stable container with systemd, against
-    two real releases. CI runs `ansible-lint` with the `production`
+    two real releases. For the SSH keys, a broker in that container
+    signs a real SSH login with a key that the role made, approved by a
+    fake ntfy server (`test/fake-ntfy.py`, `test/sign-setup.sh`). CI runs `ansible-lint` with the `production`
     profile on it.
 - `install.sh`, at the root of the repository, installs a release on the
   host itself, as root: the broker host or an agent machine. It needs

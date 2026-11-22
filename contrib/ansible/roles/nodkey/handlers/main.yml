@@ -28,8 +28,8 @@
 - name: Say that the broker needs a restart
   ansible.builtin.debug:
     msg: >-
-      nodkey: the binary or the unit changed, and nodkey_restart is false.
-      If the broker runs, restart it as root when it suits you:
+      nodkey: the binary, the unit or its SSH keys changed, and
+      nodkey_restart is false. If the broker runs, restart it as root when it suits you:
       systemctl restart nodkey. The restart ends all grants.
   when:
     - nodkey_side == 'broker'

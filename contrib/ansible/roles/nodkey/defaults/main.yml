@@ -28,3 +28,16 @@ nodkey_ssh_agent_user: ""
 # Agent side: turn on linger for that account, so its user manager, and
 # the agent, start at boot and not only at a login.
 nodkey_ssh_agent_linger: true
+
+# Broker side: the SSH keys of the broker that the role makes on the
+# host, when their credential is not there yet. A list of maps, such as
+#   - name: deploy
+#     type: ed25519
+# type is ed25519 (the default), ecdsa-p256, ecdsa-p384 or ecdsa-p521.
+# The role never replaces or removes a key. README.md, "SSH keys".
+nodkey_ssh_keys: []
+
+# Broker side: the --with-key of systemd-creds encrypt for a new key.
+# auto: host+tpm2 when "systemd-creds has-tpm2" says yes, else host
+# (docs/setup.md section 3).
+nodkey_ssh_key_with_key: auto

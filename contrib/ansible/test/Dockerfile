@@ -8,6 +8,7 @@ RUN apt-get update \
       systemd systemd-sysv dbus libpam-systemd \
       ansible-core python3-yaml \
       ca-certificates curl gzip tar \
+      openssh-client openssh-server openssl \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --shell /bin/bash example-user
 

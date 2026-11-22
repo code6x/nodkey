@@ -94,3 +94,5 @@
         nodkey_version: "{{ nodkey_data.nodkey_version }}"
         nodkey_restart: "{{ nodkey_data.nodkey_restart | default(true) }}"
         nodkey_broker_config: "{{ nodkey_data.nodkey_broker_config | default('') }}"
+        nodkey_ssh_keys: "{{ nodkey_data.nodkey_ssh_keys | default([]) }}"
+        nodkey_ssh_key_with_key: "{{ nodkey_data.nodkey_ssh_key_with_key | default('auto') }}"

@@ -1893,8 +1893,23 @@ What nodkey does:
   a file elsewhere. Keep no secret in `/etc/nodkey/` that the user
   `nodkey` can read: the credentials are in `credentials/`, which only
   root can enter. The role writes no
-  `broker.toml`, no drop-in and no credential; the credential directory
-  stays an empty slot (`0700`, root).
+  `broker.toml` and no credential from outside.
+- **SSH keys that the role makes stay on the host.** With
+  `nodkey_ssh_keys`, the role makes each missing SSH key of the broker
+  on the broker host, never on an agent machine (section 5, item 8). The
+  private key is made in a private directory on tmpfs, encrypted with
+  `systemd-creds` at once, and the plain file is removed, also when the
+  run fails. If the run is killed, the file stays only in memory, in
+  `/run`, and the next run removes it before anything else. One task with `no_log` does it, so the key never goes into
+  an Ansible variable, a register, a log or the report of a pull tool.
+  The role never replaces a key and never deletes its files, so the
+  data file cannot swap a key that the target hosts trust for a new
+  one. It also refuses to make a key whose credential name the unit
+  already loads from another file. The credential is written last, by a
+  link that fails if a file is there, and one run at a time makes keys
+  (a lock), so a run that stops leaves no half key. The only drop-in
+  that the role writes is `ssh-keys.conf`, with one line per listed key
+  in a fixed form.
 - On an agent machine, the role writes no file in the home directory of
   the account, which the agent controls: a link there would turn a
   write as root into a write anywhere.
@@ -1905,7 +1920,15 @@ What nodkey does not do:
   root can change.
 - Who can write the data file can only confirm the version of the
   recipe that is installed on the host, turn the restart on or off,
-  and, on an agent machine, choose the account of the user unit. Who
+  and, on an agent machine, choose the account of the user unit. On the
+  broker host, approved host data can also make new SSH keys, choose
+  their `--with-key` (`host` is weaker than `host+tpm2`, setup.md
+  section 3), take a key out of the drop-in, and with that restart the
+  broker, which ends all grants (`nodkey_restart: false` turns the
+  restart off). A new key is no use until the owner adds `[key.NAME]`
+  to the config and its public key to the target hosts; a key that
+  leaves the drop-in makes the broker fail to start if the config still
+  names it, which fails closed. Who
   installs a newer recipe on the host chooses the release. A restart
   ends all grants. Nobody can choose an older release or a file that is
   not checked through the data file.
