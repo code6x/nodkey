@@ -503,6 +503,9 @@ func TestRunShowsTheProgram(t *testing.T) { // not parallel: it changes PATH
 // command that ran.
 func TestRunHelp(t *testing.T) {
 	t.Parallel()
+	if !strings.Contains(runUsage, "PROJECT/ID") {
+		t.Error("the help of nodkey run does not describe PROJECT/ID")
+	}
 	for _, arg := range []string{"-h", "--help", "-help", "--h"} {
 		code, stderr := runIn(t.Context(), testRunner(nil, nil, &fakeExec{}), arg)
 		if code != exitOK || stderr != runUsage {

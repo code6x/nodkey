@@ -15,6 +15,28 @@ From 2026-11-17 on, the release notes list such a change under
 ([docs/releasing.md](releasing.md#changes-in-behavior-for-callers)).
 Older releases listed it as a normal feature.
 
+## Updating from 0.8.0 or older
+
+**What changed (#225).** A client may ask for a secret of a
+`[project.*]` section by its ID in Bitwarden, as `SECTION/ID`. When the
+part after the `/` is a UUID, the broker now matches it only with the
+IDs of the secrets of the project, never with their keys. Before, it was
+matched with the keys.
+
+**Who is affected.** Only a caller that asks for a project secret whose
+key in Bitwarden is itself a UUID, such as
+`ci/0a1b2c3d-0000-4000-8000-00000000a002`. That name now asks for the
+secret with that ID. If no secret of the project has that ID, the
+request is denied, as for an unknown key.
+
+**What to do.** Give the secret a key that is not a UUID in Bitwarden,
+or ask for it by its ID. The tap message shows which secret it is: its
+key and the last 8 characters of its ID. For example:
+
+```sh
+nodkey run --secret TOKEN=ci/0a1b2c3d-0000-4000-8000-00000000a002 -- my-tool
+```
+
 ## Updating from 0.7.0 or older
 
 **What changed (#214).** Nothing that a caller sees. The harness of the

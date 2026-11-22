@@ -52,6 +52,11 @@ func ParseSecretName(name string) (n ProjectName, project, ok bool) {
 	return ProjectName{Section: section, Key: key}, true, true
 }
 
+// IsUUID reports whether s is a UUID, in upper or lower case: the form of
+// a secret ID in Bitwarden. A name PROJECT/ID with such an ID asks for the
+// secret by its ID (DESIGN.md section 14, "Projects").
+func IsUUID(s string) bool { return uuidPattern.MatchString(s) }
+
 // MaxNameLen is the most bytes of a name that follows the name rule.
 const MaxNameLen = 64
 

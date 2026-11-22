@@ -1740,8 +1740,13 @@ The key of a project secret is typed by whoever can write to the project,
 and the message shows it.
 What nodkey does:
 - Only a key that follows the name rule (letters, digits, `.`, `_` and
-  `-`, at most 64) can be asked for or shown. The broker skips other
-  secrets of the project, and never keeps or shows their keys.
+  `-`, at most 64) can be asked for by its key or shown. The broker never
+  keeps or shows another key: only its SHA-256, to check the answer of
+  `bws secret get`. Such a secret can be asked for only by its ID
+  (`SECTION/ID`), and the message then shows the ID.
+- A name `SECTION/ID` with a UUID is matched only with the IDs, never
+  with the keys. A secret whose key is another secret's ID cannot take
+  that secret's place.
 - The key is matched exactly; a client cannot reach another secret with
   another case.
 - Telegram and ntfy check the form of the secret text again before they

@@ -172,6 +172,12 @@ func TestParseArgs(t *testing.T) {
 	if err != nil || o.reason != "--" || len(o.secrets) != 1 || !slices.Equal(o.command, []string{"gh"}) {
 		t.Errorf("a reason that is \"--\": %+v, %v", o, err)
 	}
+	// PROJECT/ID: the ID of a project secret goes to the broker as it is.
+	const id = "0a1b2c3d-0000-4000-8000-00000000a002"
+	if o, err := parseArgs([]string{"--secret", "T=ci/" + id, "--", "gh"}); err != nil ||
+		!slices.Equal(o.secrets, []api.SecretRef{{Var: "T", Name: "ci/" + id}}) {
+		t.Errorf("PROJECT/ID: %+v, %v", o, err)
+	}
 	var max []string
 	for i := range api.MaxSecrets {
 		max = append(max, "--secret", "V"+itoa(i)+"="+strings.Repeat("n", api.MaxName))

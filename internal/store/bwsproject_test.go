@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -35,8 +36,8 @@ func jsonText(t *testing.T, v any) string {
 
 // TestBWSListSecrets: "bws secret list PROJECT" runs with the token in the
 // environment, and the store returns only the ID, the key and the
-// project of each secret. A key that breaks the name rule is left out.
-// No value and no note of the answer is in the result.
+// project of each secret. A key that breaks the name rule is not kept:
+// only its SHA-256. No value and no note of the answer is in the result.
 func TestBWSListSecrets(t *testing.T) {
 	t.Parallel()
 	token, v1, v2, v3 := madeUp("token"), madeUp("v1"), madeUp("v2"), madeUp("v3")
@@ -51,7 +52,10 @@ func TestBWSListSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSecrets: %v", err)
 	}
-	want := []ProjectSecret{{ID: testItemID, Key: "GITHUB_TOKEN", Project: testProjectID}}
+	want := []ProjectSecret{{ID: testItemID, Key: "GITHUB_TOKEN", Project: testProjectID},
+		{ID: otherSecretID, Project: testProjectID, keySum: sha256.Sum256([]byte("bad key with spaces"))},
+		{ID: "8a1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0d", Project: testProjectID,
+			keySum: sha256.Sum256([]byte(strings.Repeat("k", 65)))}}
 	if !slices.Equal(got, want) {
 		t.Errorf("ListSecrets = %+v, want %+v", got, want)
 	}
@@ -168,5 +172,61 @@ func TestBWSFetchListed(t *testing.T) {
 	f := newTestFake(t, config.StoreBWS, sc, testDeps())
 	if _, err := f.store.(ProjectStore).FetchListed(t.Context(), listed); !errors.Is(err, ErrBadAnswer) {
 		t.Errorf("another ID: %v, want ErrBadAnswer", err)
+	}
+}
+
+// TestBWSFetchListedKeyless: a listed secret whose key breaks the name
+// rule gives its value only when the answer of "bws secret get" has the
+// same key. Another key, also one that follows the name rule, is
+// ErrOtherSecret. A secret with no key and no SHA-256 is refused before
+// bws runs.
+func TestBWSFetchListedKeyless(t *testing.T) {
+	t.Parallel()
+	token, value := madeUp("token"), madeUp("value")
+	const key = "my-tool token example.org wide access"
+	listed := ProjectSecret{ID: testItemID, Project: testProjectID, keySum: sha256.Sum256([]byte(key))}
+	for _, c := range []struct {
+		name, key string
+		want      error
+	}{
+		{"the same", key, nil},
+		{"renamed", key + " 2", ErrOtherSecret},
+		{"renamed to a valid key", "GITHUB_TOKEN", ErrOtherSecret},
+		{"renamed to the empty key", "", ErrOtherSecret},
+	} {
+		sc := fakeScenario{Token: token, Items: map[string]string{
+			testItemID: jsonText(t, bwsListedJSON(testItemID, c.key, testProjectID, value)),
+		}}
+		f := newTestFake(t, config.StoreBWS, sc, testDeps())
+		v, err := f.store.(ProjectStore).FetchListed(t.Context(), listed)
+		if !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, err, c.want)
+		}
+		if c.want == nil {
+			checkValue(t, v, value)
+		} else if v.Bytes() != nil {
+			t.Errorf("%s: a value came", c.name)
+		}
+		if err != nil {
+			noCanary(t, c.name, err.Error(), value)
+			noCanary(t, c.name, err.Error(), "example.org")
+		}
+		v.Clear()
+	}
+	sc := fakeScenario{Token: token, Items: map[string]string{
+		testItemID: jsonText(t, bwsListedJSON(testItemID, "", testProjectID, value)),
+	}}
+	f := newTestFake(t, config.StoreBWS, sc, testDeps())
+	for _, ps := range []ProjectSecret{
+		{ID: testItemID, Project: testProjectID},                     // no key and no SHA-256
+		{ID: testItemID, Key: "bad key", Project: testProjectID},     // a key that breaks the rule
+		{ID: testItemID, Key: "GITHUB_TOKEN", Project: "not-a-uuid"}, // a project that is not a UUID
+	} {
+		if _, err := f.store.(ProjectStore).FetchListed(t.Context(), ps); !errors.Is(err, ErrBadID) {
+			t.Errorf("%+v: %v, want ErrBadID", ps, err)
+		}
+	}
+	if n := len(f.calls()); n != 0 {
+		t.Errorf("bws ran %d times for a listed secret that is not valid", n)
 	}
 }
