@@ -14,8 +14,12 @@ import (
 // grants per ID, not per name.
 type ProjectSecret struct {
 	Section string
-	Key     string
+	Key     string // the part KEY of the name: a key, or the secret's ID
 	ID      string // a UUID in lower case
+	// Shown is the secret's key in Bitwarden when the client asked by the
+	// ID and the key follows the name rule; else "". The message shows
+	// SECTION/Shown then.
+	Shown string
 }
 
 // Name returns SECTION/KEY.
@@ -73,15 +77,19 @@ func secretItem(p *pending, name string, projects map[string]ProjectSecret) (it 
 	if !ok {
 		return item{}, nil, "", false
 	}
+	shown := name
+	if ps.Shown != "" && config.ValidKey(ps.Shown) && !config.IsUUID(ps.Shown) {
+		shown = ps.Section + "/" + ps.Shown
+	}
 	if pr.Entry != "" {
-		return item{ref: ref{name: pr.Entry}, rule: pr.Rule}, pr.Clients, name + " (rule of secret " + pr.Entry +
+		return item{ref: ref{name: pr.Entry}, rule: pr.Rule}, pr.Clients, shown + " (rule of secret " + pr.Entry +
 			", ID …" + idEnd(ps.ID) + ")", true
 	}
 	if pr.Rule.Ask == config.AskNever {
 		return item{}, nil, "", false // the config never allows it; check again
 	}
 	return item{ref: projectRef(ps.Section, ps.ID), rule: pr.Rule}, pr.Clients,
-		name + " (project rule, ID …" + idEnd(ps.ID) + ")", true
+		shown + " (project rule, ID …" + idEnd(ps.ID) + ")", true
 }
 
 // addSecret adds the secret of name, with its label, to p, and to the

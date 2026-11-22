@@ -50,7 +50,9 @@ environment variable VAR. nodkey never prints a value.
                      whose value programs show or run, such as PATH,
                      LD_PRELOAD or GIT_SSH_COMMAND, in any case. NAME is
                      a secret of the broker, or PROJECT/KEY for the
-                     secret KEY of a project of the broker.
+                     secret KEY of a project of the broker, or PROJECT/ID
+                     for the secret of that project with the ID (a UUID),
+                     also when its key is not a valid name.
   --totp VAR=NAME    the current TOTP code of the secret NAME, a secret of
                      the broker with totp = true, such as a code for
                      "npm publish --otp". The broker makes the code; the

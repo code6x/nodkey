@@ -767,6 +767,17 @@ The key must be written exactly as in Bitwarden, also in upper and lower
 case. The tap message shows `ci/GITHUB_TOKEN (project rule, ID …1a2b3c4d)`:
 the end of the secret's ID tells you which secret it is.
 
+A client may also ask for the secret by its ID, as the Bitwarden web app
+shows it: `SECTION/ID`. This is the only way to a secret whose key has
+spaces or other characters, or more than 64 bytes:
+
+```sh
+nodkey run --secret TOKEN=ci/0a1b2c3d-0000-4000-8000-00000000a002 -- my-tool
+```
+
+The same rule applies as for the key. The tap message shows the key when
+it is a valid name, else the ID.
+
 **A different rule for one secret.** Give the secret a `[secret.*]`
 section with its ID, in any store of type `bws`. That section's rule then
 applies to the secret completely, also when a client asks for

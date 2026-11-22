@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
@@ -46,8 +47,10 @@ func secretAllowed(cfg *config.Broker, client, name string) bool {
 
 // resolveProjects finds the secret of each name SECTION/KEY of names in
 // its project (DESIGN.md section 14, "Projects"): it runs "bws secret
-// list" once for each project, and looks for the key exactly. The result
-// goes to rq.projects and rq.listed. A key that is not in the project is
+// list" once for each project, and looks for the key exactly. A KEY that
+// is a UUID is matched only with the secret IDs, in lower case, never with
+// the keys: so a key that is another secret's ID cannot take its place.
+// The result goes to rq.projects and rq.listed. A key that is not in the project is
 // refused; so is a key that two secrets of the project have, with a line
 // in the journal that names the section and the key. Each name that it
 // finds goes to rq.pre.Secrets; a name that the client made up never
@@ -74,12 +77,7 @@ func (rq *request) resolveProjects(ctx context.Context, names []string) bool {
 			}
 			lists[pn.Section] = list
 		}
-		var found []store.ProjectSecret
-		for _, s := range list {
-			if s.Key == pn.Key {
-				found = append(found, s)
-			}
-		}
+		found := findProjectSecret(list, pn.Key)
 		switch len(found) {
 		case 0:
 			// The key was chosen by the client, and is not in Bitwarden:
@@ -88,14 +86,22 @@ func (rq *request) resolveProjects(ctx context.Context, names []string) bool {
 			return false
 		case 1:
 		default:
+			rq.pre.Secrets = append(rq.pre.Secrets, name)
+			if config.IsUUID(pn.Key) {
+				// IDs are unique in Bitwarden: the list of the store is wrong.
+				rq.refuseProject("the store listed two or more secrets with this ID; check the store with \"nodkey doctor broker\"", name)
+				return false
+			}
 			// Bitwarden does not keep keys unique in a project. The broker
 			// cannot tell which secret is meant (DESIGN.md section 14).
-			rq.pre.Secrets = append(rq.pre.Secrets, name)
 			rq.refuseProject("two or more secrets of the project have this key; give each a key of its own in Bitwarden", name)
 			return false
 		}
 		rq.pre.Secrets = append(rq.pre.Secrets, name) // it is in the project
 		ps := approval.ProjectSecret{Section: pn.Section, Key: pn.Key, ID: found[0].ID}
+		if found[0].Key != pn.Key && config.ValidKey(found[0].Key) {
+			ps.Shown = found[0].Key // asked by its ID; the message shows the key
+		}
 		rule, ok := cfg.RuleFor(pn.Section, ps.ID)
 		if !ok || !slices.Contains(rule.Clients, rq.client) {
 			rq.refuseProject("the secret has no clear rule, or its rule does not list this client", "")
@@ -108,6 +114,22 @@ func (rq *request) resolveProjects(ctx context.Context, names []string) bool {
 		rq.projects[name], rq.listed[name] = ps, found[0]
 	}
 	return true
+}
+
+// findProjectSecret returns the secrets of list that the part KEY of a
+// name SECTION/KEY asks for: by the ID when key is a UUID, else by the key,
+// exactly. A secret with a key that breaks the name rule has Key "", and
+// key is never "", so it is found only by its ID.
+func findProjectSecret(list []store.ProjectSecret, key string) []store.ProjectSecret {
+	var found []store.ProjectSecret
+	byID := config.IsUUID(key)
+	id := strings.ToLower(key)
+	for _, s := range list {
+		if (byID && s.ID == id) || (!byID && key != "" && s.Key == key) {
+			found = append(found, s)
+		}
+	}
+	return found
 }
 
 // listProject runs "bws secret list" for the project p. On an error it
@@ -148,8 +170,8 @@ func (rq *request) listProject(ctx context.Context, p config.Project) ([]store.P
 
 // refuseProject denies a request for a project secret that a check
 // refused, with a fixed reason in the journal. name is the secret
-// SECTION/KEY when the journal may show it: only for a key that two
-// secrets have. The key follows the name rule; a value is never shown.
+// SECTION/KEY when the journal may show it: only for a key or an ID that
+// two secrets have. The key follows the name rule; a value is never shown.
 func (rq *request) refuseProject(reason, name string) {
 	attrs := []any{slog.String("client", rq.client), slog.String("reason", reason)}
 	if name != "" {

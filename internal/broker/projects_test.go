@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"maps"
 	"net/http"
 	"slices"
@@ -363,7 +364,8 @@ func TestProjectMadeUpKeysNotLogged(t *testing.T) {
 }
 
 // TestProjectSameSecretTwice: an entry and SECTION/KEY with its ID name
-// the same secret; one request with both is denied.
+// the same secret; one request with both is denied. So is one with
+// SECTION/KEY and SECTION/ID, or with the ID in upper and lower case.
 func TestProjectSameSecretTwice(t *testing.T) {
 	e := projectEnv(t, func(c *config.Broker) {
 		c.Secrets["ci-one"] = config.Secret{Name: "ci-one", Store: "main", ID: idCI1, Clients: []string{"laptop"},
@@ -374,6 +376,15 @@ func TestProjectSameSecretTwice(t *testing.T) {
 	mustStatus(t, e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, r), http.StatusForbidden)
 	if len(e.approver.Asked()) != 0 || e.main.fetched() != 0 {
 		t.Error("a message or a value")
+	}
+	// SECTION/KEY and SECTION/ID of one secret, and its ID in two cases.
+	for _, names := range [][2]string{{"ci/GITHUB_TOKEN", "ci/" + idCI1}, {"ci/" + strings.ToUpper(idCI1), "ci/" + idCI1}} {
+		r := secretsRequest("A", names[0])
+		r.Secrets = append(r.Secrets, api.SecretRef{Var: "B", Name: names[1]})
+		mustStatus(t, e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, r), http.StatusForbidden)
+		if len(e.approver.Asked()) != 0 || e.main.fetched() != 0 {
+			t.Errorf("%q: a message or a value", names)
+		}
 	}
 }
 
@@ -398,5 +409,166 @@ func TestProjectPreapprove(t *testing.T) {
 	got := secretsOf(t, e.post(t.Context(), c, api.PathSecrets, secretsRequest("GH_TOKEN", "ci/GITHUB_TOKEN")))
 	if got["GH_TOKEN"] != e.values["ci1"] || len(e.approver.Asked()) != 1 {
 		t.Error("the scheduled grant was not used")
+	}
+}
+
+// idCI3 is an ID that no secret of the project has.
+const idCI3 = "0a1b2c3d-0000-4000-8000-00000000a003"
+
+// keylessEnv is projectEnv with idCI2 in the project too, under a key that
+// breaks the name rule: the store keeps no key for it (Key "").
+func keylessEnv(t *testing.T, change func(*config.Broker)) *env {
+	t.Helper()
+	e := projectEnv(t, change, envOptions{})
+	e.main.set(func(f *fakeStore) {
+		f.projects[projectCI] = append(f.projects[projectCI], store.ProjectSecret{ID: idCI2, Project: projectCI})
+	})
+	return e
+}
+
+// TestProjectSecretByID: a client gets a project secret by SECTION/ID,
+// also when its key breaks the name rule, after one tap. The message shows
+// the key when it follows the name rule, else the ID. The audit log names
+// the secret as asked, with its ID.
+func TestProjectSecretByID(t *testing.T) {
+	e := keylessEnv(t, nil)
+	name := "ci/" + idCI2
+	if got := approveProject(t, e, 1, name, name+" (project rule, ID …0000a002)",
+		audit.AnswerApproveOnce); got != e.values["ci2"] {
+		t.Error("the answer does not hold the value of the secret with no valid key")
+	}
+	req, ok := e.audit.all()[0].(audit.Request)
+	if !ok || !slices.Equal(req.Secrets, []string{name}) ||
+		!slices.Equal(req.ProjectSecrets, []audit.ProjectSecret{{Name: name, ID: idCI2}}) {
+		t.Errorf("the request entry is %+v", e.audit.all()[0])
+	}
+	// By the ID of a secret with a valid key, also in upper case: the
+	// message shows the key.
+	if got := approveProject(t, e, 2, "ci/"+strings.ToUpper(idCI1), "ci/GITHUB_TOKEN (project rule, ID …0000a001)",
+		audit.AnswerApproveOnce); got != e.values["ci1"] {
+		t.Error("the answer does not hold the value of GITHUB_TOKEN")
+	}
+	e.main.checkCleared(t)
+}
+
+// TestProjectSecretByIDRefused: an ID that is not in the project is
+// refused as an unknown key is: the same answer, no message, no value, and
+// no name in the audit log. A UUID that is not whole is a key, and no
+// secret has it.
+func TestProjectSecretByIDRefused(t *testing.T) {
+	e := keylessEnv(t, nil)
+	unknown := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("GH_TOKEN", "ci/NOPE"))
+	mustStatus(t, unknown, http.StatusForbidden)
+	for _, name := range []string{
+		"ci/" + idCI3,
+		"ci/" + projectCI,                          // the project's own ID
+		"ci/" + idCI2[:len(idCI2)-1],               // one character short
+		"ci/" + idCI2 + "0",                        // one character more
+		"ci/" + strings.ReplaceAll(idCI2, "-", ""), // no dashes
+		"cd/" + idCI2,                              // a section that is not in the config
+	} {
+		res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("GH_TOKEN", name))
+		mustStatus(t, res, http.StatusForbidden)
+		if !bytes.Equal(res.body, unknown.body) {
+			t.Errorf("%s: the answer %q is not the one of an unknown key, %q", name, res.body, unknown.body)
+		}
+	}
+	// The project does not list the client.
+	res := e.post(t.Context(), e.httpClient("ci"), api.PathSecrets, secretsRequest("GH_TOKEN", "ci/"+idCI2))
+	mustStatus(t, res, http.StatusForbidden)
+	if n := len(e.approver.Asked()); n != 0 {
+		t.Errorf("%d messages, want none", n)
+	}
+	if e.main.fetched() != 0 {
+		t.Error("a value was fetched")
+	}
+	for _, ev := range e.audit.all() {
+		for _, s := range subjectOf(ev).Secrets {
+			if s != "ci/"+idCI2 {
+				t.Errorf("the audit log has a name that was not found: %+v", ev)
+			}
+		}
+	}
+}
+
+// TestProjectSecretByIDEntryWins: a secret asked by its ID that has its
+// own [secret.*] entry follows that entry, as by its key.
+func TestProjectSecretByIDEntryWins(t *testing.T) {
+	entry := func(clients []string) func(*config.Broker) {
+		return func(c *config.Broker) {
+			c.Secrets["ci-two"] = config.Secret{Name: "ci-two", Store: "main", ID: idCI2, Clients: clients,
+				Rule: config.Rule{Ask: config.AskWindow, Window: 30 * time.Minute}}
+		}
+	}
+	t.Run("stricter", func(t *testing.T) {
+		e := keylessEnv(t, entry([]string{"ci"}))
+		res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("GH_TOKEN", "ci/"+idCI2))
+		mustStatus(t, res, http.StatusForbidden)
+		if len(e.approver.Asked()) != 0 || e.main.fetched() != 0 {
+			t.Error("a message or a value")
+		}
+	})
+	t.Run("looser", func(t *testing.T) {
+		e := keylessEnv(t, func(c *config.Broker) {
+			p := c.Projects["ci"]
+			p.Rule = config.Rule{Ask: config.AskAlways}
+			c.Projects["ci"] = p
+			entry([]string{"laptop"})(c)
+		})
+		name := "ci/" + idCI2
+		approveProject(t, e, 1, name, name+" (rule of secret ci-two, ID …0000a002)", audit.AnswerApproveWindow)
+		// The entry's window covers the ID and the entry's name.
+		for _, n := range []string{name, "ci-two"} {
+			got := secretsOf(t, e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("GH_TOKEN", n)))
+			if got["GH_TOKEN"] != e.values["ci2"] {
+				t.Errorf("%s: no value", n)
+			}
+		}
+		if len(e.approver.Asked()) != 1 {
+			t.Error("the entry's window did not apply")
+		}
+	})
+}
+
+// TestProjectSecretByIDNoHijack: a secret whose key is the ID of another
+// secret cannot take its place. A UUID is matched only with the IDs, so
+// SECTION/ID gets the secret with that ID, and the key that looks like an
+// ID can never be asked for by its key.
+func TestProjectSecretByIDNoHijack(t *testing.T) {
+	e := projectEnv(t, nil, envOptions{})
+	e.main.set(func(f *fakeStore) {
+		// idCI2 has the key idCI1, and idCI3 the same key in upper case.
+		f.projects[projectCI] = append(f.projects[projectCI],
+			store.ProjectSecret{ID: idCI2, Key: idCI1, Project: projectCI},
+			store.ProjectSecret{ID: idCI3, Key: strings.ToUpper(idCI1), Project: projectCI})
+	})
+	if got := approveProject(t, e, 1, "ci/"+idCI1, "ci/GITHUB_TOKEN (project rule, ID …0000a001)",
+		audit.AnswerApproveOnce); got != e.values["ci1"] {
+		t.Error("the key that looks like an ID took the secret's place")
+	}
+	e.main.set(func(f *fakeStore) {
+		f.projects[projectCI] = []store.ProjectSecret{{ID: idCI2, Key: idCI3, Project: projectCI}}
+	})
+	res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("GH_TOKEN", "ci/"+idCI3))
+	mustStatus(t, res, http.StatusForbidden)
+	if len(e.approver.Asked()) != 1 || e.main.fetched() != 1 {
+		t.Error("a key that is a UUID was matched as a key")
+	}
+}
+
+// TestProjectDuplicateID: a list of the store with one ID twice is wrong;
+// SECTION/ID of that ID is refused, with no message and no value.
+func TestProjectDuplicateID(t *testing.T) {
+	e := projectEnv(t, nil, envOptions{})
+	e.main.set(func(f *fakeStore) {
+		f.projects[projectCI] = append(f.projects[projectCI], store.ProjectSecret{ID: idCI1, Project: projectCI})
+	})
+	res := e.post(t.Context(), e.httpClient("laptop"), api.PathSecrets, secretsRequest("GH_TOKEN", "ci/"+idCI1))
+	mustStatus(t, res, http.StatusForbidden)
+	if !strings.Contains(e.logs.String(), "the store listed two or more secrets with this ID") {
+		t.Errorf("the journal is %q", e.logs.String())
+	}
+	if e.main.fetched() != 0 || len(e.approver.Asked()) != 0 {
+		t.Error("a value was fetched, or a message sent")
 	}
 }

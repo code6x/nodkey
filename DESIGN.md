@@ -3254,7 +3254,7 @@ other users must not be able to change it.
 
 ### Projects
 
-*(issue 177; built: `internal/config/project.go`,
+*(issues 177 and 225; built: `internal/config/project.go`,
 `internal/broker/projects.go`, `internal/store/bwsproject.go`)*
 
 A `[project.NAME]` section allows every secret of one Bitwarden Secrets
@@ -3287,8 +3287,37 @@ is always a `[secret.*]` section, so the two kinds cannot clash. A name
 with two or more `/` is refused. Each part follows the name rule, so it
 has at most 64 bytes, and `SECTION/KEY` at most 129 (`api.MaxSecretName`).
 The key is matched exactly, also in upper and lower case. Only a key that
-follows the name rule can be asked for; other secrets of the project are
-skipped, and their key is never shown.
+follows the name rule can be asked for as `SECTION/KEY`; the broker never
+keeps or shows a key that breaks it.
+
+**By ID.** A client may also ask for a project secret as `SECTION/ID`,
+where `ID` is the secret's ID in Bitwarden (a UUID, as the web app shows
+it), for example
+`nodkey run --secret TOKEN=ci/0a1b2c3d-0000-4000-8000-00000000a002 -- ...`.
+This is the only way to a secret whose key breaks the name rule,
+such as a key with spaces or of more than 64 bytes. A UUID follows the
+name rule, so the name check is the same.
+
+- When `KEY` is a UUID, the broker matches it only with the IDs of the
+  project's list, in lower case (so an ID in upper case works too), and
+  never with the keys. A secret whose key looks like another secret's ID
+  so cannot take that secret's place, and a key that is a UUID cannot be
+  asked for by its key.
+- When `KEY` is not a UUID, it is matched only with the keys. A UUID
+  that is not whole (a character short, no dashes) is a key, and is
+  refused like any key that is not in the project.
+- An ID that is not in the project's list is refused as an unknown key
+  is: the same answer, and the audit entry does not name it. Two secrets
+  with one ID in the list (a wrong answer of the store) are refused, as
+  for a key that two secrets have.
+- The project's `clients` and rule apply, or a `[secret.*]` entry with
+  the ID wins, as for `SECTION/KEY` (below). The grants are per ID in
+  both forms, so a window that was granted for `SECTION/KEY` covers
+  `SECTION/ID` too.
+
+For a key that breaks the name rule, the broker keeps only a SHA-256 of
+it from the list, never the key. After the tap, the key in the answer of
+`bws secret get` must break the rule too and have the same SHA-256.
 
 **Lookup.** The broker first checks the name, that the section exists,
 and that the client is in its `clients` or in the `clients` of a
@@ -3311,8 +3340,9 @@ names of one request that are the same secret, such as an entry's name
 and `SECTION/KEY` with its ID, deny the request.
 
 After the tap, the broker gets the secret by its ID with `bws secret
-get`, from the store of the project, and checks that the `key` and the
-`projectId` of that answer are those of the list. If not, such as for a
+get`, from the store of the project, and checks that the `key` (or the
+SHA-256 of a key that breaks the name rule) and the `projectId` of that
+answer are those of the list. If not, such as for a
 rename between the two runs, the request is denied.
 
 **Which rule wins.** With the ID, the broker looks for a `[secret.*]`
@@ -3347,7 +3377,10 @@ it still works while the machine account can read it.
 project's rule applies, and the last 8 characters of the ID. When an entry
 wins, it shows `ci/GITHUB_TOKEN (rule of secret NAME, ID …1a2b3c4d)`. The
 key in it was read from Bitwarden; the client sent the same key, and only
-a key that follows the name rule gets here. A list of standing grants
+a key that follows the name rule gets here. For `SECTION/ID`, the message
+shows `SECTION/KEY` with the key from Bitwarden when the key follows the
+name rule and is not a UUID, else the name as asked, `SECTION/ID`. The
+audit entries always name the secret as the client asked. A list of standing grants
 shows a project grant as `ci (project rule, ID …1a2b3c4d)`.
 
 **Audit.** The entries name the secret as `SECTION/KEY` in `secrets`,

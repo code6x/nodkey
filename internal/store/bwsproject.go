@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 
 	"github.com/code6x/nodkey/internal/config"
@@ -20,10 +21,15 @@ var ErrOtherSecret = errors.New("the secret's key or project changed since it wa
 
 // ProjectSecret is what nodkey reads from one secret of a list: its ID in
 // lower case, its key, and its project's ID in lower case. Never a value.
+// Key is "" when the key in Bitwarden breaks the name rule: such a key is
+// never kept, only its SHA-256 in keySum, so that FetchListed can check
+// that the key did not change. Such a secret can be asked for only by its
+// ID (DESIGN.md section 14, "Projects").
 type ProjectSecret struct {
 	ID      string
 	Key     string
 	Project string
+	keySum  [sha256.Size]byte // only when Key is ""
 }
 
 // ProjectStore is a store that hands out the secrets of a Bitwarden
@@ -31,13 +37,13 @@ type ProjectSecret struct {
 // bws store is one.
 type ProjectStore interface {
 	// ListSecrets runs "bws secret list PROJECT" and returns the ID, the
-	// key and the project of each secret whose key follows the name rule
-	// (config.ValidKey). Other secrets are left out, and their key is not
-	// kept. The answer holds the values of all the secrets; it is cleared.
+	// key and the project of each secret. A key that breaks the name rule
+	// (config.ValidKey) is not kept: Key is "". The answer holds the values
+	// of all the secrets; it is cleared.
 	ListSecrets(ctx context.Context, project string) ([]ProjectSecret, error)
 	// FetchListed runs "bws secret get" for s.ID and returns the value. It
-	// is ErrOtherSecret when the answer's key or projectId is not s.Key
-	// and s.Project.
+	// is ErrOtherSecret when the answer's key or projectId is not the one
+	// of the list.
 	FetchListed(ctx context.Context, s ProjectSecret) (Value, error)
 }
 
@@ -66,7 +72,8 @@ func readList(out []byte, project string) ([]ProjectSecret, error) {
 
 // FetchListed implements ProjectStore.
 func (s *bwsStore) FetchListed(ctx context.Context, ps ProjectSecret) (Value, error) {
-	if !isUUID(ps.ID) || !isUUID(ps.Project) || !config.ValidKey(ps.Key) {
+	if !isUUID(ps.ID) || !isUUID(ps.Project) || (ps.Key == "" && ps.keySum == [sha256.Size]byte{}) ||
+		(ps.Key != "" && !config.ValidKey(ps.Key)) {
 		return Value{}, stepError(s.run.store, stepGetSecret, ErrBadID)
 	}
 	out, err := s.bws(ctx, stepGetSecret, "secret", "get", ps.ID, "--output", "json", "--color", "no")
@@ -99,7 +106,8 @@ func (s *bwsStore) bws(ctx context.Context, step string, args ...string) ([]byte
 type listedFields struct {
 	id, project       string
 	key               string
-	keyOK             bool // the key follows the name rule
+	keyOK             bool              // the key follows the name rule
+	keySum            [sha256.Size]byte // of a key that breaks the name rule
 	idSet, projectSet bool
 	keySet            bool
 }
@@ -107,7 +115,7 @@ type listedFields struct {
 // readListedField reads the field key of a secret into f. It reads "id",
 // "key" and "projectId", and skips the others, the value and the note
 // among them. A key that breaks the name rule is read, checked and
-// cleared, never kept.
+// cleared, never kept: only its SHA-256 is.
 func readListedField(r *jsonReader, key string, f *listedFields) error {
 	switch key {
 	case "id":
@@ -130,6 +138,8 @@ func readListedField(r *jsonReader, key string, f *listedFields) error {
 		f.keySet = true
 		if len(b) <= config.MaxNameLen && config.ValidKey(string(b)) {
 			f.key, f.keyOK = string(b), true
+		} else {
+			f.keySum = sha256.Sum256(b)
 		}
 		return nil
 	}
@@ -139,7 +149,8 @@ func readListedField(r *jsonReader, key string, f *listedFields) error {
 // parseBWSList reads the answer of "bws secret list PROJECT --output
 // json": one JSON array of secrets. Each must have a UUID "id", a "key",
 // and "projectId" equal to project; else the whole answer is
-// ErrBadAnswer. Secrets with a key that breaks the name rule are left out.
+// ErrBadAnswer. A key that breaks the name rule is not kept: the secret
+// has Key "" and the key's SHA-256.
 func parseBWSList(data []byte, project string) ([]ProjectSecret, error) {
 	r := &jsonReader{data: data}
 	r.space()
@@ -152,9 +163,11 @@ func parseBWSList(data []byte, project string) ([]ProjectSecret, error) {
 		if !f.idSet || !f.keySet || !f.projectSet || !isUUID(f.id) || !sameUUID(f.project, project) {
 			return ErrBadAnswer
 		}
-		if f.keyOK {
-			list = append(list, ProjectSecret{ID: lowerASCII(f.id), Key: f.key, Project: lowerASCII(f.project)})
+		ps := ProjectSecret{ID: lowerASCII(f.id), Key: f.key, Project: lowerASCII(f.project)}
+		if !f.keyOK {
+			ps.Key, ps.keySum = "", f.keySum
 		}
+		list = append(list, ps)
 		return nil
 	})
 	if err == nil {
@@ -172,8 +185,9 @@ func parseBWSList(data []byte, project string) ([]ProjectSecret, error) {
 // parseBWSListed reads the answer of "bws secret get ID --output json" for
 // the listed secret ps: one JSON object. It reads "id", "key",
 // "projectId" and "value". The id must be ps.ID, else it is an answer for
-// another secret. The key must be ps.Key exactly, and the projectId
-// ps.Project, else it is ErrOtherSecret.
+// another secret. The key must be ps.Key exactly (or, for a key that breaks
+// the name rule, have the same SHA-256), and the projectId ps.Project,
+// else it is ErrOtherSecret.
 func parseBWSListed(data []byte, ps ProjectSecret) (Value, error) {
 	var f listedFields
 	var value []byte
@@ -195,10 +209,20 @@ func parseBWSListed(data []byte, ps ProjectSecret) (Value, error) {
 	case err != nil:
 	case !f.idSet || !sameUUID(f.id, ps.ID):
 		err = errOtherItem
-	case !f.keyOK || f.key != ps.Key || !f.projectSet || !sameUUID(f.project, ps.Project):
+	case !f.keySet || !sameKey(f, ps) || !f.projectSet || !sameUUID(f.project, ps.Project):
 		err = ErrOtherSecret
 	}
 	return keepValue(value, err)
+}
+
+// sameKey reports whether the key of the answer f is the key of the list
+// ps: the same text, or for a key that breaks the name rule, one that
+// breaks it too and has the same SHA-256.
+func sameKey(f listedFields, ps ProjectSecret) bool {
+	if ps.Key != "" {
+		return f.keyOK && f.key == ps.Key
+	}
+	return !f.keyOK && ps.keySum != [sha256.Size]byte{} && f.keySum == ps.keySum
 }
 
 // lowerASCII returns s with the ASCII letters in lower case.
