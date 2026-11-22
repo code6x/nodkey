@@ -191,11 +191,13 @@ For hosts that you run with Ansible, the release file
 `nodkey_<version>_ansible.tar.gz` (from 0.8.0 on) holds a role that
 does the steps of this guide: it installs nodkey with the installer of
 the same tag, and the same checks. On the broker host, it also makes the
-user `nodkey`, `/etc/nodkey`, an empty `/etc/nodkey/credentials` and the
+user `nodkey`, `/etc/nodkey`, `/etc/nodkey/credentials` and the
 unit of section 8. On an agent machine, it can add the `nodkey ssh-agent`
 user unit of section 11. Later, it updates nodkey only with
 `nodkey update` of the installed nodkey, and never to an older version.
-It never writes the config or a credential. Two fixed playbooks run it
+It never writes the config or a credential from outside, but it can
+make the SSH keys of the broker on the host
+([section 6](#the-ssh-keys-of-the-broker)). Two fixed playbooks run it
 from a data file, for a host that keeps only data in its repository.
 How to get it, check it and use it:
 [contrib/ansible/README.md](../contrib/ansible/README.md).
@@ -1150,6 +1152,26 @@ systemd-creds encrypt --with-key="$WITH_KEY" --name=ssh-deploy \
 install -o root -g root -m 0644 /run/nodkey-setup/ssh-deploy.pub /etc/nodkey/ssh-deploy.pub
 rm /run/nodkey-setup/ssh-deploy /run/nodkey-setup/ssh-deploy.pub
 ```
+
+If your unit does not have it yet, add a
+`LoadCredentialEncrypted=ssh-deploy:/etc/nodkey/credentials/ssh-deploy.cred`
+line to the unit ([section 8](#8-the-systemd-unit)), run
+`systemctl daemon-reload`, and restart the broker.
+
+With the Ansible role ([section 2](#the-ansible-role)), list the names
+in `nodkey_ssh_keys` instead. For each name that has no
+`/etc/nodkey/credentials/ssh-NAME.cred` yet, the role does the steps
+above on the broker host: it makes the key in a private directory in
+`/run`, encrypts it with the `--with-key` of
+[section 3](#encrypted-credentials), writes `/etc/nodkey/ssh-NAME.pub`,
+adds the line to its drop-in `nodkey.service.d/ssh-keys.conf`, and
+restarts the broker (unless `nodkey_restart` is false). The private key
+never leaves the host and never shows in the output of Ansible. The role
+never replaces or removes a key. It prints each new public key and its
+fingerprint. You still add `[key.NAME]` to the config
+([section 7](#7-the-config-file)). How:
+[contrib/ansible/README.md, "SSH keys"](../contrib/ansible/README.md#ssh-keys).
+Without the role, the steps above stay the way.
 
 Add the public key, `/etc/nodkey/ssh-deploy.pub`, to
 `~deploy/.ssh/authorized_keys` on each target host. Manage
@@ -2944,7 +2966,8 @@ step 5.
 
 Make a new key and its credential as in
 [section 6](#the-ssh-keys-of-the-broker), with a new name, such as
-`ssh-deploy-2`. Add its public key to the target hosts. Change `file`
+`ssh-deploy-2`, or with the Ansible role, add the name `deploy-2` to
+`nodkey_ssh_keys`. Add its public key to the target hosts. Change `file`
 of the `[key.NAME]` section and the `LoadCredentialEncrypted=` line of
 the unit. Then run `systemctl daemon-reload`, so that systemd reads the
 changed unit, and restart the broker. At the end, remove the old public

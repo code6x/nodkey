@@ -84,7 +84,7 @@ jobs:
           # The scripts of the pullgate recipe source lib.sh from their own
           # directory.
           (cd contrib/pullgate && "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh -x -- *.sh)
-          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh contrib/ansible/build.sh contrib/ansible/test/ci.sh
+          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh contrib/ansible/build.sh contrib/ansible/test/ci.sh contrib/ansible/test/sign-setup.sh
           # The release build and the checks of the Release check workflow.
           "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh scripts/build-release.sh scripts/verify-release.sh scripts/release-check/*.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -157,7 +157,8 @@ jobs:
       - name: The role in a Debian container with systemd
         # contrib/ansible/test/ci.sh: both sides, a second run with no
         # change, the unit of the tag, a wrong SHA-256, an older and a
-        # newer version. It removes the containers and the image.
+        # newer version, and the SSH keys of the broker, with a broker
+        # that signs an SSH login. It removes the containers and the image.
         run: sh contrib/ansible/test/ci.sh "$ANSIBLE_TEST_OLD" "$ANSIBLE_TEST_NEW"
 
   vuln:

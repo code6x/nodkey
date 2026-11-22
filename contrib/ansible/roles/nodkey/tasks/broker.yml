@@ -1,7 +1,8 @@
 ---
 # The broker side: the user, the directories and the unit of
 # docs/setup.md sections 3, 7 and 8. The role never writes broker.toml,
-# known_hosts or a credential.
+# known_hosts or a credential from outside: it only makes the SSH keys of
+# nodkey_ssh_keys on the host (ssh-keys.yml).
 
 - name: Make the group nodkey
   ansible.builtin.group:
@@ -26,7 +27,8 @@
     group: root
     mode: "0755"
 
-# An empty slot: the role never writes a credential into it.
+# The role writes no credential from outside into it, only the SSH keys
+# that it makes on the host.
 - name: Make /etc/nodkey/credentials
   ansible.builtin.file:
     path: /etc/nodkey/credentials
@@ -36,7 +38,8 @@
     mode: "0700"
 
 # The unit of the tag, unchanged. Fit it to the host with a drop-in in
-# /etc/systemd/system/nodkey.service.d/, which the role never changes.
+# /etc/systemd/system/nodkey.service.d/. The role writes only its own
+# drop-in there, ssh-keys.conf.
 # A unit changed by hand is kept as a backup file next to it. The mark
 # is a task, not a handler, so that it stays when the play fails later.
 - name: Install the unit of the tag
@@ -52,6 +55,9 @@
 - name: Note that a restart is due  # noqa: no-handler
   ansible.builtin.include_tasks: restart-due.yml
   when: nodkey_unit_copy is changed
+
+- name: Make the SSH keys of the broker
+  ansible.builtin.include_tasks: ssh-keys.yml
 
 - name: Check the config of the host
   when: nodkey_broker_config != ''

@@ -57,6 +57,29 @@
       "Settings".
     quiet: true
 
+- name: Check nodkey_ssh_keys
+  ansible.builtin.assert:
+    that:
+      - nodkey_ssh_keys is sequence
+      - nodkey_ssh_keys is not string
+      - nodkey_ssh_keys is not mapping
+      - nodkey_ssh_keys | length <= 64
+      - nodkey_ssh_keys | select('mapping') | list | length == nodkey_ssh_keys | length
+      - nodkey_ssh_keys | map('list') | flatten | difference(['name', 'type']) | length == 0
+      - nodkey_ssh_keys | selectattr('name', 'undefined') | list | length == 0
+      - nodkey_ssh_keys | map(attribute='name') | select('string') | select('match', '^[a-z0-9][a-z0-9-]{0,31}\\Z') | list | length == nodkey_ssh_keys | length
+      - nodkey_ssh_keys | map(attribute='name') | unique | list | length == nodkey_ssh_keys | length
+      - nodkey_ssh_keys | map(attribute='type', default='ed25519') | difference(['ed25519', 'ecdsa-p256', 'ecdsa-p384', 'ecdsa-p521']) | length == 0
+      - nodkey_ssh_key_with_key in ['auto', 'host', 'host+tpm2']
+    fail_msg: >-
+      nodkey role: nodkey_ssh_keys must be a list of at most 64 maps with
+      a name and an optional type, such as [{name: deploy, type: ed25519}].
+      A name has 1 to 32 characters: a-z, 0-9 and "-", and does not start
+      with "-"; each name is there once. The type is ed25519, ecdsa-p256,
+      ecdsa-p384 or ecdsa-p521. nodkey_ssh_key_with_key is auto, host or
+      host+tpm2. See contrib/ansible/README.md, "SSH keys".
+    quiet: true
+
 - name: Check the host
   ansible.builtin.assert:
     that:
@@ -246,4 +269,6 @@
     msg: "nodkey: a restart is due; it runs at the end of the play."
   changed_when: true
   notify: nodkey restart due
-  when: nodkey_restart_due.stat.exists or (ansible_check_mode and nodkey_action != 'none')
+  when: >-
+    nodkey_restart_due.stat.exists
+    or (ansible_check_mode and (nodkey_action != 'none' or nodkey_ssh_keys_changed | default(false)))

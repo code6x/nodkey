@@ -42,14 +42,16 @@ Both sides (`nodkey_side`):
 - the system user and group `nodkey`, with the home `/var/lib/nodkey`
   and the shell `/usr/sbin/nologin` (setup.md section 3);
 - `/etc/nodkey` (root, `0755`) and `/etc/nodkey/credentials` (root,
-  `0700`), an empty slot for the credentials;
+  `0700`), for the credentials;
 - `/etc/systemd/system/nodkey.service`: `contrib/systemd/nodkey.service`
   of the same tag, unchanged.
 
-It never writes `broker.toml`, `known_hosts` or a credential. Fit the
-unit to the host with a drop-in, such as
-`/etc/systemd/system/nodkey.service.d/local.conf`. The role never changes
-that directory. For example, to load only two credentials:
+It never writes `broker.toml`, `known_hosts` or a credential from
+outside. It can make the SSH keys of the broker on the host: see
+[SSH keys](#ssh-keys). Fit the unit to the host with a drop-in, such as
+`/etc/systemd/system/nodkey.service.d/local.conf`. The role writes only
+its own drop-in there, `ssh-keys.conf`. For example, to load only two
+credentials:
 
 ```ini
 [Service]
@@ -58,7 +60,9 @@ LoadCredentialEncrypted=broker-tls-key:/etc/nodkey/credentials/broker-tls-key.cr
 LoadCredentialEncrypted=telegram-token:/etc/nodkey/credentials/telegram-token.cred
 ```
 
-The empty line removes the lines of the unit. The role does not enable or
+The empty line removes the lines of the unit, and of drop-ins whose
+names sort before this one. `ssh-keys.conf` of the role sorts after
+`local.conf` and `override.conf`, so its lines stay. The role does not enable or
 start the broker: do that once by hand, after the setup of setup.md
 sections 4 to 10. After a change of the binary or the unit, it restarts
 the broker only if it runs (`systemctl try-restart`). The restart ends
@@ -118,6 +122,8 @@ The defaults are in `roles/nodkey/defaults/main.yml`.
 | `nodkey_version` | the version of the role | The release to install, `X.Y.Z`. It must be the version of the role. |
 | `nodkey_restart` | `true` | Restart the broker (only if it runs), or the user unit, after a change of the binary or the unit. |
 | `nodkey_broker_config` | `""` | Broker side: the path of the config that the host provides. The role checks it with `runuser -u nodkey -- nodkey broker check --config PATH`, and fails if the check fails. Empty: no check. A data file may name only a file in `/etc/nodkey/`. |
+| `nodkey_ssh_keys` | `[]` | Broker side: the SSH keys that the role makes on the host. See [SSH keys](#ssh-keys). |
+| `nodkey_ssh_key_with_key` | `auto` | Broker side: the `--with-key` of `systemd-creds encrypt` for a new key: `auto`, `host` or `host+tpm2`. `auto` takes `host+tpm2` when `systemd-creds has-tpm2` says yes, else `host`. |
 | `nodkey_ssh_agent_user` | `""` | Agent side: the account that runs `nodkey ssh-agent`. Never `root`. Empty: no user unit. |
 | `nodkey_ssh_agent_linger` | `true` | Agent side: turn on linger for that account. |
 
@@ -169,6 +175,8 @@ The data file is YAML: one map, with only these keys.
 | `nodkey_version` | both | text `X.Y.Z`, such as `"0.8.0"` | yes |
 | `nodkey_restart` | both | `true` or `false` | no |
 | `nodkey_broker_config` | broker | the path of a file in `/etc/nodkey/`, or `""` | no |
+| `nodkey_ssh_keys` | broker | a list of maps: `name` (required) and `type` (optional), as in [SSH keys](#ssh-keys) | no |
+| `nodkey_ssh_key_with_key` | broker | `auto`, `host` or `host+tpm2` | no |
 | `nodkey_ssh_agent_user` | agent | the name of an account, not `root`, or `""` | no |
 | `nodkey_ssh_agent_linger` | agent | `true` or `false` | no |
 
@@ -194,7 +202,78 @@ An example for the broker host:
 nodkey_version: "0.8.0"
 nodkey_broker_config: /etc/nodkey/broker.toml
 nodkey_restart: false
+nodkey_ssh_keys:
+  - name: deploy
 ```
+
+## SSH keys
+
+A broker SSH key must be made on the broker host, never on an agent
+machine (docs/setup.md section 6). The role can do that for you. List
+the keys on the broker side:
+
+```yaml
+nodkey_ssh_keys:
+  - name: deploy
+  - name: backup
+    type: ecdsa-p256
+```
+
+A name has 1 to 32 characters: `a` to `z`, `0` to `9` and `-`, and does
+not start with `-`. The type is `ed25519` (the default), `ecdsa-p256`,
+`ecdsa-p384` or `ecdsa-p521`. For each name whose
+`/etc/nodkey/credentials/ssh-NAME.cred` is not there, the role:
+
+1. makes the key with `ssh-keygen` in a private directory in `/run`
+   (tmpfs), with no passphrase and the comment `nodkey-NAME`;
+2. encrypts it with `systemd-creds encrypt --name=ssh-NAME` and the
+   `--with-key` of `nodkey_ssh_key_with_key`, to a temporary name;
+3. writes the public key to `/etc/nodkey/ssh-NAME.pub` (`0644`);
+4. links the credential to `ssh-NAME.cred` (`0600`, root). This is the
+   last step, so a run that stops leaves no half key, and the next run
+   makes it again. The private directory is removed, also when a step
+   fails; a run that was killed leaves it in `/run`, in memory, and the
+   next run removes it first.
+
+One task does steps 1 to 4, with `no_log`: the private key never goes
+into a variable or the output of Ansible. If it fails, the error says
+only that the key was not made. Check then that
+`systemd-creds encrypt` works on the host (docs/setup.md section 3).
+
+Then the role writes `/etc/systemd/system/nodkey.service.d/ssh-keys.conf`
+with a line for each listed key, such as
+`LoadCredentialEncrypted=ssh-deploy:/etc/nodkey/credentials/ssh-deploy.cred`,
+and restarts the broker, unless `nodkey_restart` is false. The stock
+unit has the same line for `ssh-deploy`, with the same file; systemd
+loads it once. The role
+prints each new public key and its fingerprint: add the public key to
+`authorized_keys` on the target hosts. It does not write `broker.toml`:
+add a section for each key yourself (docs/setup.md section 7):
+
+```toml
+[key.deploy]
+file = "${CREDENTIALS_DIRECTORY}/ssh-deploy"
+clients = ["laptop"]
+ask = "always"
+```
+
+Some rules:
+
+- The role **never replaces or removes** a key that is there, also when
+  its type in the list changed. To change a key, make a new one with a
+  new name (docs/setup.md section 13).
+- A name that leaves the list keeps its two files. The role takes its
+  line out of `ssh-keys.conf` and prints a warning once. Remove
+  `[key.NAME]` from the config too, or the broker does not start. With
+  an empty list, the role removes `ssh-keys.conf`.
+- If the unit already loads `ssh-NAME` from another file, such as a
+  key made by hand, the role refuses to make the key `NAME`: that would
+  replace the key for the broker. Use another name.
+- A `.pub` without its `.cred` is what a run that stopped leaves: the
+  next run makes a new key and writes a new `.pub`.
+- `--check` makes nothing. It says which keys it would make.
+- The host needs `ssh-keygen` (the package `openssh-client` on Debian)
+  and `/run` on tmpfs.
 
 ## Update
 

@@ -1,0 +1,208 @@
+---
+# The SSH keys of the broker (nodkey_ssh_keys): the role makes each key
+# that has no credential yet, on the host, as docs/setup.md section 6
+# does by hand. It never replaces or removes a key. Each key is loaded
+# by a line in the drop-in ssh-keys.conf of the unit.
+
+- name: Look for the credential of each SSH key
+  ansible.builtin.stat:
+    path: "/etc/nodkey/credentials/ssh-{{ item.name }}.cred"
+    get_checksum: false
+  loop: "{{ nodkey_ssh_keys }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: nodkey_ssh_creds
+
+# A link or a directory in place of a credential is not a key that the
+# role made: it stops, and a person looks.
+- name: Check the credentials that are there
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg and not item.stat.islnk)
+    fail_msg: >-
+      nodkey role: /etc/nodkey/credentials/ssh-{{ item.item.name }}.cred
+      is there, but it is not a plain file. The role never replaces a key.
+      As root, look at it and remove it, or take {{ item.item.name }} out
+      of nodkey_ssh_keys.
+    quiet: true
+  loop: "{{ nodkey_ssh_creds.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+# A run that was killed may have left its private directory, or a
+# temporary credential. Remove them before anything else.
+- name: Remove what a killed run left
+  ansible.builtin.shell: |
+    set -eu
+    found=0
+    for f in /run/nodkey-ssh-key.* /etc/nodkey/credentials/.ssh-*.cred.new; do
+      if [ -e "$f" ] || [ -L "$f" ]; then rm -rf -- "$f"; found=1; fi
+    done
+    echo "$found"
+  register: nodkey_ssh_leftover
+  changed_when: nodkey_ssh_leftover.stdout == '1'
+  when: not ansible_check_mode
+
+- name: Set the SSH keys to make
+  ansible.builtin.set_fact:
+    nodkey_ssh_missing: >-
+      {{ nodkey_ssh_creds.results | rejectattr('stat.exists') | map(attribute='item') | list }}
+
+- name: Show the SSH keys that would be made
+  ansible.builtin.debug:
+    msg: "nodkey: would make the SSH key {{ item.name }} ({{ item.type | default('ed25519') }})"
+  changed_when: true
+  loop: "{{ nodkey_ssh_missing }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ansible_check_mode
+
+- name: Make the missing SSH keys
+  when: nodkey_ssh_missing | length > 0
+  block:
+    # The private key exists only in memory: in a directory on tmpfs.
+    - name: Look at /run and for ssh-keygen and systemd-creds
+      ansible.builtin.shell: |
+        stat -f -c %T /run
+        command -v ssh-keygen >/dev/null && echo ssh-keygen
+        command -v systemd-creds >/dev/null && echo systemd-creds
+        exit 0
+      register: nodkey_ssh_host
+      changed_when: false
+      check_mode: false
+
+    - name: Check /run, ssh-keygen and systemd-creds
+      ansible.builtin.assert:
+        that:
+          - (nodkey_ssh_host.stdout_lines + [''])[0] in ['tmpfs', 'ramfs']
+          - "'ssh-keygen' in nodkey_ssh_host.stdout_lines"
+          - "'systemd-creds' in nodkey_ssh_host.stdout_lines"
+        fail_msg: >-
+          nodkey role: to make an SSH key, the host needs /run on tmpfs (it
+          is {{ (nodkey_ssh_host.stdout_lines + ['unknown'])[0] }}), ssh-keygen
+          (the package openssh-client on Debian) and systemd-creds (systemd
+          250 or newer). Fix that as root, or make the key by hand
+          (docs/setup.md section 6). See contrib/ansible/README.md, "SSH keys".
+        quiet: true
+
+    # Read only. "yes" on the first line: a TPM2 chip that systemd can
+    # use (docs/setup.md section 3). It exits with 1 without one.
+    - name: Ask systemd-creds for a TPM2 chip
+      ansible.builtin.command:
+        argv: [systemd-creds, has-tpm2]
+      register: nodkey_has_tpm2
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: nodkey_ssh_key_with_key == 'auto'
+
+    # The unit may load ssh-NAME from another file already, such as a
+    # key made by hand, in a drop-in of the owner. Then a new key with
+    # the same name would replace that key for the broker: refuse.
+    - name: Read the credentials that the unit loads
+      ansible.builtin.command:
+        argv:
+          - busctl
+          - get-property
+          - org.freedesktop.systemd1
+          - /org/freedesktop/systemd1/unit/nodkey_2eservice
+          - org.freedesktop.systemd1.Service
+          - LoadCredentialEncrypted
+      register: nodkey_unit_creds
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Refuse a name that the unit loads from another file
+      ansible.builtin.assert:
+        that:
+          - >-
+            (nodkey_unit_creds.stdout | default('')
+             | regex_findall('"ssh-' ~ item.name ~ '" "([^"]*)"'))
+            | difference(['/etc/nodkey/credentials/ssh-' ~ item.name ~ '.cred'])
+            | length == 0
+        fail_msg: >-
+          nodkey role: the unit loads the credential ssh-{{ item.name }} from
+          another file than /etc/nodkey/credentials/ssh-{{ item.name }}.cred,
+          so a new key {{ item.name }} would replace that key for the broker.
+          The role never replaces a key. Use another name in nodkey_ssh_keys,
+          or, as root, remove that LoadCredentialEncrypted= line from your
+          drop-in (systemctl cat nodkey shows it).
+        quiet: true
+      loop: "{{ nodkey_ssh_missing }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Set the key of the credentials
+      ansible.builtin.set_fact:
+        nodkey_ssh_with: >-
+          {{ nodkey_ssh_key_with_key if nodkey_ssh_key_with_key != 'auto'
+             else ('host+tpm2' if (nodkey_has_tpm2.stdout_lines + [''])[0] == 'yes' else 'host') }}
+
+    - name: Make one SSH key
+      ansible.builtin.include_tasks: ssh-key.yml
+      loop: "{{ nodkey_ssh_missing }}"
+      loop_control:
+        loop_var: nodkey_ssh_key
+        label: "{{ nodkey_ssh_key.name }}"
+      when: not ansible_check_mode
+
+
+# A name that left the list: the role keeps its files, and says so.
+- name: Read the drop-in of the SSH keys
+  ansible.builtin.slurp:
+    src: /etc/systemd/system/nodkey.service.d/ssh-keys.conf
+  register: nodkey_ssh_dropin
+  failed_when: false
+
+- name: Warn about keys that left nodkey_ssh_keys
+  ansible.builtin.debug:
+    msg: >-
+      nodkey: warning: the SSH key {{ item }} is no longer in nodkey_ssh_keys.
+      The role does not load it any more, but it keeps
+      /etc/nodkey/credentials/ssh-{{ item }}.cred and /etc/nodkey/ssh-{{ item }}.pub.
+      Remove [key.{{ item }}] from the config of the broker, or add the name
+      again. To delete the key, remove both files as root
+      (docs/setup.md section 13).
+  loop: >-
+    {{ ((nodkey_ssh_dropin.content | default('') | b64decode)
+        | regex_findall('(?m)^LoadCredentialEncrypted=ssh-([a-z0-9-]+):'))
+       | difference(nodkey_ssh_keys | map(attribute='name') | list) }}
+
+- name: Make the drop-in directory of the unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/nodkey.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nodkey_ssh_keys | length > 0
+
+# A line for every key of the list. The line for ssh-deploy is the same
+# as the one of the stock unit, with the same file: systemd loads it once.
+- name: Write the drop-in of the SSH keys
+  ansible.builtin.template:
+    src: nodkey-ssh-keys.conf.j2
+    dest: /etc/systemd/system/nodkey.service.d/ssh-keys.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: nodkey_ssh_dropin_write
+  when: nodkey_ssh_keys | length > 0
+
+- name: Remove the drop-in of the SSH keys
+  ansible.builtin.file:
+    path: /etc/systemd/system/nodkey.service.d/ssh-keys.conf
+    state: absent
+  register: nodkey_ssh_dropin_remove
+  when: nodkey_ssh_keys | length == 0
+
+- name: Note that a restart is due for the drop-in  # noqa: no-handler
+  ansible.builtin.include_tasks: restart-due.yml
+  when: nodkey_ssh_dropin_write is changed or nodkey_ssh_dropin_remove is changed
+
+- name: Note the change of the SSH keys
+  ansible.builtin.set_fact:
+    nodkey_ssh_keys_changed: >-
+      {{ nodkey_ssh_missing | length > 0 or nodkey_ssh_dropin_write is changed
+         or nodkey_ssh_dropin_remove is changed }}

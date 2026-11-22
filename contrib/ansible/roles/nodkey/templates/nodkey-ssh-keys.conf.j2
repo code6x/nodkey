@@ -1,0 +1,7 @@
+# Written by the nodkey role: one line for each key of nodkey_ssh_keys.
+# The role writes this file again at each run; put your own changes in
+# another drop-in, such as local.conf (contrib/ansible/README.md).
+[Service]
+{% for key in nodkey_ssh_keys %}
+LoadCredentialEncrypted=ssh-{{ key.name }}:/etc/nodkey/credentials/ssh-{{ key.name }}.cred
+{% endfor %}

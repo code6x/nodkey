@@ -63,6 +63,9 @@ func TestCheckDataGood(t *testing.T) {
 		{"broker, all keys", "broker", "0.7.0", "nodkey_version: \"0.8.0\"\nnodkey_restart: false\nnodkey_broker_config: /etc/nodkey/broker.toml\n"},
 		{"broker, the same version", "broker", "0.8.0", "nodkey_version: \"0.8.0\"\n"},
 		{"broker, no config", "broker", "none", "nodkey_version: 0.8.0\nnodkey_broker_config: \"\"\n"},
+		{"broker, SSH keys", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_key_with_key: host\nnodkey_ssh_keys:\n  - name: deploy\n  - name: backup-2\n    type: ecdsa-p384\n  - {name: 0ops, type: ed25519}\n"},
+		{"broker, no SSH keys", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: []\nnodkey_ssh_key_with_key: auto\n"},
+		{"broker, a name of 32 characters", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: " + strings.Repeat("a", 32) + "}]\n"},
 		{"agent, all keys", "agent", "none", "nodkey_version: \"0.8.0\"\nnodkey_restart: true\nnodkey_ssh_agent_user: example-user\nnodkey_ssh_agent_linger: false\n"},
 	}
 	for _, c := range cases {
@@ -101,6 +104,23 @@ func TestCheckDataBad(t *testing.T) {
 		{"a template in the path", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_broker_config: \"/etc/nodkey/{{ x }}\"\n", "nodkey_broker_config must be the path"},
 		{"user root", "agent", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_agent_user: root\n", "nodkey_ssh_agent_user must not be root"},
 		{"user with a space", "agent", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_agent_user: \"a b\"\n", "nodkey_ssh_agent_user must be the name of an account"},
+		{"SSH keys not a list", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: deploy\n", "nodkey_ssh_keys must be a list"},
+		{"SSH key not a map", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [deploy]\n", "nodkey_ssh_keys, item 1 must be a map with a name"},
+		{"SSH key without a name", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{type: ed25519}]\n", "item 1: the name must have 1 to 32 characters"},
+		{"SSH key name with a capital", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: Deploy}]\n", "item 1: the name must have 1 to 32 characters"},
+		{"SSH key name starts with -", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: -x}]\n", "the name must have 1 to 32 characters"},
+		{"SSH key name with a dot", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: a.b}]\n", "the name must have 1 to 32 characters"},
+		{"SSH key name with a slash", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: ../x}]\n", "the name must have 1 to 32 characters"},
+		{"SSH key name too long", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: " + strings.Repeat("a", 33) + "}]\n", "the name must have 1 to 32 characters"},
+		{"SSH key name a number", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: 7}]\n", "the name must have 1 to 32 characters"},
+		{"SSH key name a template", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: \"{{ x }}\"}]\n", "the name must have 1 to 32 characters"},
+		{"SSH key name twice", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: deploy}, {name: deploy, type: ecdsa-p256}]\n", "item 2: the name deploy is there twice"},
+		{"SSH key unknown type", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: deploy, type: rsa}]\n", "item 1: the type must be one of ed25519, ecdsa-p256, ecdsa-p384, ecdsa-p521"},
+		{"SSH key empty type", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: deploy, type: null}]\n", "item 1: the type must be one of"},
+		{"SSH key unknown field", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: deploy, comment: x}]\n", "item 1 has the key comment"},
+		{"too many SSH keys", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [" + strings.Repeat("{name: a},", 65) + "]\n", "has more than 64 keys"},
+		{"SSH keys on the agent side", "agent", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: deploy}]\n", "the key nodkey_ssh_keys is not a key of the agent side"},
+		{"wrong with_key", "broker", "none", "nodkey_version: \"0.8.0\"\nnodkey_ssh_key_with_key: tpm2\n", "nodkey_ssh_key_with_key must be auto, host or host+tpm2"},
 		{"a Python tag", "broker", "none", "nodkey_version: !!python/object/apply:os.system [\"true\"]\n", "it is not valid YAML"},
 	}
 	for _, c := range cases {
@@ -126,6 +146,10 @@ func TestCheckDataPrintsNoValue(t *testing.T) {
 		"nodkey_version: [\"" + marker + "\"\n",
 		"nodkey_version: \"0.8.0\"\n\"\\e[31m" + marker + "\\nx\": 1\n",
 		"nodkey_version: \"0.8.0\"\n\"" + marker + " \": 1\n\"" + marker + " \": 2\n",
+		"nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: \"" + marker + "X\"}]\n",
+		"nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: a, type: \"" + marker + "\"}]\n",
+		"nodkey_version: \"0.8.0\"\nnodkey_ssh_keys: [{name: a, \"" + marker + " \": 1}]\n",
+		"nodkey_version: \"0.8.0\"\nnodkey_ssh_key_with_key: \"" + marker + "\"\n",
 	} {
 		code, out := checkData(t, text, "--side", "broker", "--installed", "none")
 		if code != 1 || strings.Contains(out, marker) {
