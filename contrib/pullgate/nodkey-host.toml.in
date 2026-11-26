@@ -1,0 +1,43 @@
+# The template of the host instance of the pullgate recipe of nodkey
+# (docs/setup.md, "The host instance"). pullgate bootstrap --recipe writes
+# /etc/pullgate/NAME.toml from it, with the data repo of --repo and
+# --branch. The data repo holds only data: host.yml, the version of nodkey
+# and the settings of the role. Every command comes from a checked
+# release; nothing runs from the repo.
+#
+# An Ansible run is not a transaction: a failed commit is held, and a new
+# commit fixes it forward.
+on_failure = "pause"
+host = "@HOST@"
+
+[repo]
+url = "@REPO_URL@"
+branch = "@BRANCH@"
+
+[commands]
+check = ["@RECIPE_DIR@/host-check.sh"]
+summary = ["@RECIPE_DIR@/host-summary.sh"]
+# The same lock as the apply of the broker config instance.
+apply = ["/usr/bin/flock", "-w", "1500", "/run/nodkey-broker-apply.lock", "@RECIPE_DIR@/host-apply.sh"]
+# The health check of the broker config instance: the broker runs the
+# config in /etc/nodkey/broker.toml, after a restart too.
+health = ["@RECIPE_DIR@/health.sh"]
+check_timeout = "2m"
+# The downloads of the recipes, gh and nodkey, and the playbook; and the
+# wait for the lock.
+apply_timeout = "45m"
+
+# No [watch]: host.yml changes in every commit, and a ⚠ on every question
+# teaches to skip the ⚠ lines. The ⚠ lines that matter come from the
+# summary.
+
+[limits]
+questions_per_day = 10
+approval_ttl = "12h"
+max_failed_tries = 1
+allow_older = false
+refuse_symlinks = true
+# host-check.sh allows only the five files of the data repo layout; a
+# short list of files keeps the summary inside the question.
+max_files = 8
+max_tree_bytes = 1048576

@@ -1,0 +1,48 @@
+# The template of the broker config instance of the pullgate recipe of
+# nodkey (docs/setup.md, "Change the config from git with pullgate").
+# pullgate bootstrap --recipe writes /etc/pullgate/NAME.toml from it, with
+# the repo of --repo and --branch. The broker host pulls broker.toml and
+# known_hosts from a private git repo, asks the owner on Telegram, and
+# applies a commit only after a tap.
+#
+# A failed apply, reload, restart or health check runs apply.sh again with
+# the last good commit. That is safe: apply.sh installs two files and
+# reloads or restarts the broker.
+on_failure = "rollback"
+host = "@HOST@"
+
+[repo]
+url = "@REPO_URL@"
+branch = "@BRANCH@"
+
+[commands]
+# The scripts come from a release of nodkey, never from the config repo.
+# check and summary run as the check user and only read the tree as
+# data; apply and health run as root.
+check = ["@RECIPE_DIR@/check.sh"]
+summary = ["@RECIPE_DIR@/summary.sh"]
+# The lock is shared with the apply of the host instance, so the two
+# instances never restart the broker at the same time. A second apply
+# waits up to 25 minutes for the first.
+apply = ["/usr/bin/flock", "-w", "1500", "/run/nodkey-broker-apply.lock", "@RECIPE_DIR@/apply.sh"]
+health = ["@RECIPE_DIR@/health.sh"]
+check_timeout = "2m"
+# apply.sh may restart the broker, health.sh waits up to 60s for it, and
+# the apply may wait for the lock.
+apply_timeout = "30m"
+
+[watch]
+paths = ["broker.toml", "known_hosts"]
+
+[limits]
+questions_per_day = 10
+approval_ttl = "12h"
+max_failed_tries = 1
+allow_older = false
+# A symlink out of the tree stops the export; check.sh and apply.sh also
+# refuse broker.toml or known_hosts as a symlink.
+refuse_symlinks = true
+# Few files: pullgate lists the changed files and the commits before the
+# summary, and cuts a long message from the end. Keep the repo small.
+max_files = 20
+max_tree_bytes = 1048576
