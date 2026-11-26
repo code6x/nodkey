@@ -70,6 +70,9 @@ jobs:
           sh scripts/build-release.sh "$VERSION" "${RUNNER_TEMP}/again" >/dev/null
           diff dist/SHA256SUMS "${RUNNER_TEMP}/again/SHA256SUMS"
           echo "a second build gives the same files" | tee -a build.txt
+          # The pullgate tarball is a recipe of this version, as pullgate
+          # reads it (scripts/release-check/recipe.sh).
+          sh scripts/release-check/recipe.sh "dist/nodkey_${VERSION}_pullgate.tar.gz" "$VERSION" | tee -a build.txt
       - name: Check 2, find N-1 and N-2, and check their files
         id: previous
         env:

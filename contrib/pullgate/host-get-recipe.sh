@@ -95,8 +95,12 @@ get_gh() {
 	gh=$tmp/gh/gh_${gh_version}_linux_${arch}/bin/gh
 }
 
+d=$NKH_OPT/nodkey-ansible-$v
 if have; then
 	echo "host-get-recipe.sh: the Ansible recipe of nodkey $v is there already"
+elif [ -e "$d" ] || [ -L "$d" ]; then
+	echo "host-get-recipe.sh: $d is there but not safe, or not the recipe of $v: $(nkh_recipe "$v" | head -n 1); look at it, remove it as root, and run host-get-recipe.sh $v again"
+	exit 1
 else
 	get "$ansible" 67108864 "$base/$ansible" || {
 		echo "host-get-recipe.sh: cannot download $ansible of v$v; is $v a release of nodkey?"
@@ -137,11 +141,6 @@ else
 	}
 
 	# Unpack into a new folder next to the final one, then rename it.
-	d=$NKH_OPT/nodkey-ansible-$v
-	if [ -e "$d" ] || [ -L "$d" ]; then
-		echo "host-get-recipe.sh: $d is there but not safe; look at it, remove it as root, and run host-get-recipe.sh $v again"
-		exit 1
-	fi
 	rm -rf "$d.new"
 	install -d -m 0755 "$d.new"
 	tar --no-same-owner --no-same-permissions -xzf "$ansible" -C "$d.new"

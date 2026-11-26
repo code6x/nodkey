@@ -177,15 +177,18 @@ After every push to `main`, the **Release** workflow runs release-please.
      for Linux amd64 and arm64 (`CGO_ENABLED=0`, `-trimpath`), packs each
      one with `LICENSE` and `README.md` into
      `nodkey_<version>_linux_<arch>.tar.gz`. It packs the files of
-     `contrib/pullgate/` with `LICENSE` into
-     `nodkey_<version>_pullgate.tar.gz`. It makes the Ansible recipe
+     `contrib/pullgate/` (not its `test/` folder) with `LICENSE` into
+     `nodkey_<version>_pullgate.tar.gz`, the pullgate recipe, and writes
+     the version into its manifest `pullgate-recipe.toml`. It makes the Ansible recipe
      with `contrib/ansible/build.sh` and packs it into
      `nodkey_<version>_ansible.tar.gz`, and writes `SHA256SUMS`.
    - `upload` gets these files from `build`. It checks them against
      `SHA256SUMS` and checks the tag again. Then it makes a signed build
      provenance attestation for the tarballs. It saves the attestation as
      one more file, `nodkey_<version>.sigstore.json` (a Sigstore bundle
-     for all tarballs), and checks all tarballs with it, with no login,
+     for all tarballs), and the same file again as
+     `nodkey_<version>_pullgate.sigstore.json`: `pullgate recipe fetch`
+     looks for the bundle of a recipe under that name. It checks all tarballs with it, with no login,
      as in [Verify a download](#verify-a-download). Then it uploads the
      files to the draft release, and downloads them back from the draft.
    - `verify` checks the files of the draft before anybody can see them
@@ -204,7 +207,8 @@ with [`scripts/verify-release.sh`](../scripts/verify-release.sh)) checks
 the files of the draft release, as a user gets them:
 
 1. The draft has exactly the expected files: the four tarballs,
-   `SHA256SUMS` and the bundle, and nothing else.
+   `SHA256SUMS`, the bundle and its copy for the pullgate recipe, and
+   nothing else.
 2. `SHA256SUMS` names each tarball once, and each tarball matches it.
 3. The attestation in the bundle verifies each tarball, offline, with
    the identity of [Verify a download](#verify-a-download). The bundle
@@ -217,6 +221,13 @@ the files of the draft release, as a user gets them:
    runs: the pinned gh and the real bundle. Only `github.com` and
    `api.github.com` are a local HTTPS server there, because the files of
    a draft are not public yet.
+6. The pullgate tarball is a pullgate recipe of this version
+   ([`scripts/release-check/recipe.sh`](../scripts/release-check/recipe.sh)):
+   only plain files, the manifest with this version and the instances
+   `nodkey-broker` and `nodkey-host`, and templates that set none of the
+   keys that pullgate sets itself and name only programs of the recipe.
+   `nodkey_<version>_pullgate.sigstore.json` is the same file as the
+   bundle.
 
 `publish` needs `verify`. When `verify` fails, nothing is published: the
 release stays a draft, and nobody but the maintainers can see it.
@@ -277,7 +288,7 @@ without a release do not count.
 
 | # | check | what passes |
 |---|---|---|
-| 1 | build | `scripts/build-release.sh` builds the candidate, and a second build gives the same files. |
+| 1 | build | `scripts/build-release.sh` builds the candidate, and a second build gives the same files. The pullgate tarball passes `scripts/release-check/recipe.sh`. |
 | 2 | N-1 and N-2 | Both are found, and their files pass `SHA256SUMS` and the attestation check. |
 | 3 | update path | In a container, the real N-1 and N-2 run `nodkey update`, and the `install.sh` of their own release, against a local HTTPS server with the candidate's files: both install the candidate. A wrong or missing checksum, a missing or changed file, and a failed attestation check are refused, and the old binary stays. The candidate has no attestation, so a fake `gh` stands for it. The release workflow checks the real one. |
 | 4 | configs | Each config in `test/compat/configs/` gives the same result with N-1 and the candidate (`nodkey broker check`). `ok-*` files must pass N-1, `bad-*` files must fail it. |
@@ -520,14 +531,19 @@ A release has these files:
   `README.md`;
 - `nodkey_<version>_pullgate.tar.gz`: the pullgate recipe, the files of
   `contrib/pullgate/` and `LICENSE` (docs/setup.md, "Change the config
-  from git with pullgate"). Releases before 0.7.0 do not have it;
+  from git with pullgate"). Releases before 0.7.0 do not have it. From
+  the release after 0.9.0 it is a recipe for `pullgate bootstrap
+  --recipe`, with the instances `nodkey-broker` and `nodkey-host`;
 - `nodkey_<version>_ansible.tar.gz`: the Ansible recipe, the role, the
   playbooks and `check-data` of `contrib/ansible/`, with the `install.sh`
   and the unit of the tag in the role, and `LICENSE`
   (contrib/ansible/README.md). Releases before 0.8.0 do not have it;
 - `SHA256SUMS`: the SHA-256 of all tarballs;
 - `nodkey_<version>.sigstore.json`: the build provenance attestation of
-  all tarballs, as a Sigstore bundle. 0.1.0 does not have this file.
+  all tarballs, as a Sigstore bundle. 0.1.0 does not have this file;
+- `nodkey_<version>_pullgate.sigstore.json`: the same bundle, under the
+  name that `pullgate recipe fetch` looks for. Releases up to 0.9.0 do
+  not have it.
 
 Set the version you want, and your machine's arch: `amd64`, or `arm64`
 on 64-bit ARM.

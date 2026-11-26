@@ -1955,7 +1955,12 @@ pullgate uses its own Telegram bot, not the broker's. The broker gets no
 new port and no new network path: pullgate fetches the repo with a
 read-only deploy key.
 
-The recipe is in `contrib/pullgate/` of this repository:
+The recipe is in `contrib/pullgate/` of this repository. Each release
+ships it as `nodkey_<version>_pullgate.tar.gz`, a pullgate recipe with
+two instances: `nodkey-broker`, the broker config (this part), and
+`nodkey-host`, the host settings ([The host instance](#the-host-instance)).
+One `pullgate bootstrap --recipe` command sets up one or both
+([Install](#install)). The scripts of the broker config instance:
 
 - `check.sh` runs as the check user, before the question. Both files
   must be plain files (no symlinks). It runs `nodkey broker check
@@ -1984,6 +1989,18 @@ The recipe is in `contrib/pullgate/` of this repository:
   `[key.*]` (but not a new key or a new key file) and the host keys in
   `known_hosts` are done with a reload. Any other change, or a failed
   compare, means a restart.
+- `setup.sh` runs once, as root, when `pullgate bootstrap --recipe`
+  sets up an instance, before it writes the instance config. It checks
+  what were steps by hand: the installed nodkey is the version of the
+  recipe; `/etc/nodkey/broker.toml` and `known_hosts` are plain files,
+  with the `known_hosts` line and one `audit_log` line at the top; the
+  check user can read them; `health.sh` passes. Each problem is a line
+  `PROBLEM:` with its fix. Then bootstrap writes no config and enables
+  no unit: fix it, and run the same command again.
+
+The `apply` commands of both instances take one lock
+(`flock -w 1500 /run/nodkey-broker-apply.lock`), so they never restart
+the broker at the same time.
 
 #### What stays a step on the host
 
@@ -1999,7 +2016,8 @@ approve its own requests.
 - a new credential, such as a new SSH key file
   ([Encrypted credentials](#encrypted-credentials)), and a change of
   the unit;
-- a new version of nodkey or of the recipe.
+- a new version of nodkey or of the recipe, unless the host instance
+  runs ([The host instance](#the-host-instance)).
 
 Make such a change by hand (see the way back below), then commit the
 same files to the repo.
@@ -2025,82 +2043,71 @@ That is the form of [section 7](#7-the-config-file).
 
 #### Install
 
-You need nodkey 0.7.0 or newer, and pullgate 0.2.0 or newer. Run every
-step on the broker host, as root.
+You need a nodkey release whose pullgate tarball is a recipe (the
+release after 0.9.0, or newer), pullgate 0.4.0 or newer, and gh 2.93.0
+or newer as a file of root (`/usr/bin/gh`, such as from GitHub's Debian
+package, or give `--gh PATH`): pullgate checks the attestation of the
+recipe with it. Run every step on the broker host, as root.
 
-1. Install pullgate, its users and its units as its README says. Make the
-   check user of this instance:
+1. Install nodkey and set up the broker as sections 2 to 10 say. The
+   broker must run with `/etc/nodkey/broker.toml`, and
+   `/etc/systemd/system/nodkey.service` must be the unit of the release
+   (keep your changes in a drop-in). For the host instance, set the
+   broker up with the Ansible role (section 2, "The Ansible role").
 
-   ```sh
-   useradd --system --no-create-home --shell /usr/sbin/nologin pullgate-check-nodkey-broker
-   ```
+2. Install pullgate with its `install.sh`, as its README says. Make a
+   Telegram bot for pullgate with BotFather: not the bot of the broker.
 
-   It must be able to read `/etc/nodkey/broker.toml` and
-   `/etc/nodkey/known_hosts` (mode `0644`, as in section 7), but not the
-   credentials.
-
-2. Get the recipe from the release of the nodkey version that the host
-   runs, and check it as [Verify a download](releasing.md#verify-a-download)
-   says. Never take the scripts from the config repo: they run as root.
-
-   ```sh
-   VERSION=0.7.0
-   cd "$(mktemp -d)"
-   U="https://github.com/code6x/nodkey/releases/download/v$VERSION"
-   curl -fLO "$U/nodkey_${VERSION}_pullgate.tar.gz"
-   curl -fLO "$U/SHA256SUMS"
-   curl -fLO "$U/nodkey_${VERSION}.sigstore.json"
-   sha256sum -c --ignore-missing SHA256SUMS
-   gh attestation verify "nodkey_${VERSION}_pullgate.tar.gz" \
-     --bundle "nodkey_${VERSION}.sigstore.json" \
-     --repo code6x/nodkey \
-     --cert-identity https://github.com/code6x/nodkey/.github/workflows/release.yml@refs/heads/main \
-     --deny-self-hosted-runners \
-     --format json --jq '.[].verificationResult.statement.subject[].name' |
-     grep -Fx "nodkey_${VERSION}_pullgate.tar.gz"
-   ```
-
-   `sha256sum` must print `nodkey_<version>_pullgate.tar.gz: OK`, and the
-   last command must print the name of the file. If a check fails, stop.
-   Then install the files, owned by root:
+3. Run the one command, with the recipe of the nodkey version that the
+   host runs, and the URL of each repo:
 
    ```sh
-   install -d -o root -g root -m 0755 /usr/local/lib/nodkey-pullgate
-   tar --no-same-owner -xzf "nodkey_${VERSION}_pullgate.tar.gz" -C /usr/local/lib/nodkey-pullgate
-   chown -R root:root /usr/local/lib/nodkey-pullgate
-   chmod -R go-w /usr/local/lib/nodkey-pullgate
-   ls -l /usr/local/lib/nodkey-pullgate
+   VERSION=1.2.3
+   pullgate bootstrap \
+     --recipe "https://github.com/code6x/nodkey/releases/download/v$VERSION/nodkey_${VERSION}_pullgate.tar.gz" \
+     --instance nodkey-broker --repo ssh://git@github.com/owner/broker-config.git \
+     --instance nodkey-host --repo ssh://git@github.com/owner/host-data.git
    ```
 
-3. Make a read-only deploy key for the config repo, and pin the host key
-   of the git server, as pullgate's README says, with the names
-   `/etc/pullgate/nodkey-broker.key` and
-   `/etc/pullgate/nodkey-broker.known_hosts`. Leave write access off for
-   the deploy key.
+   Leave out the `--instance nodkey-host` line to set up only the broker
+   config. pullgate checks the recipe (`SHA256SUMS` and the build
+   attestation) before it writes anything, and prints the repo, the
+   file, its SHA-256 and the signer. It asks for the token of its bot,
+   and prints a pairing code: send it to the bot. For each repo, it
+   prints a deploy key: add it to that repo as a **read-only** deploy
+   key, and compare the fingerprint of the git host's key that it prints
+   with the one that the git host publishes. Then it runs `setup.sh` of
+   each instance; a `PROBLEM:` line says what to fix, and you run the
+   same command again. At the end it runs `pullgate doctor`, and enables
+   the units.
 
-4. Write the instance config from the example. Change `host` and the
-   `[repo]` section:
-
-   ```sh
-   install -m 0600 -o root -g root /usr/local/lib/nodkey-pullgate/nodkey-broker.toml /etc/pullgate/nodkey-broker.toml
-   ```
-
-5. Start it:
-
-   ```sh
-   systemctl daemon-reload
-   systemctl enable --now pullgate-apply@nodkey-broker.path pullgate-run@nodkey-broker.timer
-   systemctl enable --now pullgate-check@nodkey-broker.path
-   ```
-
-6. Send `/check nodkey-broker` to pullgate's bot. The first question
+4. Send `/check nodkey-broker` to pullgate's bot. The first question
    compares the commit with the live config. If the repo was made from
    the live files, the change list says `no change`. Tap **Apply**, and
    check the result: `pullgate status nodkey-broker`, and
-   `journalctl -t pullgate`.
+   `journalctl -t pullgate`. Do the same for `nodkey-host`.
 
-When you update nodkey, get the recipe of the new version too, with
-step 2.
+The configs are `/etc/pullgate/nodkey-broker.toml` and
+`/etc/pullgate/nodkey-host.toml`, made from the templates of the recipe
+(`*.toml.in`), in `ask` mode. The scripts stay in the folder of the
+recipe, `/usr/local/lib/pullgate/recipes/code6x/nodkey/<version>/`, owned
+by root: never take them from a repo, they run as root. `pullgate status
+NAME` shows the recipe and its version in the line `recipe:`.
+
+**Updates.** With the host instance, a new `nodkey_version` in
+`host.yml` updates nodkey and moves both instances to the recipe of the
+new version ([The host instance](#the-host-instance)). Without it, after
+you update nodkey (section 13), move the instance to the recipe of the
+same version, as root:
+
+```sh
+pullgate recipe update nodkey-broker --version 1.2.4
+```
+
+A host that installed the scripts by hand, before the recipe: run the
+command of step 3 with `--replace-config`. pullgate keeps the old config
+as `/etc/pullgate/NAME.toml.bak-…`. Then remove
+`/usr/local/lib/nodkey-pullgate`.
 
 #### Read the question
 
@@ -2132,6 +2139,82 @@ The way back by hand: `pullgate status nodkey-broker --pause` first, so
 that pullgate does not undo the edit; then edit `/etc/nodkey` and run
 `nodkey broker reload` or `systemctl restart nodkey`; then commit the
 same files to the repo, and run `pullgate status nodkey-broker --resume`.
+
+### The host instance
+
+The host instance, `nodkey-host`, keeps the settings of the broker host
+itself in a private **data repo**: the version of nodkey, and the other
+keys of the broker side of the Ansible role (contrib/ansible/README.md,
+"The data file"). For each commit, pullgate asks you, and after your tap
+it runs `playbooks/broker-host.yml` of the Ansible recipe of a checked
+release, as root, with `--connection local`. The data repo holds only
+data; every program comes from a release.
+
+#### The data repo of the host instance
+
+The data repo may hold only these files. Any other file, also a
+submodule, fails the check, and you get a notice, no question:
+
+- `host.yml`: the data file (required);
+- `README.md`;
+- `schema/host.schema.json`;
+- `.github/workflows/check.yml`;
+- `.github/pull_request_template.md`.
+
+`host.yml` for the broker host, for example:
+
+```yaml
+nodkey_version: "1.2.3"
+nodkey_broker_config: /etc/nodkey/broker.toml
+nodkey_restart: true
+```
+
+- `nodkey_broker_config` must be `/etc/nodkey/broker.toml`: the role
+  checks this config with the new nodkey before a restart.
+- A commit that changes `nodkey_version` may change no other key.
+  Change the other keys in a later commit.
+- `nodkey_version` never goes back: an older version is refused.
+- Only the keys of the broker side of the installed nodkey are allowed
+  (`check-data`). A key that a newer release adds comes in a commit
+  after the commit of that version.
+
+A CI check in the data repo can run `check-data` of the Ansible recipe
+on `host.yml`. It is only a help: the gate is your tap.
+
+#### What the host instance does
+
+- `host-check.sh` (check user): the files of the layout above, `check-data`
+  of the installed nodkey's Ansible recipe, and the rules above.
+- `host-summary.sh` (check user): the change list. The `⚠` lines come
+  first:
+  - `⚠ the last apply failed part way: a broker restart may be due`: a
+    commit failed, and is held. The next apply finishes the work.
+  - `⚠ broker restart: all grants end`: a new version, a new unit, or a
+    change of `nodkey_ssh_keys` or `nodkey_ssh_key_with_key`. Every open
+    grant ends, and requests that wait for a tap are denied. With
+    `nodkey_restart: false` the line says that the restart is due, and
+    you do it by hand.
+  - `⚠ new SSH keys made on the broker: NAMES`: the role makes a new SSH
+    key on the broker for each new name.
+  - Then the changed keys, old → new. On the first apply, all values.
+- `host-apply.sh` (root): for a new version, it first gets the recipes
+  of that release and checks them: the Ansible recipe into
+  `/opt/nodkey-ansible-<version>` (`host-get-recipe.sh`: `SHA256SUMS`
+  and `gh attestation verify`, with the gh of `install.sh`), and the
+  pullgate recipe with `pullgate recipe fetch`. Then it runs the
+  playbook, which runs `nodkey update --version` with the installed
+  nodkey. Only after the playbook passed, it moves both instances to the
+  recipe of the new version (`pullgate recipe use`): a script of a new
+  version never runs with an older nodkey. When the playbook fails, both
+  instances stay on the recipe they had, and the instance pauses at that
+  commit (`on_failure = "pause"`): fix it with a new commit.
+- `health.sh` of the broker config instance checks that the broker runs
+  `/etc/nodkey/broker.toml` after the apply.
+
+Read the question as in [Read the question](#read-the-question): tap
+**Skip** on a `⚠` line or a version that you did not ask for. When an
+apply failed, read `journalctl -t pullgate` and `pullgate status
+nodkey-host`.
 
 ## 11. A client on the agent machine
 

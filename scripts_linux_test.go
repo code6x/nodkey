@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -229,9 +230,40 @@ func TestFragmentRefusesAnUnknownResult(t *testing.T) {
 	}
 }
 
+// recipeTarGz returns the pullgate recipe of contrib/pullgate as the
+// release build makes it, with the version in the manifest, and edit
+// applied to each file (name, data) first.
+func recipeTarGz(t *testing.T, version string, edit func(name string, data []byte) []byte) []byte {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join("contrib", "pullgate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []tarFile
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := readFile(t, filepath.Join("contrib", "pullgate", e.Name()))
+		if e.Name() == "pullgate-recipe.toml" {
+			data = []byte(strings.Replace(string(data), "\nversion = \"0.0.0\"\n", "\nversion = \""+version+"\"\n", 1))
+		}
+		if edit != nil {
+			data = edit(e.Name(), data)
+		}
+		files = append(files, tarFile{name: e.Name(), mode: int64(info.Mode().Perm() &^ 0o022), data: data})
+	}
+	return tarGz(t, files...)
+}
+
 // verifyFixture makes the files of a release 1.2.3 in a new folder, and
 // fake gh, go and docker programs in another, for verify-release.sh. The
-// nodkey of each tarball is a script that prints "nodkey 1.2.3".
+// nodkey of each tarball is a script that prints "nodkey 1.2.3"; the
+// pullgate tarball is the recipe of contrib/pullgate.
 type verifyFixture struct {
 	dir, bin, commit string
 	head             bool // run without NODKEY_VERIFY_COMMIT
@@ -245,6 +277,9 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 	for _, kind := range []string{"ansible", "linux_amd64", "linux_arm64", "pullgate"} {
 		name := "nodkey_1.2.3_" + kind + ".tar.gz"
 		data := tarGz(t, tarFile{name: "nodkey", mode: 0o755, data: nodkey})
+		if kind == "pullgate" {
+			data = recipeTarGz(t, "1.2.3", nil)
+		}
 		writeFile(t, filepath.Join(f.dir, name), data, 0o600)
 		sum := sha256.Sum256(data)
 		fmt.Fprintf(&sums, "%x  %s\n", sum, name)
@@ -256,6 +291,7 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 	writeFile(t, filepath.Join(f.dir, "SHA256SUMS"), []byte(sums.String()), 0o600)
 	payload := base64.StdEncoding.EncodeToString([]byte(`{"subject":[` + subjects.String() + `]}`))
 	writeFile(t, filepath.Join(f.dir, "nodkey_1.2.3.sigstore.json"), []byte(`{"dsseEnvelope":{"payload":"`+payload+`"}}`), 0o600)
+	writeFile(t, filepath.Join(f.dir, "nodkey_1.2.3_pullgate.sigstore.json"), []byte(`{"dsseEnvelope":{"payload":"`+payload+`"}}`), 0o600)
 	writeFile(t, filepath.Join(f.bin, "gh"), []byte("#!/bin/sh\n[ ! -e \"$FAKE_FAIL/gh\" ]\n"), 0o700)
 	// go version -m: the arch is in the name of the folder of the binary.
 	writeFile(t, filepath.Join(f.bin, "go"), []byte(`#!/bin/sh
@@ -264,6 +300,35 @@ printf '%s\n\tmod\tgithub.com/code6x/nodkey\tv1.2.3\t\n\tbuild\tGOARCH=%s\n\tbui
 `), 0o700)
 	writeFile(t, filepath.Join(f.bin, "docker"), []byte("#!/bin/sh\n[ ! -e \"$FAKE_FAIL/docker\" ] || exit 1\necho \"nodkey ${FAKE_DOCKER_VERSION:-1.2.3}\"\n"), 0o700)
 	return f
+}
+
+// setPullgate puts data as the pullgate tarball, with its SHA-256 in
+// SHA256SUMS and in the bundles, so that only the recipe check sees it.
+func (f *verifyFixture) setPullgate(t *testing.T, data []byte) {
+	t.Helper()
+	name := "nodkey_1.2.3_pullgate.tar.gz"
+	old := sha256.Sum256(readFile(t, filepath.Join(f.dir, name)))
+	sum := sha256.Sum256(data)
+	writeFile(t, filepath.Join(f.dir, name), data, 0o600)
+	p := filepath.Join(f.dir, "SHA256SUMS")
+	writeFile(t, p, []byte(strings.Replace(string(readFile(t, p)), fmt.Sprintf("%x", old), fmt.Sprintf("%x", sum), 1)), 0o600)
+	for _, b := range []string{"nodkey_1.2.3.sigstore.json", "nodkey_1.2.3_pullgate.sigstore.json"} {
+		p := filepath.Join(f.dir, b)
+		var env struct {
+			DSSE struct {
+				Payload string `json:"payload"`
+			} `json:"dsseEnvelope"`
+		}
+		if err := json.Unmarshal(readFile(t, p), &env); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := base64.StdEncoding.DecodeString(env.DSSE.Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := base64.StdEncoding.EncodeToString([]byte(strings.Replace(string(raw), fmt.Sprintf("%x", old), fmt.Sprintf("%x", sum), 1)))
+		writeFile(t, p, []byte(`{"dsseEnvelope":{"payload":"`+payload+`"}}`), 0o600)
+	}
 }
 
 // run runs verify-release.sh with the fakes first in PATH.
@@ -308,9 +373,23 @@ func TestVerifyRelease(t *testing.T) {
 			t.Errorf("exit %d, output:\n%s", code, got)
 		}
 	})
+	t.Run("an older release has no recipe", func(t *testing.T) {
+		// The dry run of a release before the recipe: no pullgate_recipe,
+		// no second bundle, and a pullgate tarball that is no recipe.
+		f := newVerifyFixture(t)
+		f.setPullgate(t, tarGz(t, tarFile{name: "apply.sh", mode: 0o755, data: []byte("#!/bin/sh\n")}))
+		if err := os.Remove(filepath.Join(f.dir, "nodkey_1.2.3_pullgate.sigstore.json")); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("NODKEY_VERIFY_KINDS", "ansible linux_amd64 linux_arm64 pullgate")
+		got, code := f.run(t)
+		if code != 0 || strings.Contains(got, "FAILED") || strings.Count(got, "ok: ") != 7 {
+			t.Errorf("exit %d, output:\n%s", code, got)
+		}
+	})
 	t.Run("good files pass", func(t *testing.T) {
 		got, code := newVerifyFixture(t).run(t)
-		if code != 0 || strings.Contains(got, "FAILED") || strings.Count(got, "ok: ") != 7 {
+		if code != 0 || strings.Contains(got, "FAILED") || strings.Count(got, "ok: ") != 9 {
 			t.Errorf("exit %d, output:\n%s", code, got)
 		}
 	})
@@ -357,6 +436,35 @@ func TestVerifyRelease(t *testing.T) {
 			t.Setenv("FAKE_DOCKER_VERSION", "1.2.4")
 			return nil
 		}, "FAILED: 5 install.sh does not install"},
+		{"no bundle for the recipe", func(t *testing.T, f *verifyFixture) []string {
+			if err := os.Remove(filepath.Join(f.dir, "nodkey_1.2.3_pullgate.sigstore.json")); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}, "FAILED: 6 nodkey_1.2.3_pullgate.sigstore.json is missing, or is not the same file"},
+		{"another bundle for the recipe", func(t *testing.T, f *verifyFixture) []string {
+			writeFile(t, filepath.Join(f.dir, "nodkey_1.2.3_pullgate.sigstore.json"), []byte("{}"), 0o600)
+			return nil
+		}, "FAILED: 6 nodkey_1.2.3_pullgate.sigstore.json is missing, or is not the same file"},
+		{"a recipe of another version", func(t *testing.T, f *verifyFixture) []string {
+			f.setPullgate(t, recipeTarGz(t, "1.2.2", nil))
+			return nil
+		}, "FAILED: 6 the pullgate tarball is not a good recipe: FAILED: recipe: pullgate-recipe.toml: version is '1.2.2', not '1.2.3'"},
+		{"a template that sets the mode", func(t *testing.T, f *verifyFixture) []string {
+			f.setPullgate(t, recipeTarGz(t, "1.2.3", func(name string, data []byte) []byte {
+				if name == "nodkey-host.toml.in" {
+					return append([]byte("mode = \"auto\"\n"), data...)
+				}
+				return data
+			}))
+			return nil
+		}, "nodkey-host.toml.in sets mode, which pullgate sets itself"},
+		{"a template that names a missing program", func(t *testing.T, f *verifyFixture) []string {
+			f.setPullgate(t, recipeTarGz(t, "1.2.3", func(name string, data []byte) []byte {
+				return []byte(strings.ReplaceAll(string(data), "@RECIPE_DIR@/host-check.sh", "@RECIPE_DIR@/no-such.sh"))
+			}))
+			return nil
+		}, "names @RECIPE_DIR@/no-such.sh, which is not a program of the tarball"},
 		{"the amd64 binary says another version", func(t *testing.T, _ *verifyFixture) []string {
 			t.Setenv("FAKE_VERSION", "1.2.4")
 			return nil
@@ -380,6 +488,7 @@ func TestVerifyRelease(t *testing.T) {
 		{"a bad commit", []string{"NODKEY_VERIFY_COMMIT=abc"}, nil, "is not a full SHA-1"},
 		{"an unknown kind", []string{"NODKEY_VERIFY_KINDS=linux_amd64 windows"}, nil, "unknown kind 'windows'"},
 		{"no amd64", []string{"NODKEY_VERIFY_KINDS=pullgate"}, nil, "must have linux_amd64"},
+		{"a recipe without its tarball", []string{"NODKEY_VERIFY_KINDS=linux_amd64 pullgate_recipe"}, nil, "pullgate_recipe needs pullgate"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newVerifyFixture(t)

@@ -4734,7 +4734,11 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   of all tarballs, and a build provenance attestation of all of them. The
   attestation is also a file of the release
   (`nodkey_<version>.sigstore.json`), so it can be checked with no GitHub
-  login.
+  login. The same bundle is also `nodkey_<version>_pullgate.sigstore.json`:
+  `pullgate recipe fetch` looks for the bundle of `FILE.tar.gz` as
+  `FILE.sigstore.json`, and keeps that name for each later update. The
+  verify gate checks that both are the same file, and that the pullgate
+  tarball is a recipe of the version (`scripts/release-check/recipe.sh`).
 - The pullgate recipe (`contrib/pullgate/`, issue #102) lets the broker
   host pull `broker.toml` and `known_hosts` from a git repo with
   pullgate, which asks the owner on its own bot and applies a commit only
@@ -4764,6 +4768,61 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   tests (`contrib_pullgate_linux_test.go`) run the scripts with `/bin/sh`
   against a fake `systemctl` and a fake `nodkey broker reload`, with the
   real `nodkey` for the check and the diff. CI runs shellcheck on them.
+- The pullgate tarball is a **pullgate recipe** (issue #224): its
+  manifest `pullgate-recipe.toml` (the build writes the version) names
+  two instances with a config template each, so `pullgate bootstrap
+  --recipe URL --instance nodkey-broker --repo URL1 --instance
+  nodkey-host --repo URL2` sets up a broker host with one command. The
+  templates (`nodkey-broker.toml.in`, `nodkey-host.toml.in`) name the
+  scripts by `@RECIPE_DIR@`, the repo by `@REPO_URL@` and `@BRANCH@`, and
+  set no mode, key or check user: pullgate sets `mode = "ask"` and those
+  itself. Both `apply` commands take one lock, `flock -w 1500
+  /run/nodkey-broker-apply.lock`, so the two never restart the broker at
+  the same time. `setup.sh broker|host` is the recipe's setup: it runs
+  once at the bootstrap, as root, before pullgate writes a config, and
+  checks what were steps by hand: the installed nodkey is the version of
+  the recipe; `broker.toml` and `known_hosts` are plain files, with the
+  `known_hosts` line and one `audit_log` line at the top; the check user
+  (with no other group, as pullgate runs it) can read them, or run
+  `nodkey`; for the host instance, the Ansible recipe of the installed
+  version (`host-get-recipe.sh`) and the unit of its role; and
+  `health.sh`. A failure stops the bootstrap with a fix.
+- The **host instance** (`host-*.sh`) applies `host.yml` of a data repo
+  (`nodkey_version`, `nodkey_broker_config`, `nodkey_restart` and the
+  other keys of the broker side) with `playbooks/broker-host.yml` of the
+  Ansible recipe, as root, with `--connection local`. The data repo holds
+  only data, in a fixed layout: `host.yml`, `README.md`,
+  `schema/host.schema.json`, `.github/workflows/check.yml` and
+  `.github/pull_request_template.md`. `host-check.sh` (check user): only
+  these files, in the tree and in `$PULLGATE_CHANGED_FILES` (so a
+  submodule fails too); `check-data` of the Ansible recipe of the
+  installed nodkey, with `--installed`; `nodkey_broker_config` is
+  `/etc/nodkey/broker.toml`; a commit that changes `nodkey_version`
+  changes no other key. `host-summary.sh` (check user): the `⚠` lines
+  first (a held commit: `⚠ the last apply failed part way: a broker
+  restart may be due`; a new version, a new unit or a change of
+  `nodkey_ssh_keys` or `nodkey_ssh_key_with_key`: `⚠ broker restart: all
+  grants end`; a new SSH key name: `⚠ new SSH keys made on the broker`),
+  then the changed keys, old → new. `host-apply.sh` (root,
+  `on_failure = "pause"`): checks the file again; for a new version it
+  first gets the recipes of that release (`host-get-recipe.sh
+  --with-pullgate`: the Ansible recipe into
+  `/opt/nodkey-ansible-X.Y.Z`, after `SHA256SUMS` and `gh attestation
+  verify` with a gh pinned by SHA-256 as `install.sh` does, and `pullgate
+  recipe fetch` of the pullgate recipe), then runs the playbook, and only
+  after the playbook passed runs `pullgate recipe use NAME X.Y.Z` for
+  each instance whose record (`/etc/pullgate/NAME.recipe`) names this
+  recipe. So a script of a new version never runs with an older nodkey,
+  and a failed playbook leaves both instances on the recipe they had.
+  Forward only: `check-data`, the role and `pullgate recipe use` refuse
+  an older version. The host scripts take their paths from fixed
+  defaults; pullgate runs them with only `PATH` and the `PULLGATE_`
+  values, so only the tests set the `NKH_` values. The tests
+  (`contrib_pullgate_host_linux_test.go`) run them with fakes;
+  `contrib/pullgate/test/ci.sh` runs `pullgate bootstrap --recipe` of a
+  pinned pullgate release on a test build, in a Debian container with
+  systemd, a real broker, a fake release server, a fake gh and a fake
+  Telegram, and applies the first commit of both data repos.
 - The Ansible recipe (`contrib/ansible/`, issue #193) installs nodkey
   on the broker host or an agent machine (THREAT-MODEL.md T53). It is a
   plain role, `contrib/ansible/roles/nodkey`, not an Ansible collection:

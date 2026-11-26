@@ -1786,6 +1786,11 @@ config from git with pullgate"), the broker host pulls `broker.toml` and
 after the owner taps Apply on its own Telegram bot. The new parties: who
 can write the repo, the read-only deploy key, the git host, pullgate's
 bot token, and the scripts that run as root.
+A second instance of the same recipe, the **host instance**, pulls
+`host.yml` from a private data repo: the version of nodkey and the
+settings of the Ansible role (T53), applied as root by
+`playbooks/broker-host.yml`. Its new parties: who can write the data
+repo, and the downloads of a new release.
 What nodkey does:
 - **The gate is the tap on the host, not CI.** A writer of the repo,
   or of its CI, can push any commit, also one that widens access. CI
@@ -1832,6 +1837,31 @@ What nodkey does:
 - The repo holds no secret value: the config names secrets only by
   credential paths and item IDs. A new credential is still a step on the
   host, as root.
+- **The recipe is checked like an install.** `pullgate bootstrap
+  --recipe` and `pullgate recipe fetch` take it only from a GitHub
+  release of `code6x/nodkey`, after the SHA-256 in `SHA256SUMS` and `gh
+  attestation verify` with the identity of the release workflow on
+  `main`; its manifest must name the version of the tag. The templates
+  set no mode, deploy key, host key or check user: pullgate sets `ask`
+  mode and those itself, so a recipe cannot turn the tap off. The
+  recipe's setup checks the host before any config is written.
+- **The host instance runs only checked code, and moves forward
+  only.** `host.yml` is data: `check-data` of the Ansible recipe of the
+  installed nodkey allows only its keys, each with its type, and no
+  older `nodkey_version`; the data repo may hold only five known files
+  (a submodule counts too, so a commit cannot push the summary out of
+  the question); `nodkey_broker_config` must be `/etc/nodkey/broker.toml`,
+  so the new nodkey checks the live config before a restart; a new
+  version comes alone in its commit. The question says
+  `⚠ broker restart: all grants end` first for every change that makes
+  the role restart the broker (a new version or unit, a change of the
+  SSH keys), and `⚠ new SSH keys made on the broker` for a new key. For a new version the apply
+  checks the Ansible recipe (SHA-256 and attestation, with a gh pinned
+  by SHA-256) and the pullgate recipe before any change, and moves both
+  instances to the new recipe only after the playbook passed: a script
+  of a new version never runs with an older nodkey. The playbook runs
+  outside the tree, with its own `ansible.cfg`. Both applies take one
+  lock, so they never restart the broker at the same time.
 What nodkey does not do:
 - It cannot protect the owner who taps Apply without reading the `⚠`
   lines. A careless tap applies what a writer of the repo wrote.
@@ -1848,6 +1878,14 @@ What nodkey does not do:
 - pullgate's bot token, the deploy key and pullgate itself are outside
   nodkey: pullgate's own THREAT-MODEL.md covers them.
 - The git host is one more outbound connection of the broker host.
+- A writer of the data repo can ask for any newer release of nodkey,
+  and for any value of the keys of the broker side. The gate is the
+  owner's tap on the question that names the change; the downloads are
+  checked, but a newer release is not always one that the owner wants.
+- An Ansible run is not a transaction: a failed apply of the host
+  instance may leave the host part way (the summary says so with a `⚠`
+  line on each later question), and the instance pauses until a new
+  commit fixes it forward.
 Risk that remains: low, when the owner reads every `⚠` line.
 
 **T53. The Ansible role installs a changed nodkey or unit, as root.**
