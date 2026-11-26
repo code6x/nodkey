@@ -132,11 +132,16 @@ jobs:
           subject-path: dist/*.tar.gz
       # The attestation is also a file of the release. With this file,
       # gh attestation verify --bundle needs no GitHub login. One bundle
-      # covers all tarballs.
+      # covers all tarballs. The same bundle is also published as
+      # nodkey_X.Y.Z_pullgate.sigstore.json: pullgate recipe fetch looks
+      # for the bundle of FILE.tar.gz under the name FILE.sigstore.json.
       - name: Save the attestation bundle
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-        run: cp -- "$BUNDLE" "dist/nodkey_${VERSION}.sigstore.json"
+        run: |
+          set -euo pipefail
+          cp -- "$BUNDLE" "dist/nodkey_${VERSION}.sigstore.json"
+          cp -- "$BUNDLE" "dist/nodkey_${VERSION}_pullgate.sigstore.json"
       # The same check as in docs/releasing.md, with no login. A bundle that
       # fails it never goes out: the release stays a draft.
       - name: Check the tarballs with the bundle
@@ -157,7 +162,7 @@ jobs:
       - name: Upload the files to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS "dist/nodkey_${VERSION}.sigstore.json" --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS "dist/nodkey_${VERSION}.sigstore.json" "dist/nodkey_${VERSION}_pullgate.sigstore.json" --clobber --repo "$GITHUB_REPOSITORY"
       # The files of a draft can only be read with write access, so this
       # job gets them back, and verify, which can only read, checks them.
       - name: Download the files of the draft release

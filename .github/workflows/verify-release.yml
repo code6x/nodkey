@@ -138,6 +138,9 @@ jobs:
             if [ -n "$(git ls-tree "v${VERSION}" contrib/ansible/build.sh)" ]; then
               NODKEY_VERIFY_KINDS="ansible $NODKEY_VERIFY_KINDS"
             fi
+            if [ -n "$(git ls-tree "v${VERSION}" contrib/pullgate/pullgate-recipe.toml)" ]; then
+              NODKEY_VERIFY_KINDS="$NODKEY_VERIFY_KINDS pullgate_recipe"
+            fi
           fi
           rc=0
           sh scripts/verify-release.sh draft "$VERSION" "${RUNNER_TEMP}/gh/gh_2.102.0_linux_amd64.tar.gz" 2>&1 | tee verify.txt || rc=$?

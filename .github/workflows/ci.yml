@@ -84,6 +84,7 @@ jobs:
           # The scripts of the pullgate recipe source lib.sh from their own
           # directory.
           (cd contrib/pullgate && "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh -x -- *.sh)
+          "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh contrib/pullgate/test/ci.sh contrib/pullgate/test/inside.sh
           "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh contrib/ansible/build.sh contrib/ansible/test/ci.sh contrib/ansible/test/sign-setup.sh
           # The release build and the checks of the Release check workflow.
           "$dir/shellcheck-${SHELLCHECK_VERSION}/shellcheck" --shell=sh scripts/build-release.sh scripts/verify-release.sh scripts/release-check/*.sh
@@ -160,6 +161,30 @@ jobs:
         # newer version, and the SSH keys of the broker, with a broker
         # that signs an SSH login. It removes the containers and the image.
         run: sh contrib/ansible/test/ci.sh "$ANSIBLE_TEST_OLD" "$ANSIBLE_TEST_NEW"
+
+  pullgate-recipe:
+    name: pullgate recipe
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build a test release
+        # The one build of the release files, as a test version.
+        run: sh scripts/build-release.sh 1.2.3 "${RUNNER_TEMP}/dist"
+      - name: Check the recipe
+        run: sh scripts/release-check/recipe.sh "${RUNNER_TEMP}/dist/nodkey_1.2.3_pullgate.tar.gz" 1.2.3
+      - name: pullgate bootstrap --recipe in a Debian container with systemd
+        # contrib/pullgate/test/ci.sh: a broker host made with the Ansible
+        # recipe, then pullgate bootstrap --recipe of a pinned pullgate
+        # release, with a fake release server, a fake gh and a fake
+        # Telegram. Both instances are set up, and the first commit of
+        # each data repo is applied. It removes the container and the image.
+        run: sh contrib/pullgate/test/ci.sh "${RUNNER_TEMP}/dist" 1.2.3
 
   vuln:
     runs-on: ubuntu-latest

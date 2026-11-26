@@ -19,12 +19,18 @@
 #      debian:trixie container, as root, with the same checks that a
 #      user runs: the real gh of install.sh and the real bundle. Only
 #      github.com and api.github.com are a local HTTPS server there,
-#      because the files of a draft are not public yet.
+#      because the files of a draft are not public yet;
+#   6. the pullgate tarball is a pullgate recipe of this version
+#      (scripts/release-check/recipe.sh), and the release has the bundle
+#      also as nodkey_VERSION_pullgate.sigstore.json, the same bytes:
+#      pullgate looks for the bundle under that name.
 #
 # NODKEY_VERIFY_COMMIT (default: HEAD) is the commit that the binaries
 # must name.
-# NODKEY_VERIFY_KINDS (default "ansible linux_amd64 linux_arm64 pullgate")
-# names the tarballs that must be there; only the dry run sets it.
+# NODKEY_VERIFY_KINDS (default "ansible linux_amd64 linux_arm64 pullgate
+# pullgate_recipe") names the tarballs that must be there; only the dry
+# run sets it. pullgate_recipe is not a tarball: it says that the
+# pullgate tarball is a recipe, with its own bundle name (check 6).
 #
 # It prints "ok: ..." or "FAILED: ..." for each check, and exits with 1
 # when one failed.
@@ -64,20 +70,27 @@ fail() {
 
 # The kinds of tarballs. Only the dry run of verify-release.yml sets
 # NODKEY_VERIFY_KINDS, for an older release that has fewer kinds.
-kinds=${NODKEY_VERIFY_KINDS:-ansible linux_amd64 linux_arm64 pullgate}
+kinds=${NODKEY_VERIFY_KINDS:-ansible linux_amd64 linux_arm64 pullgate pullgate_recipe}
 tarballs=
+recipe=
 for k in $kinds; do
 	case $k in
 	ansible | linux_amd64 | linux_arm64 | pullgate) tarballs="$tarballs nodkey_${version}_${k}.tar.gz" ;;
+	pullgate_recipe) recipe=1 ;;
 	*) die "NODKEY_VERIFY_KINDS: unknown kind '$k'" ;;
 	esac
 done
 case " $kinds " in *" linux_amd64 "*) ;; *) die "NODKEY_VERIFY_KINDS must have linux_amd64" ;; esac
+case " $kinds " in *" pullgate_recipe "*) case " $kinds " in *" pullgate "*) ;; *) die "NODKEY_VERIFY_KINDS: pullgate_recipe needs pullgate" ;; esac ;; esac
 bundle=nodkey_${version}.sigstore.json
+recipe_bundle=nodkey_${version}_pullgate.sigstore.json
 
 # 1. The names.
 tarball_lines=$(for t in $tarballs; do echo "$t"; done | LC_ALL=C sort)
 want=$(printf '%s\n%s\n%s\n' "$tarball_lines" SHA256SUMS "$bundle" | LC_ALL=C sort)
+if [ -n "$recipe" ]; then
+	want=$(printf '%s\n%s\n' "$want" "$recipe_bundle" | LC_ALL=C sort)
+fi
 have=$(find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
 if [ "$have" = "$want" ]; then
 	ok "1 the draft has exactly the expected files"
@@ -182,5 +195,19 @@ if out=$(docker run --rm --add-host github.com:127.0.0.1 --add-host api.github.c
 	ok "5 install.sh installs the draft's tarball in a clean container, as root"
 else
 	fail "5 install.sh does not install the draft's tarball: $(printf '%s\n' "$out" | tail -n 5 | tr '\n' ' ')"
+fi
+
+# 6. The pullgate recipe, and its bundle name.
+if [ -n "$recipe" ]; then
+	if out=$(sh scripts/release-check/recipe.sh "$dir/nodkey_${version}_pullgate.tar.gz" "$version" 2>&1); then
+		ok "6 $(printf '%s\n' "$out" | tail -n 1 | sed 's/^ok: //')"
+	else
+		fail "6 the pullgate tarball is not a good recipe: $(printf '%s\n' "$out" | grep -v '^ok:' | head -n 5 | tr '\n' ' ')"
+	fi
+	if [ -f "$dir/$recipe_bundle" ] && cmp -s "$dir/$bundle" "$dir/$recipe_bundle"; then
+		ok "6 $recipe_bundle is the bundle $bundle"
+	else
+		fail "6 $recipe_bundle is missing, or is not the same file as $bundle"
+	fi
 fi
 exit "$failed"

@@ -65,14 +65,24 @@ for arch in amd64 arm64; do
 		-C "$stage" -cf - nodkey LICENSE README.md | gzip -9n >"${out}/${name}.tar.gz"
 done
 
-# The pullgate recipe (contrib/pullgate, docs/setup.md). A host installs
-# it from here, checked by SHA256SUMS and the attestation as the binaries
-# are, never from a config repo.
+# The pullgate recipe (contrib/pullgate, docs/setup.md): the files of
+# contrib/pullgate (not its test folder), with the version of this
+# release in the manifest pullgate-recipe.toml. pullgate bootstrap
+# --recipe and pullgate recipe fetch install it from here, checked by
+# SHA256SUMS and the attestation as the binaries are, never from a
+# config repo. The release also has the bundle under the name that
+# pullgate looks for, nodkey_VERSION_pullgate.sigstore.json (release.yml).
 name="nodkey_${version}_pullgate"
 stage="${work}/${name}"
 mkdir -p -- "$stage"
-cp contrib/pullgate/* LICENSE "$stage/"
-(cd "$stage" && tar --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="$mtime" \
+find contrib/pullgate -maxdepth 1 -type f -exec cp -- {} "$stage/" \;
+cp LICENSE "$stage/"
+[ "$(grep -c '^version = "0\.0\.0"$' "$stage/pullgate-recipe.toml")" = 1 ] ||
+	die "contrib/pullgate/pullgate-recipe.toml needs one line version = \"0.0.0\"; the build writes the version there"
+sed "s/^version = \"0\.0\.0\"\$/version = \"${version}\"/" "$stage/pullgate-recipe.toml" >"$work/manifest"
+mv -- "$work/manifest" "$stage/pullgate-recipe.toml"
+chmod 0644 "$stage/pullgate-recipe.toml"
+(cd "$stage" && tar --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="$mtime" \
 	-cf - -- *) | gzip -9n >"${out}/${name}.tar.gz"
 
 # The Ansible recipe (contrib/ansible): the role, the playbooks and

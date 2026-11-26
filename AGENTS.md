@@ -72,9 +72,17 @@ Planned. Each v1 issue adds its part.
     `testdata/`.
 - `contrib/pullgate/` - the pullgate recipe: the broker host pulls its
   config from git, and the owner taps each change (docs/setup.md,
-  "Change the config from git with pullgate"; THREAT-MODEL.md T52). Its
-  tests are in `contrib_pullgate_linux_test.go`, at the root of the
-  module. The release packs it as `nodkey_VERSION_pullgate.tar.gz`.
+  "Change the config from git with pullgate"; THREAT-MODEL.md T52). It
+  has two instances: the broker config (`check.sh`, `summary.sh`,
+  `apply.sh`, `health.sh`, `lib.sh`) and the host instance (`host-*.sh`),
+  with `setup.sh`, the templates `*.toml.in` and the manifest
+  `pullgate-recipe.toml`, so `pullgate bootstrap --recipe` sets up both.
+  Its tests are in `contrib_pullgate_linux_test.go` and
+  `contrib_pullgate_host_linux_test.go`, at the root of the module, and
+  `contrib/pullgate/test/ci.sh`, which runs `pullgate bootstrap --recipe`
+  in a container with systemd. The release packs it (not `test/`) as
+  `nodkey_VERSION_pullgate.tar.gz`; `scripts/release-check/recipe.sh`
+  checks it.
 - `contrib/ansible/` - the Ansible recipe: the role `roles/nodkey` (broker
   or agent side), the playbooks `broker-host.yml` and `agent-host.yml`
   for a data file, `check-data`, and `build.sh`, which makes the recipe
