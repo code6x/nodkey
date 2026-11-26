@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/code6x/nodkey/compare/v0.9.0...v0.10.0) (2026-11-26)
+
+
+### Features
+
+* **pullgate:** ship the host instance in the pullgate recipe, set up with one pullgate bootstrap --recipe ([#230](https://github.com/code6x/nodkey/issues/230)) ([95cfc17](https://github.com/code6x/nodkey/commit/95cfc17ddd823483307165a6f21e81c9d62b2a81))
+
 ## [0.9.0](https://github.com/code6x/nodkey/compare/v0.8.0...v0.9.0) (2026-11-22)
 
 
