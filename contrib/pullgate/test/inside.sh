@@ -207,7 +207,7 @@ for name in nodkey-broker nodkey-host; do
 	grep -q "^version = \"$v\"$" "/etc/pullgate/$name.recipe" || fail "no recipe record for $name"
 	grep -q -F "/usr/local/lib/pullgate/recipes/code6x/nodkey/$v/" "/etc/pullgate/$name.toml" ||
 		fail "/etc/pullgate/$name.toml does not name the scripts of the recipe"
-	grep -q -F '"/usr/bin/flock", "-w", "1500", "/run/nodkey-broker-apply.lock"' "/etc/pullgate/$name.toml" ||
+	grep -q -E '"/usr/bin/flock", "-w", "[0-9]+", "/run/nodkey-broker-apply.lock", "/usr/local/lib/pullgate/recipes/' "/etc/pullgate/$name.toml" ||
 		fail "the apply of $name does not take the shared lock"
 	systemctl is-enabled --quiet "pullgate-run@$name.timer" || fail "pullgate-run@$name.timer is not enabled"
 	systemctl is-enabled --quiet "pullgate-apply@$name.path" || fail "pullgate-apply@$name.path is not enabled"

@@ -1999,8 +1999,9 @@ One `pullgate bootstrap --recipe` command sets up one or both
   no unit: fix it, and run the same command again.
 
 The `apply` commands of both instances take one lock
-(`flock -w 1500 /run/nodkey-broker-apply.lock`), so they never restart
-the broker at the same time.
+(`flock` on `/run/nodkey-broker-apply.lock`), so they never restart the
+broker at the same time. The broker config instance waits up to 46
+minutes for it, longer than an apply of the host instance may run.
 
 #### What stays a step on the host
 

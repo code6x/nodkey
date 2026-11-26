@@ -4776,9 +4776,13 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   templates (`nodkey-broker.toml.in`, `nodkey-host.toml.in`) name the
   scripts by `@RECIPE_DIR@`, the repo by `@REPO_URL@` and `@BRANCH@`, and
   set no mode, key or check user: pullgate sets `mode = "ask"` and those
-  itself. Both `apply` commands take one lock, `flock -w 1500
-  /run/nodkey-broker-apply.lock`, so the two never restart the broker at
-  the same time. `setup.sh broker|host` is the recipe's setup: it runs
+  itself. Both `apply` commands take one lock, `flock` on
+  `/run/nodkey-broker-apply.lock`, so the two never restart the broker at
+  the same time. The host instance waits up to 25 minutes for it (an
+  apply of the broker config is short); the broker config instance up to
+  46 minutes, longer than the `apply_timeout` of the host instance (45
+  minutes), so its apply and its rollback do not fail while a long
+  update runs. `setup.sh broker|host` is the recipe's setup: it runs
   once at the bootstrap, as root, before pullgate writes a config, and
   checks what were steps by hand: the installed nodkey is the version of
   the recipe; `broker.toml` and `known_hosts` are plain files, with the

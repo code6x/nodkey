@@ -652,9 +652,26 @@ func TestPullgateSharedLock(t *testing.T) {
 		return c.Commands.Apply
 	}
 	host, broker := apply("nodkey-host.toml.in"), apply("nodkey-broker.toml.in")
-	want := []string{"/usr/bin/flock", "-w", "1500", "/run/nodkey-broker-apply.lock"}
-	if len(host) != 5 || len(broker) != 5 || strings.Join(host[:4], " ") != strings.Join(want, " ") || strings.Join(broker[:4], " ") != strings.Join(want, " ") {
-		t.Fatalf("the apply commands do not take the shared lock: %q and %q", host, broker)
+	for _, argv := range [][]string{host, broker} {
+		if len(argv) != 5 || argv[0] != "/usr/bin/flock" || argv[1] != "-w" || argv[3] != "/run/nodkey-broker-apply.lock" {
+			t.Fatalf("the apply commands do not take the shared lock: %q and %q", host, broker)
+		}
+	}
+	// The broker config waits longer for the lock than an apply of the
+	// host instance may run, so its apply and its rollback do not fail
+	// while a long update holds the lock.
+	var hostCfg struct {
+		Commands struct {
+			ApplyTimeout string `toml:"apply_timeout"`
+		} `toml:"commands"`
+	}
+	if _, err := toml.Decode(strings.ReplaceAll(string(readFile(t, filepath.Join("contrib", "pullgate", "nodkey-host.toml.in"))), "@", "x"), &hostCfg); err != nil {
+		t.Fatal(err)
+	}
+	limit, err := time.ParseDuration(hostCfg.Commands.ApplyTimeout)
+	wait, err2 := strconv.Atoi(broker[2])
+	if err != nil || err2 != nil || time.Duration(wait)*time.Second <= limit {
+		t.Errorf("the broker config waits %q s for the lock, the host apply may run %q", broker[2], hostCfg.Commands.ApplyTimeout)
 	}
 	// The same command with a lock of the test and a stub that logs.
 	dir := t.TempDir()

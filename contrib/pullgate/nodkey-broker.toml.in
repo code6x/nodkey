@@ -22,14 +22,16 @@ branch = "@BRANCH@"
 check = ["@RECIPE_DIR@/check.sh"]
 summary = ["@RECIPE_DIR@/summary.sh"]
 # The lock is shared with the apply of the host instance, so the two
-# instances never restart the broker at the same time. A second apply
-# waits up to 25 minutes for the first.
-apply = ["/usr/bin/flock", "-w", "1500", "/run/nodkey-broker-apply.lock", "@RECIPE_DIR@/apply.sh"]
+# instances never restart the broker at the same time. This apply waits
+# up to 46 minutes for it: longer than an apply of the host instance may
+# run (apply_timeout = "45m" there), so a long update does not make this
+# apply, and its rollback, fail.
+apply = ["/usr/bin/flock", "-w", "2760", "/run/nodkey-broker-apply.lock", "@RECIPE_DIR@/apply.sh"]
 health = ["@RECIPE_DIR@/health.sh"]
 check_timeout = "2m"
 # apply.sh may restart the broker, health.sh waits up to 60s for it, and
 # the apply may wait for the lock.
-apply_timeout = "30m"
+apply_timeout = "50m"
 
 [watch]
 paths = ["broker.toml", "known_hosts"]

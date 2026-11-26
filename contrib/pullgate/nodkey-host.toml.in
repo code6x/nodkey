@@ -17,7 +17,8 @@ branch = "@BRANCH@"
 [commands]
 check = ["@RECIPE_DIR@/host-check.sh"]
 summary = ["@RECIPE_DIR@/host-summary.sh"]
-# The same lock as the apply of the broker config instance.
+# The same lock as the apply of the broker config instance. This apply
+# waits up to 25 minutes for it; an apply there is short.
 apply = ["/usr/bin/flock", "-w", "1500", "/run/nodkey-broker-apply.lock", "@RECIPE_DIR@/host-apply.sh"]
 # The health check of the broker config instance: the broker runs the
 # config in /etc/nodkey/broker.toml, after a restart too.
