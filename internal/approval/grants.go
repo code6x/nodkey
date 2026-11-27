@@ -541,14 +541,19 @@ func (c *Core) nextEnd() (time.Time, bool) {
 	return next, found
 }
 
-// dropScheduled ends every scheduled grant with cause stopped, when the
-// core stops: grants live only in memory, so a restart would lose them
-// anyway (DESIGN.md section 8). It hands out the audit entries; the
-// updates of the messages wait for FlushMessages.
+// dropScheduled ends every login pre-approval with cause stopped, when
+// the core stops (DESIGN.md section 8, "Grants after a restart"). Window
+// grants go with the core, and have no entry. Scheduled and standing
+// grants get no entry: the next start opens them again from the log. It
+// hands out the audit entries; the updates of the messages wait for
+// FlushMessages.
 func (c *Core) dropScheduled() {
 	c.mu.Lock()
 	c.queueEnded(c.endWhere(func(g *grant) audit.EndCause {
-		if g.audited() {
+		// Scheduled and standing grants stay in the log, and the next
+		// start opens them again (Restore). A login pre-approval is short,
+		// and its login is only in memory.
+		if g.audited() && g.loginOrigin != "" {
 			return audit.EndStopped
 		}
 		return ""
