@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/code6x/nodkey/internal/version"
 )
@@ -233,6 +235,26 @@ type BrokerStarted struct {
 // BrokerStopped is the last entry of a broker run that ends cleanly.
 type BrokerStopped struct{}
 
+// ResetCause says why the broker refused to rebuild grants from the log at
+// start (DESIGN.md section 8, "Grants after a restart").
+type ResetCause string
+
+// The causes of a grants_reset entry.
+const (
+	ResetChain  ResetCause = "chain"  // the chain of the log does not verify
+	ResetHead   ResetCause = "head"   // the log does not match the head file
+	ResetClock  ResetCause = "clock"  // the wall clock is earlier than the last entry
+	ResetFormat ResetCause = "format" // an entry does not decode
+)
+
+// GrantsReset is a barrier: the broker refused to rebuild grants from the
+// log. A later rebuild reads only the entries after the last one, so the
+// entries before it never make a grant again (DESIGN.md section 9).
+type GrantsReset struct {
+	// Cause says why.
+	Cause ResetCause `json:"cause"`
+}
+
 // ConfigReloaded records a reload of the broker config that the broker
 // took (DESIGN.md section 14, "Reload"). A refused reload has no entry:
 // nothing changed.
@@ -435,6 +457,7 @@ type logRecovered struct {
 const (
 	eventBrokerStarted = "broker_started"
 	eventBrokerStopped = "broker_stopped"
+	eventGrantsReset   = "grants_reset"
 	eventConfigReload  = "config_reloaded"
 	eventRequest       = "request"
 	eventDecision      = "decision"
@@ -455,6 +478,7 @@ func (LoginList) eventName() string      { return eventLoginList }
 func (LoginTOTP) eventName() string      { return eventLoginTOTP }
 func (BrokerStarted) eventName() string  { return eventBrokerStarted }
 func (BrokerStopped) eventName() string  { return eventBrokerStopped }
+func (GrantsReset) eventName() string    { return eventGrantsReset }
 func (ConfigReloaded) eventName() string { return eventConfigReload }
 func (Request) eventName() string        { return eventRequest }
 func (Decision) eventName() string       { return eventDecision }
@@ -643,6 +667,14 @@ func (e BrokerStarted) validate() error {
 
 func (BrokerStopped) validate() error { return nil }
 
+func (e GrantsReset) validate() error {
+	switch e.Cause {
+	case ResetChain, ResetHead, ResetClock, ResetFormat:
+		return nil
+	}
+	return errors.New("cause must be chain, head, clock or format")
+}
+
 func (e ConfigReloaded) validate() error {
 	if !sha256Hex.MatchString(e.ConfigSHA256) || e.GrantsEnded < 0 {
 		return errors.New("it needs the SHA-256 of the config in hex and a number of grants that is not negative")
@@ -800,6 +832,11 @@ func (e Denied) validate() error {
 }
 
 func (e ForeignTap) validate() error {
+	// encoding/json writes each byte that is not UTF-8 as U+FFFD, three
+	// bytes, so such data would be too long when the log is read again.
+	if !utf8.ValidString(e.Data) {
+		return errors.New("data is not valid UTF-8")
+	}
 	if len(e.Data) > maxTapData {
 		return fmt.Errorf("data is longer than %d bytes", maxTapData)
 	}
@@ -838,7 +875,7 @@ func encodeEvent(ev Event) (string, []byte, error) {
 	// pointer has the methods as well, and a nil pointer would panic in
 	// them.
 	switch ev.(type) {
-	case BrokerStarted, BrokerStopped, ConfigReloaded, Request, Decision, GrantUsed, GrantEnded, GrantAlarm, SecretSent, Signed, Denied, ForeignTap, Failure,
+	case BrokerStarted, BrokerStopped, GrantsReset, ConfigReloaded, Request, Decision, GrantUsed, GrantEnded, GrantAlarm, SecretSent, Signed, Denied, ForeignTap, Failure,
 		logRecovered, LoginList, LoginTOTP:
 	default:
 		return "", nil, errors.New("not an event of the audit package; pass an event such as audit.Signed{...} as a value")
@@ -857,4 +894,156 @@ func encodeEvent(ev Event) (string, []byte, error) {
 		return "", nil, fmt.Errorf("%s entry: cannot encode it", name)
 	}
 	return name, bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// decoders are the events that DecodeEvent knows, by the value of the
+// "event" field.
+var decoders = map[string]func([]byte) (Event, error){
+	eventBrokerStarted: decodeAs[BrokerStarted],
+	eventBrokerStopped: decodeAs[BrokerStopped],
+	eventGrantsReset:   decodeAs[GrantsReset],
+	eventConfigReload:  decodeAs[ConfigReloaded],
+	eventRequest:       decodeAs[Request],
+	eventDecision:      decodeAs[Decision],
+	eventGrantUsed:     decodeAs[GrantUsed],
+	eventGrantEnded:    decodeAs[GrantEnded],
+	eventGrantAlarm:    decodeAs[GrantAlarm],
+	eventSecretSent:    decodeAs[SecretSent],
+	eventSigned:        decodeAs[Signed],
+	eventDenied:        decodeAs[Denied],
+	eventForeignTap:    decodeAs[ForeignTap],
+	eventError:         decodeAs[Failure],
+	eventLogRecovered:  decodeAs[logRecovered],
+	eventLoginList:     decodeAs[LoginList],
+	eventLoginTOTP:     decodeAs[LoginTOTP],
+}
+
+// errFormat ends each error of DecodeEvent: what to do about it.
+const errFormat = "; the entry is not as this version of nodkey writes it, so no grant is rebuilt from this log. Check the log with \"nodkey audit verify\" (DESIGN.md section 15); a grant from before must be approved again (DESIGN.md section 8, \"Grants after a restart\")"
+
+// DecodeEvent reads the fields of one entry: name is the value of its
+// "event" field, and body is a JSON object with the fields of the event
+// only, as Append wrote them after seq, time, event and prev. The body
+// must be cut from the bytes of the line, never made again from a decoded
+// map: a map keeps one of two equal keys, and then the check for a key
+// that is there twice never sees it. The caller adds the seq of the
+// entry to the error. The broker
+// reads the log with it at start, to rebuild grants (DESIGN.md section 9,
+// "The log is an input at start").
+//
+// It is strict. It refuses an unknown event name, an unknown field, a
+// field that is there twice or that differs from a known field only in
+// case, a field of the wrong type, a null, a field that Append would have
+// left out or would have written, more data after the object, and an
+// event that fails the checks of Append. So what it returns, encoded
+// again, is the same JSON value as the body it read. An error never holds a value or a field
+// name from the body: the body may come from a changed log.
+func DecodeEvent(name string, body []byte) (Event, error) {
+	decode, ok := decoders[name]
+	if !ok {
+		return nil, errors.New("the event name is not known" + errFormat)
+	}
+	ev, err := decode(body)
+	if err != nil {
+		return nil, fmt.Errorf("%s entry: %w%s", name, err, errFormat)
+	}
+	return ev, nil
+}
+
+// decodeAs decodes body as an event of type T, strictly (see DecodeEvent).
+func decodeAs[T Event](body []byte) (Event, error) {
+	if len(body) > MaxLineSize || tooDeep(body) {
+		return nil, errors.New("the fields are too long or too deep")
+	}
+	if err := uniqueKeys(body); err != nil {
+		return nil, err
+	}
+	var ev T
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&ev); err != nil {
+		// The error of encoding/json can name a field of the body.
+		return nil, errors.New("the fields do not decode: an unknown field or a field of the wrong type")
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("there is more data after the fields")
+	}
+	if err := ev.validate(); err != nil {
+		return nil, err
+	}
+	// encoding/json matches a field name in any case, takes a null as no
+	// value, and reads a missing field as zero. Encode the event again
+	// and compare: the same fields with the same values, or an error.
+	_, again, err := encodeEvent(ev)
+	if err != nil {
+		return nil, errors.New("the event cannot be encoded again")
+	}
+	same, err := sameJSON(body, again)
+	if err != nil || !same {
+		return nil, errors.New("the fields are not as Append writes them: a field in another case, a null, a zero value that Append leaves out, or a missing field")
+	}
+	return ev, nil
+}
+
+// uniqueKeys refuses a JSON text in which an object has a key twice.
+// encoding/json takes the last one, while other readers may take the
+// first.
+func uniqueKeys(body []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// keys holds the keys of each open object; nil for an open array.
+	var keys []map[string]bool
+	expectKey := false
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return errors.New("the fields are not valid JSON")
+		}
+		inObject := len(keys) > 0 && keys[len(keys)-1] != nil
+		if inObject && expectKey {
+			if d, ok := tok.(json.Delim); ok && d == '}' {
+				keys = keys[:len(keys)-1]
+				expectKey = len(keys) > 0 && keys[len(keys)-1] != nil
+				continue
+			}
+			k, _ := tok.(string)
+			if keys[len(keys)-1][k] {
+				return errors.New("a field is there twice")
+			}
+			keys[len(keys)-1][k] = true
+			expectKey = false
+			continue
+		}
+		switch tok {
+		case json.Delim('{'):
+			keys = append(keys, map[string]bool{})
+			expectKey = true
+			continue
+		case json.Delim('['):
+			keys = append(keys, nil)
+		case json.Delim(']'):
+			keys = keys[:len(keys)-1]
+		}
+		// After a value in an object, the next token is a key or the end.
+		expectKey = len(keys) > 0 && keys[len(keys)-1] != nil
+	}
+}
+
+// sameJSON reports whether a and b hold the same JSON value, with the
+// same keys and numbers in the same form.
+func sameJSON(a, b []byte) (bool, error) {
+	var va, vb any
+	for _, p := range []struct {
+		raw []byte
+		v   *any
+	}{{a, &va}, {b, &vb}} {
+		dec := json.NewDecoder(bytes.NewReader(p.raw))
+		dec.UseNumber()
+		if err := dec.Decode(p.v); err != nil {
+			return false, err
+		}
+	}
+	return reflect.DeepEqual(va, vb), nil
 }
