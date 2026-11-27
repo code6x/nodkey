@@ -133,6 +133,7 @@ type Core struct {
 	decisions uint64        // counts the answers that counted
 	running   bool          // Run has started
 	stopped   bool          // Run has returned: no answer can come any more
+	restored  bool          // Restore has run
 }
 
 // New returns a core that decides requests by the rules of cfg and asks
