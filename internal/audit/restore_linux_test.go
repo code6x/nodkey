@@ -64,8 +64,10 @@ func TestReadForRestoreNothing(t *testing.T) {
 	if err := os.Remove(path + HeadSuffix); err != nil {
 		t.Fatal(err)
 	}
-	if got, cause := readForRestoreCause(t, path, testTime); cause != "" || got.Head != 0 || len(got.Records) != 3 {
-		t.Errorf("no head file: head %d, %d records, cause %q; want head 0", got.Head, len(got.Records), cause)
+	// A broken log with no head file is not read: nothing can be rebuilt.
+	writeFile(t, path, []byte("not a log\n"))
+	if got, cause := readForRestoreCause(t, path, testTime); cause != "" || got.Head != 0 || got.Records != nil {
+		t.Errorf("no head file: head %d, %d records, cause %q; want nothing", got.Head, len(got.Records), cause)
 	}
 }
 

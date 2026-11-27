@@ -408,6 +408,15 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	// The grants from before open again from the log, before the core
+	// runs and before anything can ask (DESIGN.md section 8).
+	rs := restoreGrants(core, cfg.AuditLog, time.Now())
+	if rs.err != nil {
+		b.log.Warn("nodkey broker: ALERT: no grant from before is open again", slog.String("cause", string(rs.cause)),
+			slog.String("error", rs.err.Error()))
+	} else {
+		b.log.Info("nodkey broker: grants from before", slog.Int("open", len(rs.open)), slog.Int("dropped", len(rs.dropped)))
+	}
 	// The server checks the client pins here.
 	srv, err := transport.NewServer(tlsKey, cfg.Clients, svc, b.log)
 	if err != nil {
@@ -436,6 +445,12 @@ func (b *brokerParts) start(ctx context.Context, path string) error {
 	// fail.
 	if _, err := l.Append(audit.BrokerStarted{Version: version}); err != nil {
 		return fmt.Errorf("cannot write the broker_started entry: %w", err)
+	}
+	if err := rs.write(l); err != nil {
+		return err
+	}
+	if msg := rs.notice(); msg != "" {
+		b.alerts = append(b.alerts, msg)
 	}
 	b.started = true
 	b.startRun(core)

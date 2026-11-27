@@ -29,8 +29,8 @@ type RestoreLog struct {
 //   - ResetClock: wall is earlier than the time of the last entry.
 //
 // Each error says how to fix it. The broker then sends an alarm and appends a grants_reset entry with the
-// cause. A missing log, or a log with no head file, is no cause: there is
-// nothing to rebuild. The error says what went wrong, without text from
+// cause. A log with no head file is no cause, and it is not read: there
+// is nothing to rebuild. The error says what went wrong, without text from
 // the log; it is nil when the cause is "".
 func ReadForRestore(path string, wall time.Time) (RestoreLog, ResetCause, error) {
 	l, cause, err := readForRestore(path, wall)
@@ -46,12 +46,15 @@ const restoreFix = "; no grant from before this start is open again, and each mu
 
 func readForRestore(path string, wall time.Time) (RestoreLog, ResetCause, error) {
 	head, herr := ReadHead(path)
+	if errors.Is(herr, ErrNoHead) {
+		// No entry ever made a grant, or the log is from a version
+		// without the head file: nothing to rebuild, and no reason to read
+		// the log.
+		return RestoreLog{}, "", nil
+	}
 	f, err := os.OpenFile(path, readFlags, 0) //nolint:gosec // G304: the path of the audit log, from the broker config.
 	if errors.Is(err, os.ErrNotExist) {
-		if herr == nil {
-			return RestoreLog{}, ResetHead, errors.New("audit log: the log is missing, but its head file is there")
-		}
-		return RestoreLog{}, "", nil
+		return RestoreLog{}, ResetHead, errors.New("audit log: the log is missing, but its head file is there")
 	}
 	if err != nil {
 		return RestoreLog{}, ResetChain, fmt.Errorf("audit log: %w", err)
@@ -60,9 +63,6 @@ func readForRestore(path string, wall time.Time) (RestoreLog, ResetCause, error)
 	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() {
 		return RestoreLog{}, ResetChain, errors.New("audit log: is not a regular file that can be read")
-	}
-	if fi.Size() == 0 && errors.Is(herr, ErrNoHead) {
-		return RestoreLog{}, "", nil
 	}
 	recs, res, err := ReadRecords(f)
 	var fe *FormatError
@@ -77,8 +77,6 @@ func readForRestore(path string, wall time.Time) (RestoreLog, ResetCause, error)
 			"set the clock right, then restart the broker")
 	}
 	switch {
-	case errors.Is(herr, ErrNoHead):
-		return RestoreLog{Records: recs}, "", nil
 	case herr != nil:
 		return RestoreLog{}, ResetHead, herr
 	case head.LogID != res.LogID:
