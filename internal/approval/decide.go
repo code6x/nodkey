@@ -423,6 +423,7 @@ func (c *Core) ask(ctx context.Context, p *pending) *Result {
 		res = c.wait(ctx, p)
 	}
 	if p.msg != "" {
+		res.asked = p.msg
 		c.end(ctx, p, prompt, res)
 		if res.plan != nil {
 			// The grant keeps the message, with a Revoke button, once it
@@ -696,6 +697,10 @@ func (c *Core) approvePlan(p *pending, res *Result) {
 	g.origin.Hosts = slices.Clone(res.Subject.Hosts)
 	g.origin.Windows = slices.Clone(res.Subject.Windows)
 	res.plan = &g
+	if g.standing() {
+		// Kept apart: the hash in the grant changes with each use.
+		res.firstHash = g.tokenHash
+	}
 	res.GrantID = g.id
 	loc := c.clock.Wall().Location()
 	if g.loginOrigin != "" {

@@ -297,6 +297,16 @@ type Decision struct {
 	// RenewOf is the ID of the standing grant that a renewal replaces, for
 	// AnswerRenew only.
 	RenewOf string `json:"renew_of,omitempty"`
+	// MessageID names the message that was answered, as the approver
+	// named it: for Telegram the chat and the message number, for ntfy
+	// the message ID. With it the Revoke button of that message still
+	// works after a restart (DESIGN.md section 8, "Grants after a
+	// restart").
+	MessageID string `json:"message_id,omitempty"`
+	// TokenHash is the SHA-256 hash of the first token of a standing
+	// grant, in hex, for an approved KindStanding request only. Never the
+	// token itself.
+	TokenHash string `json:"token_hash,omitempty"`
 }
 
 // GrantUsed records a request that a grant or a "never ask" rule allowed
@@ -733,6 +743,10 @@ const ChannelNtfyPrefix = "ntfy:"
 
 var channelPattern = regexp.MustCompile(`^ntfy:[A-Za-z0-9_-]{1,64}$`)
 
+// messageIDPattern is the form of approval.MessageID: "CHAT:MESSAGE" in
+// decimal for Telegram (a chat can be negative), the message ID for ntfy.
+var messageIDPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{1,64}$`)
+
 func (e Decision) validate() error {
 	if err := e.Subject.validate(true); err != nil {
 		return err
@@ -744,6 +758,12 @@ func (e Decision) validate() error {
 		}
 	case e.UserID <= 0:
 		return errors.New("user_id must be a Telegram user ID")
+	}
+	if e.MessageID != "" && !messageIDPattern.MatchString(e.MessageID) {
+		return errors.New("message_id must name a message: 1 to 64 letters, digits, \"_\", \"-\" or \":\"")
+	}
+	if e.TokenHash != "" && (e.Kind != KindStanding || e.Answer != AnswerApproveOnce || !isHex64(e.TokenHash)) {
+		return errors.New("token_hash is for an approved standing request only, as 64 hex digits")
 	}
 	if (e.Answer == AnswerRenew) != (e.RenewOf != "") {
 		return errors.New("renew_of is for a renew answer, and a renew answer needs it")

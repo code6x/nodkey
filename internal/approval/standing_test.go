@@ -4,6 +4,9 @@ package approval_test
 // are relative to noon, the start of the fake clock.
 
 import (
+	"encoding/hex"
+	"encoding/json"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -154,5 +157,99 @@ func TestStandingMaxGrants(t *testing.T) {
 		e.grant(standReq("laptop", newToken(t), "github-token"), 1)
 		e.grant(standReq("laptop", newToken(t), "npm-token"), 2)
 		e.refuses(standReq("laptop", newToken(t), "github-token"), audit.CauseLimit)
+	})
+}
+
+// decisionOf returns the one decision entry of res.
+func decisionOf(t *testing.T, res *approval.Result) audit.Decision {
+	t.Helper()
+	var found []audit.Decision
+	for _, ev := range res.Events() {
+		if d, ok := ev.(audit.Decision); ok {
+			found = append(found, d)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d decision entries, want 1", len(found))
+	}
+	if err := audit.CheckEvent(found[0]); err != nil {
+		t.Fatalf("the decision entry fails the checks of the log: %v", err)
+	}
+	return found[0]
+}
+
+// TestStandingDecisionHasTheTokenHash: the decision entry of an approved
+// standing grant has the hash of its first token and the message of the
+// request (DESIGN.md section 9), and keeps the first hash after a use
+// changed the token. It never holds the token.
+func TestStandingDecisionHasTheTokenHash(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := standEnv(t)
+		defer e.stop()
+		tok := newToken(t)
+		res := e.grant(standReq("laptop", tok, "github-token"), 1)
+		h := grantkey.Hash(tok)
+		want := hex.EncodeToString(h[:])
+		d := decisionOf(t, res)
+		if d.TokenHash != want {
+			t.Errorf("token_hash = %q, want the hash of the first token %q", d.TokenHash, want)
+		}
+		if msg := e.fake.Asked()[0].Message; d.MessageID == "" || d.MessageID != string(msg) {
+			t.Errorf("message_id = %q, want %q", d.MessageID, msg)
+		}
+		data, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), tok.Reveal()) {
+			t.Error("the decision entry holds the token")
+		}
+
+		e.pass(15*time.Hour + 30*time.Minute) // 03:30, in the window
+		if use := e.use(tok); !use.Allowed {
+			t.Fatalf("the use was denied: %+v", use)
+		}
+		if d := decisionOf(t, res); d.TokenHash != want {
+			t.Errorf("after a use, token_hash = %q, want the first hash %q", d.TokenHash, want)
+		}
+	})
+}
+
+// TestDecisionWithoutTokenHash: a Deny of a standing request, a scheduled
+// grant and a secrets request have no token_hash; each has the message.
+func TestDecisionWithoutTokenHash(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := standEnv(t, func(cfg *config.Broker) {
+			cfg.Preapprove = config.DefaultPreapprove()
+			s := cfg.Secrets["npm-token"]
+			s.Rule.Preapprove = true
+			cfg.Secrets["npm-token"] = s
+		})
+		defer e.stop()
+
+		ch := e.decide(standReq("laptop", newToken(t), "github-token"))
+		mustWait(t, ch)
+		e.tap(1, audit.AnswerDeny)
+		denied := mustResult(t, ch)
+		checkDenied(t, denied, audit.CauseApprover)
+
+		scheduled := e.grant(preSecrets("laptop", 1, time.Hour, 2*time.Hour, "npm-token"), 2)
+
+		// Another secret: github-token waits out the pause after the Deny.
+		ch = e.decide(secretsReq("laptop", "db-password"))
+		mustWait(t, ch)
+		e.tap(3, audit.AnswerApproveOnce)
+		once := mustResult(t, ch)
+		checkAllowed(t, once)
+
+		for i, res := range []*approval.Result{denied, scheduled, once} {
+			d := decisionOf(t, res)
+			if d.TokenHash != "" {
+				t.Errorf("decision %d (%s %s) has token_hash %q", i+1, d.Kind, d.Answer, d.TokenHash)
+			}
+			if msg := e.fake.Asked()[i].Message; d.MessageID != string(msg) {
+				t.Errorf("decision %d: message_id = %q, want %q", i+1, d.MessageID, msg)
+			}
+		}
 	})
 }

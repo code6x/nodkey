@@ -26,7 +26,8 @@ func allEvents() []Event {
 		GrantsReset{Cause: ResetFormat},
 		ConfigReloaded{ConfigSHA256: strings.Repeat("ab", 32), GrantsEnded: 2},
 		Request{Subject: standing, Message: "<b>standing</b>"},
-		Decision{Subject: standing, Channel: "ntfy:ans-1", Answer: AnswerApproveOnce},
+		Decision{Subject: standing, Channel: "ntfy:ans-1", Answer: AnswerApproveOnce, MessageID: "Ab12Cd34Ef56"},
+		Decision{Subject: standing, UserID: 1, Answer: AnswerApproveOnce, MessageID: "-1001234567890:42", TokenHash: strings.Repeat("01", 32)},
 		Decision{Subject: standing, UserID: 1, Answer: AnswerRenew, RenewOf: testRequestID(9)},
 		GrantUsed{Subject: standing, Via: ViaStanding, NewTokenHash: strings.Repeat("cd", 32)},
 		GrantUsed{Subject: preapproveSubject(), Via: ViaScheduled},
@@ -226,6 +227,46 @@ func TestEveryEventHasADecoder(t *testing.T) {
 func TestForeignTapDataIsUTF8(t *testing.T) {
 	if _, _, err := encodeEvent(ForeignTap{UserID: 1, Data: strings.Repeat("\xff", 64)}); err == nil {
 		t.Error("data that is not UTF-8 was accepted")
+	}
+}
+
+// TestDecisionMessageAndTokenHash: message_id names a message, and
+// token_hash is only on an approved standing request, as 64 hex digits.
+func TestDecisionMessageAndTokenHash(t *testing.T) {
+	standing := preapproveSubject()
+	standing.Kind = KindStanding
+	standing.Windows = []string{"daily 03:00-05:00"}
+	h := strings.Repeat("ab", 32)
+	for _, ev := range []Decision{
+		{Subject: standing, UserID: 1, Answer: AnswerApproveOnce, MessageID: "987654321:42", TokenHash: h},
+		{Subject: standing, UserID: 1, Answer: AnswerDeny, MessageID: "987654321:42"},
+		{Subject: secretsSubject(), UserID: 1, Answer: AnswerApproveOnce, MessageID: "message-1"},
+		{Subject: standing, UserID: 1, Answer: AnswerRenew, RenewOf: testRequestID(9), MessageID: "987654321:43"},
+	} {
+		if _, _, err := encodeEvent(ev); err != nil {
+			t.Errorf("encodeEvent(%+v): %v", ev, err)
+		}
+	}
+	for name, ev := range map[string]Decision{
+		"a message with a space":       {Subject: secretsSubject(), UserID: 1, Answer: AnswerApproveOnce, MessageID: "987 42"},
+		"a message with a newline":     {Subject: secretsSubject(), UserID: 1, Answer: AnswerApproveOnce, MessageID: "1:2\n" + canary},
+		"a message too long":           {Subject: secretsSubject(), UserID: 1, Answer: AnswerApproveOnce, MessageID: strings.Repeat("1", 65)},
+		"a token hash on secrets":      {Subject: secretsSubject(), UserID: 1, Answer: AnswerApproveOnce, TokenHash: h},
+		"a token hash on a scheduled":  {Subject: preapproveSubject(), UserID: 1, Answer: AnswerApproveOnce, TokenHash: h},
+		"a token hash on a deny":       {Subject: standing, UserID: 1, Answer: AnswerDeny, TokenHash: h},
+		"a token hash on a renew":      {Subject: standing, UserID: 1, Answer: AnswerRenew, RenewOf: testRequestID(9), TokenHash: h},
+		"a short token hash":           {Subject: standing, UserID: 1, Answer: AnswerApproveOnce, TokenHash: "ab"},
+		"a token hash in capitals":     {Subject: standing, UserID: 1, Answer: AnswerApproveOnce, TokenHash: strings.ToUpper(h)},
+		"a token in place of the hash": {Subject: standing, UserID: 1, Answer: AnswerApproveOnce, TokenHash: canary},
+	} {
+		_, _, err := encodeEvent(ev)
+		if err == nil {
+			t.Errorf("%s: the event was accepted", name)
+			continue
+		}
+		if strings.Contains(err.Error(), "CANARY") {
+			t.Errorf("%s: the error shows the value: %v", name, err)
+		}
 	}
 }
 

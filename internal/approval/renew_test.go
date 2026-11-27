@@ -177,7 +177,8 @@ func TestRenewHandsOverOnTheNextUse(t *testing.T) {
 		end := at.Add(30 * day).Truncate(time.Second)
 		if d.Answer != audit.AnswerRenew || d.RenewOf != old.GrantID || d.GrantID == "" || d.GrantID == old.GrantID ||
 			d.RequestID == old.RequestID || d.Kind != audit.KindStanding || d.UserID != approverID ||
-			d.NotAfter != end.UTC().Format(time.RFC3339) || len(d.Secrets) != 1 || d.Uses != 2 || len(d.Windows) != 1 {
+			d.NotAfter != end.UTC().Format(time.RFC3339) || len(d.Secrets) != 1 || d.Uses != 2 || len(d.Windows) != 1 ||
+			d.MessageID != string(w.Message) || d.TokenHash != "" {
 			t.Errorf("renew entry %+v", d)
 		}
 		// The warning now carries the Revoke button of the new grant.
