@@ -487,7 +487,8 @@ it, so an entry added, removed or changed while the broker was stopped is
 found. `audit verify` checks every open line and reports each one that
 fails. An anchor line from an earlier version has no log ID; it takes the
 log ID of the first open line with a non-zero log ID after it, so old
-anchors of earlier logs do not fail the check of a newer log. A torn line from a power cut is not part of the chain, but
+anchors of earlier logs do not fail the check of a newer log. Since issue 111 the log is also an input: the broker reads it at start to
+rebuild standing and scheduled grants (T55). A torn line from a power cut is not part of the chain, but
 its `log_recovered` entry holds the torn line's length and hash, so a
 change to it or its removal is found too. The broker locks the log, so a
 second broker cannot write to it. `nodkey audit verify` never prints the
@@ -1204,10 +1205,11 @@ rule (DESIGN.md section 12, decision 3 B) again, but smaller.
   clock reaches it. A wall clock that someone sets forward on the broker
   host can start a grant early (T16 covers that host). One that is set
   back cannot make a grant last longer, and cannot give more uses.
-- Grants live in memory. A broker restart drops them. A grant that ends
-  with uses left sends a silent "not used" notice, and a stop sends one
-  notice that lists the dropped grants, so the person learns that a job
-  will ask for a tap. These notices are the broker's own text, with names
+- Grants live in memory. A broker restart drops the grants of an "Approve
+  N min" tap and the login pre-approvals; scheduled grants are rebuilt
+  from the audit log (T55). A grant that ends with uses left sends a
+  silent "not used" notice, and a stop sends one notice that lists the
+  dropped grants, so the person learns that a job will ask for a tap. These notices are the broker's own text, with names
   from the config and checked IDs; the "not used" notice also shows the
   claimed reason below the claimed line, cleaned and masked as in every
   message. If they cannot be sent, they are
@@ -2011,6 +2013,40 @@ What nodkey does not do:
   `[secret.*]`, with its own rule.
 Risk that remains: medium for one approved code (any write of that
 account for about 30 s), and the number of uses for a scheduled grant.
+
+**T55. A changed, cut or old log brings a grant back. A restart no longer
+ends all grants.**
+The broker rebuilds standing and scheduled grants from the audit log at
+start (DESIGN.md section 8, "Grants after a restart"). So the log makes
+grants, not only records them. Someone who can write to it while the broker
+is stopped could add a `decision`, cut the log back to before a Revoke, or
+put an old copy back (a backup restore), and a revoked or unapproved grant
+would be open again.
+- **The whole chain must verify.** A changed line or a removed line in the
+  middle breaks it.
+- **The head file** (`audit.jsonl.head`, DESIGN.md section 9) names the
+  last grant-making entry. It must be in the log with the same hash, with
+  the same log ID. A cut or an older log is shorter than the head, so
+  nothing is rebuilt. A `decision` added while the broker was stopped is
+  after the head and is ignored.
+- **Barrier and alarm.** When the broker refuses to rebuild, it sends an
+  alarm and writes `grants_reset`. Later starts read only after it, so the
+  bad log is not trusted at the next start.
+- **Clock.** A wall clock earlier than the last entry rebuilds nothing, so
+  a clock set back does not make a grant last longer.
+- **A use needs its proof.** A use counts only with a `secret_sent` or
+  `signed` entry after it, so a crash gives no extra use.
+- **Strict decoder.** An entry that does not decode drops every grant.
+  Claimed text never changes what is rebuilt.
+- **Emergency stop.** A restart no longer ends all grants. `nodkey revoke
+  --all` and the **Revoke all** button end every grant, each with a
+  `grant_ended` entry of cause `revoked`. The person must use it when
+  they doubt the host, because a restart does not do it any more.
+Risk that remains: root or the broker user can rewrite the log and the
+head file together so that they agree, or put both back from a backup. Root
+is the root of trust (section 5). `nodkey audit verify --anchors` against
+the journal still shows such a change. Low, with a copy of the journal on
+another machine.
 
 ## 7. Assumptions
 
