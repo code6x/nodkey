@@ -10,6 +10,7 @@ import (
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/config"
+	"github.com/code6x/nodkey/internal/grantkey"
 )
 
 // recordLog collects the entries of a broker, in order, as the records
@@ -171,4 +172,145 @@ func TestRestoreScheduledDrops(t *testing.T) {
 			})
 		})
 	}
+}
+
+// isStandingUse matches a grant_used entry of a standing grant.
+func isStandingUse(ev audit.Event) bool {
+	u, ok := ev.(audit.GrantUsed)
+	return ok && u.Via == audit.ViaStanding
+}
+
+// standingLog runs a broker that makes a standing grant (2 uses in the
+// window 03:00-05:00) and uses it once at 03:30, with its secret_sent. A
+// second use has its grant_used but no secret_sent. It returns the log,
+// the grant ID, the first token and the token after the first use.
+func standingLog(t *testing.T) (log *recordLog, id string, first, next grantkey.Token) {
+	t.Helper()
+	e := standEnv(t)
+	defer e.stop()
+	log = &recordLog{clock: e.clock}
+	first = newToken(t)
+	res := e.grant(standReq("laptop", first, "github-token"), 1)
+	log.add(res.Events()...)
+	e.pass(15*time.Hour + 30*time.Minute) // 03:30
+	u := e.use(first)
+	checkAllowed(t, u)
+	next, _ = u.NewToken()
+	log.add(u.Events()...)
+	log.add(audit.SecretSent{Subject: u.Subject})
+	u = e.use(next)
+	checkAllowed(t, u)
+	log.add(u.Events()...)
+	log.add(audit.BrokerStopped{})
+	return log, res.GrantID, first, next
+}
+
+// TestRestoreStanding: after a restart a standing grant has the same
+// token, the same uses left in the window and the same end. A use without
+// its secret_sent does not count and does not move the token.
+func TestRestoreStanding(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		log, id, _, next := standingLog(t)
+		e := standEnv(t)
+		defer e.stop()
+		e.pass(15*time.Hour + 45*time.Minute)  // 03:45
+		heads := log.recs[len(log.recs)-2].Seq // the second grant_used
+		open, dropped, err := e.core.Restore(log.recs, heads)
+		if err != nil || len(open) != 1 || len(dropped) != 0 || open[0].Subject.GrantID != id {
+			t.Fatalf("Restore = %+v, %+v, %v; want the standing grant", open, dropped, err)
+		}
+		if h, old, _, _ := e.core.StandingGrants("laptop"); len(h) != 1 || h[0] != grantkey.Hash(next) || old[0] != 1 {
+			t.Fatalf("the grant holds %d hashes; want the token after the first use, and one old hash", len(h))
+		}
+		last := e.useGrant(next) // the second use of the window
+		if r := e.use(last); r.Allowed || alarmOf(r) != audit.AlarmOverUses {
+			t.Errorf("a third use in the window: allowed %v, alarm %q", r.Allowed, alarmOf(r))
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		log, _, first, _ := standingLog(t)
+		e := standEnv(t)
+		defer e.stop()
+		e.pass(15*time.Hour + 45*time.Minute)
+		if open, _, _ := e.core.Restore(log.recs, log.recs[len(log.recs)-2].Seq); len(open) != 1 {
+			t.Fatal("no grant")
+		}
+		if r := e.use(first); r.Allowed || alarmOf(r) != audit.AlarmOldToken {
+			t.Errorf("the old token: allowed %v, alarm %q; want an old_token alarm", r.Allowed, alarmOf(r))
+		}
+	})
+}
+
+// TestRestoreStandingDrops: a standing use after the head, an end that
+// passed, and a config without [standing] open no grant.
+func TestRestoreStandingDrops(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		advance time.Duration
+		edit    func(*config.Broker)
+		head    func(*recordLog) uint64
+		reason  approval.DropReason
+	}{
+		{name: "use after the head", head: func(l *recordLog) uint64 {
+			return l.seqOf(t, isStandingUse) // the first use; the second is after it
+		}, reason: approval.DropHead},
+		{name: "end passed", advance: 31 * 24 * time.Hour, reason: approval.DropEnded},
+		{name: "standing off", edit: func(c *config.Broker) { c.Standing.Enabled = false }, reason: approval.DropConfig},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				log, id, _, next := standingLog(t)
+				head := log.recs[len(log.recs)-2].Seq
+				if tc.head != nil {
+					head = tc.head(log)
+				}
+				e := standEnv(t, func(c *config.Broker) {
+					if tc.edit != nil {
+						tc.edit(c)
+					}
+				})
+				defer e.stop()
+				e.pass(15*time.Hour + 45*time.Minute + tc.advance)
+				open, dropped, err := e.core.Restore(log.recs, head)
+				if err != nil || len(open) != 0 || len(dropped) != 1 || dropped[0].Reason != tc.reason || dropped[0].Subject.GrantID != id {
+					t.Fatalf("Restore = %+v, %+v, %v; want the grant dropped with %s", open, dropped, err, tc.reason)
+				}
+				if r := e.use(next); r.Allowed {
+					t.Error("the token works after a drop")
+				}
+			})
+		})
+	}
+}
+
+// TestRestoreRenewal: a renewal that waits for the next use is open again,
+// and the next use of the old token hands the grant over.
+func TestRestoreRenewal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, tok, old, rec, _ := renewEnv(t)
+		log := &recordLog{clock: e.clock}
+		log.add(old.Events()...)
+		e.pass(23*day + time.Minute)
+		if err := e.renewTap(e.warning()); err != nil {
+			t.Fatalf("Renew: %v", err)
+		}
+		synctest.Wait()
+		renew := rec.all()[0]
+		head := log.add(renew)
+		e.stop()
+
+		e2 := standEnv(t)
+		defer e2.stop()
+		e2.pass(23*day + time.Hour)
+		open, dropped, err := e2.core.Restore(log.recs, head)
+		if err != nil || len(open) != 2 || len(dropped) != 0 {
+			t.Fatalf("Restore = %+v, %+v, %v; want the grant and its renewal", open, dropped, err)
+		}
+		e2.pass(15 * time.Hour) // 04:00 the next day
+		res := e2.use(tok)
+		checkAllowed(t, res)
+		if res.UsedGrantID() != renew.GrantID {
+			t.Errorf("the use took grant %q, want the renewal %q", res.UsedGrantID(), renew.GrantID)
+		}
+	})
 }

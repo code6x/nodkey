@@ -1,7 +1,10 @@
 package approval
 
 import (
+	"encoding/hex"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,32 +43,63 @@ type RestoredGrant struct {
 type logGrant struct {
 	subject  audit.Subject
 	approved time.Time
-	uses     int
+	standing bool
+	uses     int // a scheduled grant: the uses left
 	ended    bool
-	// using are the request IDs of the uses whose grant_used came, and
-	// whose secret_sent or signed has not come yet.
-	using map[string]bool
+	// reason, if set, drops the grant with it.
+	reason DropReason
+	// using are the uses whose grant_used came, and whose secret_sent or
+	// signed has not come yet, by request ID, with the new token hash of
+	// a standing use.
+	using map[string]logUse
+	// A standing grant: its token hash now and before, and the times of
+	// its uses. renewOf is the grant that a renewal renews, until the
+	// renewal has the token (handed).
+	token    [32]byte
+	old      [][32]byte
+	useTimes []time.Time
+	renewOf  string
+	handed   bool
 }
 
-// Restore opens again the scheduled grants that the audit log recs holds
-// (DESIGN.md section 8, "Grants after a restart"). recs are the records
-// of audit.ReadRecords, of a log whose chain verified, and head is the seq
-// of the entry in the head file; the broker checks both, and the clock,
-// before. Call it once, at start, before the first request.
+// logUse is one grant_used entry.
+type logUse struct {
+	at      time.Time
+	newHash [32]byte
+}
+
+// The reasons of a standing grant only.
+const (
+	// DropHead: a use of the grant is after the head entry: its Append
+	// never returned, so the client may hold a token that the log does
+	// not prove.
+	DropHead DropReason = "head"
+)
+
+// Restore opens again the scheduled and standing grants that the audit
+// log recs holds (DESIGN.md section 8, "Grants after a restart"). recs are
+// the records of audit.ReadRecords, of a log whose chain verified, and
+// head is the seq of the entry in the head file; the broker checks both,
+// and the clock, before. Call it once, at start, before the first request.
 //
 // The rules:
 //
 //   - Only the entries after the last grants_reset entry count.
 //   - A grant comes from an approving decision of a preapprove request
-//     with a grant_id and an end, at or before head. A login pre-approval
-//     has no end and is not opened again.
+//     with a grant_id and an end, or of a standing request with a
+//     token_hash, or from a renew decision, at or before head. A login
+//     pre-approval has no end and is not opened again.
 //   - A denied entry of the same request after it means that the tap made
 //     no grant, and a grant_ended entry of the grant ends it.
 //   - A grant_used entry of the grant counts as a use only when a
 //     secret_sent or signed entry of the same request follows it: before
-//     that, nothing was sent.
+//     that, nothing was sent. A standing use moves the token to its
+//     new_token_hash only then. A standing use after head drops the grant.
+//   - A renewal takes the token of the grant it renews at the first use
+//     of it, or when that grant has ended.
 //   - The grant must pass the checks of a new request against the config
-//     of now, except its start, and its end must not have passed.
+//     of now, with the approval as the time of the check, and its end must
+//     not have passed.
 //
 // It returns the grants that are open again and the ones it dropped.
 // Claimed text in an entry, such as a reason, never changes what it opens.
@@ -85,17 +119,33 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 	grants := make(map[string]*logGrant)
 	var order []string
 	byRequest := make(map[string]string) // the request ID of a decision, to its grant ID
+	add := func(r audit.Record, g *logGrant) {
+		g.approved, g.using = r.Time, make(map[string]logUse)
+		grants[g.subject.GrantID] = g
+		order = append(order, g.subject.GrantID)
+		byRequest[g.subject.RequestID] = g.subject.GrantID
+	}
 	for _, r := range recs[from:] {
 		switch e := r.Event.(type) {
 		case audit.Decision:
 			s := e.Subject
-			if r.Seq > head || e.Answer != audit.AnswerApproveOnce || s.Kind != audit.KindPreapprove ||
-				s.GrantID == "" || s.NotAfter == "" || s.Logins != "" || grants[s.GrantID] != nil {
+			if r.Seq > head || s.GrantID == "" || s.NotAfter == "" || s.Logins != "" || grants[s.GrantID] != nil {
 				continue
 			}
-			grants[s.GrantID] = &logGrant{subject: s, approved: r.Time, uses: s.Uses, using: make(map[string]bool)}
-			order = append(order, s.GrantID)
-			byRequest[s.RequestID] = s.GrantID
+			switch {
+			case e.Answer == audit.AnswerApproveOnce && s.Kind == audit.KindPreapprove:
+				add(r, &logGrant{subject: s, uses: s.Uses})
+			case e.Answer == audit.AnswerApproveOnce && s.Kind == audit.KindStanding:
+				g := &logGrant{subject: s, standing: true}
+				if !decodeHash(&g.token, e.TokenHash) {
+					continue
+				}
+				add(r, g)
+			case e.Answer == audit.AnswerRenew && s.Kind == audit.KindStanding:
+				if o := grants[e.RenewOf]; o != nil && o.standing && !o.ended {
+					add(r, &logGrant{subject: s, standing: true, renewOf: e.RenewOf})
+				}
+			}
 		case audit.Denied:
 			if g := grants[byRequest[e.RequestID]]; g != nil {
 				g.ended = true // the tap made no grant
@@ -105,9 +155,22 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 				g.ended = true
 			}
 		case audit.GrantUsed:
-			if g := grants[e.GrantID]; g != nil && e.Via == audit.ViaScheduled {
-				g.using[e.RequestID] = true
+			g := grants[e.GrantID]
+			if g == nil || g.ended || g.standing != (e.Via == audit.ViaStanding) || (!g.standing && e.Via != audit.ViaScheduled) {
+				continue
 			}
+			u := logUse{at: r.Time}
+			if g.standing && (r.Seq > head || !decodeHash(&u.newHash, e.NewTokenHash)) {
+				g.reason = DropHead
+				if o := grants[g.renewOf]; o != nil && !g.handed {
+					o.reason = DropHead
+				}
+				continue
+			}
+			if g.renewOf != "" && !g.handed {
+				handOverLog(grants[g.renewOf], g)
+			}
+			g.using[e.RequestID] = u
 		case audit.SecretSent:
 			countUse(grants, e.RequestID)
 		case audit.Signed:
@@ -117,17 +180,55 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 	now := c.now()
 	for _, id := range order {
 		lg := grants[id]
+		if o := grants[lg.renewOf]; o != nil && !lg.handed && !lg.ended {
+			// A renewal that waits: it takes the token at the end of the
+			// grant it renews, or when that grant ended as renewed.
+			// When that grant is dropped, or ended in another way, so is
+			// the renewal.
+			if o.reason == "" && !o.ended && now.wall.Before(endOf(o)) {
+				continue // it is linked to o below
+			}
+			if o.reason != "" || o.ended {
+				lg.ended = true
+				continue
+			}
+			handOverLog(o, lg)
+		}
 		if lg.ended {
 			continue
 		}
 		rg := RestoredGrant{Subject: lg.subject, UsesLeft: lg.uses}
-		if g, reason := c.rebuildScheduled(lg, now); g != nil {
-			c.grants = append(c.grants, g)
-			open = append(open, rg)
-		} else {
+		if lg.standing {
+			rg.UsesLeft = noLimit
+		}
+		g, reason := c.rebuild(lg, now)
+		if g == nil {
 			rg.Reason = reason
 			dropped = append(dropped, rg)
+			continue
 		}
+		c.grants = append(c.grants, g)
+		open = append(open, rg)
+	}
+	// Link each waiting renewal to the grant it renews.
+	for _, id := range order {
+		lg := grants[id]
+		if lg.renewOf == "" || lg.handed || lg.ended {
+			continue
+		}
+		o, n := c.restoredGrant(lg.renewOf), (*grant)(nil)
+		if o != nil {
+			n = c.rebuildRenewal(lg, o, now)
+		}
+		rg := RestoredGrant{Subject: lg.subject, UsesLeft: noLimit}
+		if n == nil {
+			rg.Reason = DropConfig
+			dropped = append(dropped, rg)
+			continue
+		}
+		n.renewOf, o.next = o, n
+		c.grants = append(c.grants, n)
+		open = append(open, rg)
 	}
 	if len(open) > 0 {
 		c.wakeGrants()
@@ -135,33 +236,70 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 	return open, dropped, nil
 }
 
-// countUse counts the use of the request id, if a grant_used of a
-// scheduled grant came for it.
+// handOverLog gives the renewal n the token, the old tokens and the uses
+// of o, and ends o, as handOver does.
+func handOverLog(o, n *logGrant) {
+	n.token, n.old, n.useTimes = o.token, o.old, o.useTimes
+	n.handed, o.ended = true, true
+}
+
+// endOf returns the end of the grant lg, or the zero time if it does not
+// parse, so the grant counts as ended.
+func endOf(lg *logGrant) time.Time {
+	t, _ := time.Parse(time.RFC3339, lg.subject.NotAfter)
+	return t
+}
+
+// decodeHash decodes 64 hex digits into h, and refuses a zero hash.
+func decodeHash(h *[32]byte, s string) bool {
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != len(h) {
+		return false
+	}
+	copy(h[:], b)
+	return *h != [32]byte{}
+}
+
+// countUse counts the use of the request id, if a grant_used came for it.
 func countUse(grants map[string]*logGrant, id string) {
 	for _, g := range grants {
-		if g.using[id] {
-			delete(g.using, id)
-			g.uses--
+		u, ok := g.using[id]
+		if !ok {
+			continue
 		}
+		delete(g.using, id)
+		if !g.standing {
+			g.uses--
+			continue
+		}
+		g.old = append(g.old, g.token)
+		g.token = u.newHash
+		g.useTimes = append(g.useTimes, u.at)
 	}
 }
 
-// rebuildScheduled makes the grant lg again, with the checks of a new
-// request. Core.mu must be held.
-func (c *Core) rebuildScheduled(lg *logGrant, now moment) (*grant, DropReason) {
-	s := lg.subject
-	cfg := c.conf()
-	if _, ok := cfg.Clients[s.Client]; !ok {
-		return nil, DropClient
+// restoredGrant returns the grant with the ID id in c.grants, or nil.
+// Core.mu must be held.
+func (c *Core) restoredGrant(id string) *grant {
+	for _, g := range c.grants {
+		if g.id == id {
+			return g
+		}
 	}
+	return nil
+}
+
+// request returns the request that made lg, for the checks of now.
+func (lg *logGrant) request() (*Request, bool) {
+	s := lg.subject
 	notBefore, err1 := time.Parse(time.RFC3339, s.NotBefore)
 	notAfter, err2 := time.Parse(time.RFC3339, s.NotAfter)
-	if err1 != nil || err2 != nil || lg.uses < 1 || !now.wall.Before(notAfter) {
-		return nil, DropEnded
+	if err1 != nil || err2 != nil {
+		return nil, false
 	}
 	r := &Request{
-		Client: s.Client, Kind: audit.KindPreapprove, Secrets: s.Secrets, Key: s.Key, RemoteUser: s.RemoteUser,
-		Hosts: s.Hosts, Uses: s.Uses, NotBefore: notBefore, NotAfter: notAfter,
+		Client: s.Client, Kind: s.Kind, Secrets: s.Secrets, Key: s.Key, RemoteUser: s.RemoteUser,
+		Hosts: s.Hosts, Uses: s.Uses, NotBefore: notBefore, NotAfter: notAfter, TokenHash: lg.token,
 	}
 	if len(s.ProjectSecrets) > 0 {
 		r.Projects = make(map[string]ProjectSecret, len(s.ProjectSecrets))
@@ -170,14 +308,136 @@ func (c *Core) rebuildScheduled(lg *logGrant, now moment) (*grant, DropReason) {
 			r.Projects[ps.Name] = ProjectSecret{Section: section, Key: key, ID: ps.ID}
 		}
 	}
-	// The start of the check is the approval, so a grant that was made
-	// far ahead passes the limit of how far ahead it may start.
-	p := &pending{start: moment{wall: lg.approved, mono: now.mono}}
-	if !c.check(r, p) || p.plan == nil || c.scheduledCount(s.Client) >= cfg.Preapprove.MaxGrants {
+	for _, text := range s.Windows {
+		w, ok := parseWindowText(text)
+		if !ok {
+			return nil, false
+		}
+		r.Windows = append(r.Windows, w)
+	}
+	return r, true
+}
+
+// rebuild makes the grant lg again, with the checks of a new request.
+// Core.mu must be held.
+func (c *Core) rebuild(lg *logGrant, now moment) (*grant, DropReason) {
+	s := lg.subject
+	cfg := c.conf()
+	if lg.reason != "" {
+		return nil, lg.reason
+	}
+	if _, ok := cfg.Clients[s.Client]; !ok {
+		return nil, DropClient
+	}
+	r, ok := lg.request()
+	if !ok || (!lg.standing && lg.uses < 1) || !now.wall.Before(r.NotAfter) {
+		return nil, DropEnded
+	}
+	g, ok := c.checkAgain(r, lg, now)
+	if !ok {
 		return nil, DropConfig
 	}
-	g := p.plan
-	g.id, g.reqID, g.origin, g.uses, g.approved = s.GrantID, s.RequestID, s, lg.uses, lg.approved
-	g.end.mono = now.mono.Add(g.end.wall.Sub(now.wall))
+	if g.standing() {
+		if c.standingCount(s.Client) >= cfg.Standing.MaxGrants {
+			return nil, DropConfig
+		}
+		return g, ""
+	}
+	if c.scheduledCount(s.Client) >= cfg.Preapprove.MaxGrants {
+		return nil, DropConfig
+	}
+	g.uses = lg.uses
 	return g, ""
+}
+
+// rebuildRenewal makes the renewal lg of the open grant o again. Core.mu
+// must be held.
+func (c *Core) rebuildRenewal(lg *logGrant, o *grant, now moment) *grant {
+	lg.token = o.tokenHash // only for the checks: a renewal has no token until the handover
+	r, ok := lg.request()
+	if !ok || !now.wall.Before(r.NotAfter) {
+		return nil
+	}
+	n, ok := c.checkAgain(r, lg, now)
+	if !ok {
+		return nil
+	}
+	n.tokenHash, n.oldHashes = [32]byte{}, nil
+	n.code, n.start = o.code, time.Time{}
+	return n
+}
+
+// checkAgain runs the checks of a new request on r, with the approval of
+// lg as the time of the check, so a grant that was made far ahead passes
+// the limit of how far ahead it may start. It returns the grant of the
+// checks with the state that the log holds. Core.mu must be held.
+func (c *Core) checkAgain(r *Request, lg *logGrant, now moment) (*grant, bool) {
+	p := &pending{start: moment{wall: lg.approved, mono: now.mono}}
+	if !c.check(r, p) || p.plan == nil || p.plan.standing() != lg.standing {
+		return nil, false
+	}
+	s := lg.subject
+	g := p.plan
+	g.id, g.reqID, g.origin, g.approved = s.GrantID, s.RequestID, s, lg.approved
+	g.end.mono = now.mono.Add(g.end.wall.Sub(now.wall))
+	if !g.standing() {
+		return g, true
+	}
+	g.tokenHash, g.oldHashes = lg.token, slices.Clone(lg.old)
+	if g.oldHashes == nil {
+		g.oldHashes = [][32]byte{}
+	}
+	for _, t := range lg.useTimes {
+		if key, _, in := windowAt(g.windows, t); in {
+			if key.after(g.winKey) {
+				g.winKey, g.winUsed = key, 0
+			}
+			g.winUsed++
+		}
+		g.lastUse = t
+	}
+	g.scanned = now.wall
+	if g.start.After(g.scanned) {
+		g.scanned = g.start
+	}
+	g.warnAt = c.warnTime(g, now.wall)
+	return g, true
+}
+
+// parseWindowText reads a window as windowText writes it, such as "daily
+// 03:00-05:00" or "mon,thu 10:30-11:00". Only that form passes.
+func parseWindowText(text string) (WindowSpec, bool) {
+	days, span, ok := strings.Cut(text, " ")
+	fromText, toText, ok2 := strings.Cut(span, "-")
+	if !ok || !ok2 {
+		return WindowSpec{}, false
+	}
+	var spec WindowSpec
+	if days != "daily" {
+		for _, name := range strings.Split(days, ",") {
+			i := slices.Index(dayNames[:], name)
+			if i < 0 {
+				return WindowSpec{}, false
+			}
+			spec.Days = append(spec.Days, time.Weekday(i))
+		}
+	}
+	var ok3, ok4 bool
+	spec.From, ok3 = parseClock(fromText)
+	spec.To, ok4 = parseClock(toText)
+	w, valid := toWindow(spec)
+	return spec, ok3 && ok4 && valid && windowText(w) == text
+}
+
+// parseClock reads "HH:MM", from 00:00 to 24:00.
+func parseClock(s string) (time.Duration, bool) {
+	if len(s) != 5 || s[2] != ':' {
+		return 0, false
+	}
+	h, err1 := strconv.Atoi(s[:2])
+	m, err2 := strconv.Atoi(s[3:])
+	if err1 != nil || err2 != nil || h < 0 || m < 0 || m > 59 || h > 24 || (h == 24 && m != 0) {
+		return 0, false
+	}
+	return time.Duration(h)*time.Hour + time.Duration(m)*time.Minute, true
 }
