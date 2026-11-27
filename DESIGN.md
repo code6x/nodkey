@@ -2022,9 +2022,11 @@ long grants.
   rules:
   - The whole chain must verify. The head file (section 9) must match:
     its entry is in the log with the same hash, and the log ID is the
-    same. Entries after the head entry are ignored: their `Append` never
-    returned, so an entry added while the broker was stopped brings
-    nothing back.
+    same. A grant-making entry after the head entry makes no grant: its
+    `Append` never returned, so a `decision` added while the broker was
+    stopped brings nothing back, and a standing grant with a `grant_used`
+    after the head is dropped. Other entries after the head, such as a
+    use or an end, still count, so they can only take a grant away.
   - A `grants_reset` entry (section 9) is a barrier. Only the entries
     after the last one are read.
   - A use counts only when its `grant_used` is followed by a `secret_sent`

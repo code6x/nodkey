@@ -120,9 +120,11 @@ type Logger struct {
 	w       file     // writes to f and syncs it
 	journal io.Writer
 	now     func() time.Time
-	last    Anchor // the last entry; seq 0 and a zero hash when there is none
-	id      LogID  // the SHA-256 of line 1; zero while the log has no newline
-	err     error  // set after a failed write, sync or journal write
+	path    string                 // the path of the log, for its head file
+	syncDir func(dir string) error // syncs the directory of the log
+	last    Anchor                 // the last entry; seq 0 and a zero hash when there is none
+	id      LogID                  // the SHA-256 of line 1; zero while the log has no newline
+	err     error                  // set after a failed write, sync or journal write
 	// found is the log_recovered entry that Open found as the last entry
 	// of the log, if any (see LastRecovery). It never changes after Open.
 	found *Recovery
@@ -198,7 +200,7 @@ func open(path string, opts Options, h hooks) (*Logger, error) {
 		}
 		return nil, fmt.Errorf("audit log: %w", err)
 	}
-	l := &Logger{f: f, w: h.wrap(f), journal: opts.Journal, now: h.now}
+	l := &Logger{f: f, w: h.wrap(f), journal: opts.Journal, now: h.now, path: path, syncDir: h.syncDir}
 	rec, recovered, err := l.start(path, self, h)
 	if err != nil {
 		_ = f.Close() // Open failed; a close error adds nothing
@@ -507,6 +509,14 @@ func (l *Logger) append(ev Event, afterTorn bool) (Anchor, error) {
 	// The anchor goes to the journal only when the entry is on disk.
 	if _, err := io.WriteString(l.journal, JournalPrefix+a.String()+" "+l.id.String()+"\n"); err != nil {
 		return Anchor{}, l.fail(fmt.Errorf("audit log: journal: %w", err))
+	}
+	// The head file names the entry only when it is on disk. If the write
+	// fails, the entry is after the head, so it makes no grant at the next
+	// start, and every later Append fails.
+	if makesGrant(ev) {
+		if err := writeHead(l.path, Head{LogID: l.id, Anchor: a}, l.syncDir); err != nil {
+			return Anchor{}, l.fail(fmt.Errorf("audit log: head file: %w", err))
+		}
 	}
 	return a, nil
 }
