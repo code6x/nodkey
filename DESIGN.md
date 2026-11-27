@@ -2135,8 +2135,9 @@ a bad value is an error, and that error drops every grant.
 
 **The head file.** `audit.jsonl.head` is next to the log, mode `0600`. It
 holds the log ID, the `seq` and the hash of the last grant-making entry:
-an approving or renewing `decision` of kind `preapprove` or `standing`, or
-a standing `grant_used`. The broker writes it after the log sync: write a
+an approving or renewing `decision` of kind `preapprove` or `standing`,
+a standing `grant_used`, or a `grants_reset` (so the next start matches
+the barrier). The broker writes it after the log sync: write a
 temporary file, fsync, rename, then sync the directory. At start the head
 entry must be in the log with the same hash. A log with another log ID, or
 one that is shorter than the head, rebuilds nothing. Root can rewrite both

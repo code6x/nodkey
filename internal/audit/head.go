@@ -33,14 +33,16 @@ type Head struct {
 func (h Head) String() string { return h.Anchor.String() + " " + h.LogID.String() }
 
 // makesGrant reports whether ev is a grant-making entry: an approving or
-// renewing decision of kind preapprove or standing, or a use of a standing
-// grant, which makes its next token.
+// renewing decision of kind preapprove or standing, a use of a standing
+// grant, which makes its next token, or a grants_reset barrier.
 func makesGrant(ev Event) bool {
 	switch e := ev.(type) {
 	case Decision:
 		return e.Kind.IsPreapprove() && (e.Answer == AnswerApproveOnce || e.Answer == AnswerRenew)
 	case GrantUsed:
 		return e.Via == ViaStanding
+	case GrantsReset:
+		return true // the head names the barrier, so the next start matches it
 	}
 	return false
 }
