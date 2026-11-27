@@ -554,29 +554,52 @@ func TestScheduledGrantEndsByTime(t *testing.T) {
 	})
 }
 
-// TestScheduledGrantStops: a stop of the core ends every scheduled grant
-// with cause stopped. A new core has none of them.
+// allowScheduled lets a scheduled grant for github-token, in a login env.
+func allowScheduled(cfg *config.Broker) {
+	s := cfg.Secrets["github-token"]
+	s.Rule.Preapprove = true
+	cfg.Secrets["github-token"] = s
+}
+
+// TestScheduledGrantStops: a stop of the core writes no entry for a
+// scheduled grant and does not edit its message as ended: the next start
+// opens it again from the audit log (DESIGN.md section 8). A login
+// pre-approval is the one grant that a stop ends, with cause stopped.
 func TestScheduledGrantStops(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		e := preEnv(t)
 		var rec endedRecorder
 		e.core.OnGrantEnded(rec.add)
-		a := e.grant(preSecrets("laptop", 3, 0, time.Hour, "github-token"), 1)
-		b := e.grant(preKey("laptop", "web", "deploy", 1, time.Hour, 2*time.Hour, "web-1"), 2)
+		e.grant(preSecrets("laptop", 3, 0, time.Hour, "github-token"), 1)
+		e.grant(preKey("laptop", "web", "deploy", 1, time.Hour, 2*time.Hour, "web-1"), 2)
 		e.stop()
-		got := rec.all()
-		if len(got) != 2 {
-			t.Fatalf("ended entries %+v", got)
+		e.core.FlushMessages()
+		if got := rec.all(); len(got) != 0 {
+			t.Fatalf("ended entries %+v; a stop must write none for scheduled grants", got)
 		}
-		for _, ev := range got {
-			if ev.Cause != audit.EndStopped || (ev.GrantID != a.GrantID && ev.GrantID != b.GrantID) {
-				t.Errorf("entry %+v", ev)
+		for n := 1; n <= 2; n++ {
+			for _, u := range e.updates(n) {
+				if u.Ending.GrantEnd != "" {
+					t.Errorf("message %d was edited as ended: %+v", n, u.Ending)
+				}
 			}
 		}
-		// A restart: a new core has no grant, and asks.
-		e2 := preEnv(t)
+	})
+	synctest.Test(t, func(t *testing.T) {
+		e := loginEnv(t, allowScheduled)
+		var rec endedRecorder
+		e.core.OnGrantEnded(rec.add)
+		a := e.grant(webPre(e, "laptop", itemA), 1)
+		e.grant(preSecrets("laptop", 3, 0, time.Hour, "github-token"), 2)
+		e.stop()
+		got := rec.all()
+		if len(got) != 1 || got[0].Cause != audit.EndStopped || got[0].GrantID != a.GrantID {
+			t.Fatalf("ended entries %+v; want only the login pre-approval, stopped", got)
+		}
+		// A restart: the core keeps no login pre-approval in memory.
+		e2 := loginEnv(t)
 		defer e2.stop()
-		e2.needsMessage(secretsReq("laptop", "github-token"), 1)
+		e2.needsMessage(webLogin(e2, "laptop", itemA), 1)
 	})
 }
 

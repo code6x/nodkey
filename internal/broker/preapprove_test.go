@@ -305,8 +305,8 @@ func TestPreapproveCancel(t *testing.T) {
 }
 
 // TestPreapproveEndsByItself: at its end the grant writes grant_ended with
-// the uses that were left. A stop of the broker writes the entry with
-// cause stopped.
+// the uses that were left. A stop of the broker writes no entry for a grant
+// that is still open: the next start opens it again from the log.
 func TestPreapproveEndsByItself(t *testing.T) {
 	e := newEnv(t, envOptions{config: preapproveOn})
 	c := e.httpClient("laptop")
@@ -334,8 +334,12 @@ func TestPreapproveEndsByItself(t *testing.T) {
 	case <-time.After(waitLimit):
 		t.Fatal("Run did not return")
 	}
-	events = e.audit.waitFor(t, before+1)[before:]
-	mustEvents(t, events, "grant_ended:stopped")
+	if got := e.audit.all()[before:]; len(got) != 0 {
+		t.Errorf("a stop wrote %d entries for a scheduled grant: %+v", len(got), got)
+	}
+	if sent := e.notices.wentOut(); len(sent) != 0 {
+		t.Errorf("a stop sent a notice for a scheduled grant: %q", sent)
+	}
 }
 
 // TestPreapproveAuditFailure: when the decision entry cannot be written,

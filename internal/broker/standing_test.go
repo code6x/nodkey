@@ -182,8 +182,9 @@ func TestStandingMaxGrants(t *testing.T) {
 	}
 }
 
-// TestStandingRevokeAndStop: Revoke ends a
-// standing grant; a stop drops one and lists it in the stop notice.
+// TestStandingRevokeAndStop: Revoke ends a standing grant. A stop writes no
+// entry for one that is still open, sends no notice about it, and the
+// grant is not listed as dropped: the next start opens it again.
 func TestStandingRevokeAndStop(t *testing.T) {
 	e := newEnv(t, envOptions{config: standingOn})
 	c := e.httpClient("laptop")
@@ -197,20 +198,17 @@ func TestStandingRevokeAndStop(t *testing.T) {
 		t.Errorf("entry %+v", end)
 	}
 
-	kept := e.preapprove(c, standReq("npm-token"), 2)
+	e.preapprove(c, standReq("npm-token"), 2)
+	before = len(e.audit.all())
 	e.stopAndWait()
-	sent := e.notices.wentOut()
-	if len(sent) != 1 || !strings.Contains(sent[0], kept.ID+": laptop, npm-token") || strings.Contains(sent[0], revoked.ID) {
-		t.Errorf("the stop notice: %q", sent)
+	if sent := e.notices.wentOut(); len(sent) != 0 {
+		t.Errorf("the stop sent a notice: %q", sent)
 	}
-	var stopped bool
-	for _, ev := range e.audit.all() {
-		if g, ok := ev.(audit.GrantEnded); ok && g.GrantID == kept.ID && g.Cause == audit.EndStopped {
-			stopped = true
-		}
+	if tries, _ := e.notices.tried(); len(tries) != 0 {
+		t.Errorf("the stop tried a notice: %q", tries)
 	}
-	if !stopped {
-		t.Error("no grant_ended:stopped for the standing grant")
+	if got := e.audit.all()[before:]; len(got) != 0 {
+		t.Errorf("the stop wrote entries for a standing grant: %+v", got)
 	}
 }
 
