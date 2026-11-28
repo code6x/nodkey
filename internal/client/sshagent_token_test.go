@@ -13,10 +13,11 @@ import (
 	"sync"
 	"testing"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/transport"
-	"golang.org/x/crypto/ssh"
 )
 
 // tokenBroker is a fake broker that signs with signer when the request
