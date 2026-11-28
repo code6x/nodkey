@@ -430,7 +430,7 @@ func (c *Core) retryHold(u msgUpdate) {
 func (c *Core) updateMessage(ctx context.Context, u msgUpdate) bool {
 	ectx, cancel := context.WithTimeout(ctx, endTimeout)
 	defer cancel()
-	if err := c.approver.End(ectx, u.msg, u.prompt, u.ending); err != nil {
+	if err := c.endMessage(ectx, u); err != nil {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -456,6 +456,15 @@ func (c *Core) updateMessage(ctx context.Context, u msgUpdate) bool {
 			slog.String("request_id", n.RequestID), slog.Any("error", err))
 	}
 	return true
+}
+
+// endMessage updates the message of u. A u with no message, the notice of
+// a grant from before a restart, has nothing to update.
+func (c *Core) endMessage(ctx context.Context, u msgUpdate) error {
+	if u.msg == "" {
+		return nil
+	}
+	return c.approver.End(ctx, u.msg, u.prompt, u.ending)
 }
 
 // deliverEnded gives the queued entries to the function of OnGrantEnded.

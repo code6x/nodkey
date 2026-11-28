@@ -2047,7 +2047,12 @@ long grants.
   does not trust the bad log again.
 - **Windows missed while stopped** raise the missed-window alarm for a
   standing grant and the "not used" notice for a scheduled grant, so a gap
-  is seen.
+  is seen. The stop time is the time of the last entry. A rebuilt standing
+  grant is scanned for missed windows from then, with the uses of the log,
+  so a window used before the stop raises nothing. A scheduled grant whose
+  end passed while the broker was stopped, with uses left, gets the "not
+  used" notice; it holds no claimed text. The log has no short code, so a
+  rebuilt grant gets a new one for its alarms and notices.
 - **One notice after start** lists the grants that are open again and the
   grants that were dropped, each with the reason. Dropped grants get a
   `grant_ended` entry after `broker_started`.

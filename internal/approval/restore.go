@@ -178,6 +178,13 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 		}
 	}
 	now := c.now()
+	// since is when the broker stopped: the time of the last entry. The
+	// windows and ends between it and now passed while the broker was
+	// stopped (DESIGN.md section 8, "Windows missed while stopped").
+	since := now.wall
+	if n := len(recs); n > 0 && recs[n-1].Time.Before(since) {
+		since = recs[n-1].Time
+	}
 	for _, id := range order {
 		lg := grants[id]
 		if o := grants[lg.renewOf]; o != nil && !lg.handed && !lg.ended {
@@ -201,10 +208,11 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 		if lg.standing {
 			rg.UsesLeft = noLimit
 		}
-		g, reason := c.rebuild(lg, now)
+		g, reason := c.rebuild(lg, now, since)
 		if g == nil {
 			rg.Reason = reason
 			dropped = append(dropped, rg)
+			c.queueNotUsed(lg, reason)
 			continue
 		}
 		c.grants = append(c.grants, g)
@@ -230,10 +238,33 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 		c.grants = append(c.grants, n)
 		open = append(open, rg)
 	}
-	if len(open) > 0 {
+	if len(open) > 0 || len(c.msgQueue) > 0 {
 		c.wakeGrants()
 	}
 	return open, dropped, nil
+}
+
+// queueNotUsed queues the "not used" notice of the scheduled grant lg,
+// when its end passed while the broker was stopped and it had uses left,
+// as at an end while the broker runs. Its message is not known, so only
+// the notice is sent. It holds no claimed text. Core.mu must be held.
+func (c *Core) queueNotUsed(lg *logGrant, reason DropReason) {
+	r, ok := lg.request()
+	if reason != DropEnded || lg.standing || lg.uses < 1 || !ok || lg.uses > r.Uses {
+		return
+	}
+	s := lg.subject
+	code, err := newCode(c.random)
+	if err != nil {
+		return // the start notice lists the grant anyway
+	}
+	loc := c.clock.Wall().Location()
+	p := Prompt{
+		RequestID: s.RequestID, ShortCode: code, Kind: s.Kind, Client: s.Client,
+		Secrets: slices.Clone(s.Secrets), Key: s.Key, Hosts: slices.Clone(s.Hosts), RemoteUser: s.RemoteUser,
+		Uses: r.Uses, From: r.NotBefore.In(loc), Until: r.NotAfter.In(loc),
+	}
+	c.msgQueue = append(c.msgQueue, msgUpdate{prompt: p, ending: Ending{UsesLeft: lg.uses}, notice: true, grantID: s.GrantID})
 }
 
 // handOverLog gives the renewal n the token, the old tokens and the uses
@@ -320,7 +351,7 @@ func (lg *logGrant) request() (*Request, bool) {
 
 // rebuild makes the grant lg again, with the checks of a new request.
 // Core.mu must be held.
-func (c *Core) rebuild(lg *logGrant, now moment) (*grant, DropReason) {
+func (c *Core) rebuild(lg *logGrant, now moment, since time.Time) (*grant, DropReason) {
 	s := lg.subject
 	cfg := c.conf()
 	if lg.reason != "" {
@@ -333,7 +364,7 @@ func (c *Core) rebuild(lg *logGrant, now moment) (*grant, DropReason) {
 	if !ok || (!lg.standing && lg.uses < 1) || !now.wall.Before(r.NotAfter) {
 		return nil, DropEnded
 	}
-	g, ok := c.checkAgain(r, lg, now)
+	g, ok := c.checkAgain(r, lg, now, since)
 	if !ok {
 		return nil, DropConfig
 	}
@@ -358,7 +389,7 @@ func (c *Core) rebuildRenewal(lg *logGrant, o *grant, now moment) *grant {
 	if !ok || !now.wall.Before(r.NotAfter) {
 		return nil
 	}
-	n, ok := c.checkAgain(r, lg, now)
+	n, ok := c.checkAgain(r, lg, now, now.wall)
 	if !ok {
 		return nil
 	}
@@ -370,8 +401,9 @@ func (c *Core) rebuildRenewal(lg *logGrant, o *grant, now moment) *grant {
 // checkAgain runs the checks of a new request on r, with the approval of
 // lg as the time of the check, so a grant that was made far ahead passes
 // the limit of how far ahead it may start. It returns the grant of the
-// checks with the state that the log holds. Core.mu must be held.
-func (c *Core) checkAgain(r *Request, lg *logGrant, now moment) (*grant, bool) {
+// checks with the state that the log holds. A standing grant is scanned
+// for missed windows from since on. Core.mu must be held.
+func (c *Core) checkAgain(r *Request, lg *logGrant, now moment, since time.Time) (*grant, bool) {
 	p := &pending{start: moment{wall: lg.approved, mono: now.mono}}
 	if !c.check(r, p) || p.plan == nil || p.plan.standing() != lg.standing {
 		return nil, false
@@ -379,6 +411,11 @@ func (c *Core) checkAgain(r *Request, lg *logGrant, now moment) (*grant, bool) {
 	s := lg.subject
 	g := p.plan
 	g.id, g.reqID, g.origin, g.approved = s.GrantID, s.RequestID, s, lg.approved
+	// The log has no short code: the grant gets a new one, for its alarms
+	// and notices. Without one, the approver refuses them; that is logged.
+	if code, err := newCode(c.random); err == nil {
+		g.code = code
+	}
 	g.end.mono = now.mono.Add(g.end.wall.Sub(now.wall))
 	if !g.standing() {
 		return g, true
@@ -387,16 +424,25 @@ func (c *Core) checkAgain(r *Request, lg *logGrant, now moment) (*grant, bool) {
 	if g.oldHashes == nil {
 		g.oldHashes = [][32]byte{}
 	}
+	// The windows that ended since since are scanned at the first wake:
+	// one that ended while the broker was stopped, with no use, raises
+	// the missed-window alarm.
+	g.scanned = since
 	for _, t := range lg.useTimes {
-		if key, _, in := windowAt(g.windows, t); in {
+		if key, left, in := windowAt(g.windows, t); in {
 			if key.after(g.winKey) {
 				g.winKey, g.winUsed = key, 0
 			}
 			g.winUsed++
+			if t.Add(left).After(since) {
+				if g.used == nil {
+					g.used = make(map[windowKey]bool)
+				}
+				g.used[key] = true
+			}
 		}
 		g.lastUse = t
 	}
-	g.scanned = now.wall
 	if g.start.After(g.scanned) {
 		g.scanned = g.start
 	}
