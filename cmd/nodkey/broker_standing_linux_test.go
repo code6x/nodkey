@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -157,5 +158,91 @@ func TestBrokerStandingKeyThroughTelegram(t *testing.T) {
 	}
 	if got := eventNames(e.auditEntries()); !slices.Contains(got, "grant_alarm:old_token") || !slices.Contains(got, "signed") {
 		t.Errorf("the audit log: %q", got)
+	}
+}
+
+// TestBrokerStandingKeyAlarmsThroughTelegram: the two other alarms of a key
+// grant reach the fake Telegram and name the key: a second signature in a
+// window of one use ends the grant, and a valid token outside the windows
+// is denied.
+func TestBrokerStandingKeyAlarmsThroughTelegram(t *testing.T) {
+	t.Parallel()
+	e := startListening(t, brokerOptions{standing: true})
+	e.stderr.wait(t, lineListening)
+	c := e.httpClient()
+	now := time.Now()
+	if now.Hour() == 23 && now.Minute() >= 58 {
+		t.Skip("too close to midnight, outside the windows")
+	}
+	allDay := []api.Window{
+		{Kind: api.WindowDaily, From: "00:00", To: "08:00"},
+		{Kind: api.WindowDaily, From: "08:00", To: "16:00"},
+		{Kind: api.WindowDaily, From: "16:00", To: "23:59"},
+	}
+	// One hour that is at least two hours away from now, in local time.
+	h := (now.Hour() + 12) % 24
+	if h == 23 {
+		h = 11
+	}
+	later := []api.Window{{Kind: api.WindowDaily, From: fmt.Sprintf("%02d:00", h), To: fmt.Sprintf("%02d:00", h+1)}}
+	preapprove := func(windows []api.Window) string {
+		a := e.approve(c, api.PathPreapprove, api.PreapproveRequest{
+			Key: "deploy", User: "deploy", Hosts: []string{"web-1"}, Uses: 1, Reason: "job nightly-deploy",
+			From:    now.Add(-time.Minute).UTC().Format(time.RFC3339),
+			Until:   now.AddDate(0, 0, 30).UTC().Format(time.RFC3339),
+			Windows: windows,
+		})
+		mustStatus(t, a, http.StatusOK)
+		made, err := api.ReadAnswer[api.PreapproveAnswer](strings.NewReader(string(a.body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return made.GrantToken
+	}
+	sign := func(token string) brokerAnswer {
+		req, _ := e.signRequest("web-1", "deploy")
+		return e.postWithToken(c, api.PathSign, req, token)
+	}
+
+	// A second signature in the window: over the uses, the grant ends.
+	tok0 := preapprove(allDay)
+	first := sign(tok0)
+	mustStatus(t, first, http.StatusOK)
+	ans, err := api.ReadAnswer[api.SignAnswer](strings.NewReader(string(first.body)))
+	if err != nil || ans.GrantToken == "" {
+		t.Fatalf("no new token in the answer: %v", err)
+	}
+	mustStatus(t, sign(string(ans.GrantToken)), http.StatusForbidden)
+	body := e.tg.waitAlert("more uses than allowed")
+	if !strings.Contains(body, "The grant is ended") || !strings.Contains(body, "key: deploy") {
+		t.Errorf("the alarm: %s", body)
+	}
+
+	// A valid token outside the windows: denied, the grant stays.
+	asked := e.tg.asked()
+	tokLater := preapprove(later)
+	asked = e.tg.asked() - asked // the tap of the preapprove
+	mustStatus(t, sign(tokLater), http.StatusForbidden)
+	body = e.tg.waitAlert("outside the windows")
+	if !strings.Contains(body, "the grant stays") || !strings.Contains(body, "key: deploy") {
+		t.Errorf("the alarm: %s", body)
+	}
+	if asked != 1 {
+		t.Errorf("the person was asked %d times for one preapprove", asked)
+	}
+
+	e.signal(syscall.SIGINT)
+	e.mustExit(exitOK)
+	texts := e.tg.bodies() + e.stderr.text() + strings.Join(eventNames(e.auditEntries()), " ")
+	for _, tok := range []string{tok0, string(ans.GrantToken), tokLater} {
+		if strings.Contains(texts, tok) {
+			t.Error("a grant token is in the calls to Telegram, the journal or the audit log")
+		}
+	}
+	got := eventNames(e.auditEntries())
+	for _, want := range []string{"grant_alarm:over_uses", "grant_ended:alarm", "grant_alarm:outside_window"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("no %s entry in %q", want, got)
+		}
 	}
 }
