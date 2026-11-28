@@ -156,32 +156,11 @@ func (rq *request) startedGrant(ctx context.Context, res *approval.Result, stand
 }
 
 // checkStanding checks the names, the times and the windows of a request
-// for a standing grant: secrets only, each in the config and allowed for
-// client. From and until are read as for a scheduled grant. The approval
-// core checks the rules, the limits and the windows against [standing].
+// for a standing grant: secrets, or a key with a remote user and hosts, as
+// for a scheduled grant (checkPreapprove). The approval core checks the
+// rules, the limits and the windows against [standing].
 func (s *Service) checkStanding(client string, req *api.PreapproveRequest) (sub audit.Subject, from, until time.Time, specs []approval.WindowSpec, ok bool) {
-	ok = req.Uses >= 1 && req.Uses <= maxPreapproveUses && len(req.Secrets) > 0 &&
-		req.Key == "" && req.User == "" && len(req.Hosts) == 0
-	var err1, err2 error
-	from, err1 = api.ParseTime(req.From, time.Local)
-	until, err2 = api.ParseTime(req.Until, time.Local)
-	if err1 != nil || err2 != nil {
-		ok = false
-	}
-	seen := make(map[string]bool, len(req.Secrets))
-	for _, name := range req.Secrets {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		if !secretAllowed(s.view().cfg, client, name) {
-			ok = false
-			continue
-		}
-		if _, isProject, _ := config.ParseSecretName(name); !isProject {
-			sub.Secrets = append(sub.Secrets, name) // a project secret: once it is found
-		}
-	}
+	sub, from, until, ok = s.checkPreapprove(client, req)
 	for _, w := range req.Windows {
 		spec, valid := windowSpec(w)
 		ok = ok && valid

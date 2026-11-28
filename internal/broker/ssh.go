@@ -71,13 +71,32 @@ func (rq *request) sign(ctx context.Context, r *http.Request) {
 	// core.
 	rq.pre.Hosts = []string{login.Host()}
 	rq.pre.HostKey, rq.pre.RemoteUser = login.HostKeyFingerprint(), login.RemoteUser()
-	res, rc, ok := rq.decide(ctx, &approval.Request{
-		Client: rq.client, Kind: audit.KindSSHLogin, Key: login.KeyName(), HostKey: login.HostKey(),
-		RemoteUser: login.RemoteUser(), Claim: cl,
-	})
+	var res *approval.Result
+	var rc receipt
+	if tokens := r.Header.Values(api.GrantTokenHeader); len(tokens) > 0 {
+		// A signature with a token never asks the person: one signature is
+		// one use of the standing grant (DESIGN.md section 8, "An SSH key").
+		res, rc, ok = rq.decideStanding(ctx, approval.StandingRequest{
+			Client: rq.client, Key: login.KeyName(), HostKey: login.HostKey(), RemoteUser: login.RemoteUser(), Claim: cl,
+		}, tokens)
+	} else {
+		res, rc, ok = rq.decide(ctx, &approval.Request{
+			Client: rq.client, Kind: audit.KindSSHLogin, Key: login.KeyName(), HostKey: login.HostKey(),
+			RemoteUser: login.RemoteUser(), Claim: cl,
+		})
+	}
 	if !ok {
 		return
 	}
+	// A standing grant has a new token now. If nothing is answered, the
+	// client never gets it, so the use is undone and the old token stays
+	// valid (DESIGN.md section 8).
+	handed := false
+	defer func() {
+		if !handed {
+			res.Undo()
+		}
+	}()
 	res.StartGrants()
 	// A handler stops before a signature when its context has ended.
 	if ctx.Err() != nil {
@@ -94,10 +113,15 @@ func (rq *request) sign(ctx context.Context, r *http.Request) {
 	if !rq.stillAllowed(res.Config(), nil, key.Name(), login.HostKey().Marshal()) {
 		return
 	}
+	ans := api.SignAnswer{Format: sig.Format, Blob: sig.Blob}
+	if tok, rotated := res.NewToken(); rotated {
+		ans.GrantToken = api.HiddenToken(tok.Reveal())
+	}
 	if !rq.handOut(rc, audit.Signed{Subject: rq.sub}) {
 		return
 	}
-	rq.answerJSON(api.SignAnswer{Format: sig.Format, Blob: sig.Blob})
+	handed = true
+	rq.answerJSON(ans)
 }
 
 // keyFor returns the key whose public key is exactly blob, among the keys
