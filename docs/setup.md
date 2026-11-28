@@ -975,8 +975,9 @@ yet (decided 2026-11-28, issue #127). So these points are not proven:
   the identity may not read, a missing secret or a rate limit: the broker
   maps each of them to a denial with a fixed text, but only the fake checks
   that. If the real server answers in another form, the request is still
-  denied, but the log shows a general failure, and no rate-limit alert
-  comes to your phone;
+  denied, but the log shows another fixed text (a refused login, a
+  refused read, or a general failure), and no rate-limit alert comes to
+  your phone;
 - the rate limits of the free plan.
 
 Before you rely on it, run check 17 of
