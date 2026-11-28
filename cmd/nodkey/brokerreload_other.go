@@ -2,7 +2,10 @@
 
 package main
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
 
 // noFollow is 0 here: the broker runs only on Linux.
 const noFollow = 0
@@ -13,6 +16,9 @@ func readReloadStatus(string) (reloadStatus, uint32, error) {
 	return reloadStatus{}, 0, errReloadLinux
 }
 
-func signalBroker(reloadStatus, uint32) error { return errReloadLinux }
+func signalBroker(reloadStatus, uint32, brokerSignal) error { return errReloadLinux }
+
+// notifyRevokeAll does nothing here: the broker runs only on Linux.
+func notifyRevokeAll(chan<- os.Signal) {}
 
 func ownStart() uint64 { return 0 }

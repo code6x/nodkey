@@ -120,7 +120,7 @@ It logs to stderr, which systemd keeps in the journal, with the anchors
 of the audit log. SIGTERM or SIGINT stops it. So does a failed write to
 stderr, such as after its reader is gone: it stops with exit code 1.
 SIGHUP reloads the config without a restart; see "nodkey broker reload
---help". To check a config without a start, see "nodkey broker check
+--help". SIGUSR1 ends every grant; see "nodkey revoke --help". To check a config without a start, see "nodkey broker check
 --help". To list the changes between two configs by what they mean, see
 "nodkey broker config-diff --help".
 
@@ -177,7 +177,12 @@ func runBroker(args []string, stdout, stderr io.Writer) int {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	return serveBroker(ctx, *path, watch, log, hup)
+	// SIGUSR1 asks to end every grant (revokeall.go). It must never stop
+	// the broker either.
+	usr1 := make(chan os.Signal, 1)
+	notifyRevokeAll(usr1)
+	defer signal.Stop(usr1)
+	return serveBroker(ctx, *path, watch, log, hup, usr1)
 }
 
 // stderrWatch passes each write on to w, and closes failed at the first
@@ -215,7 +220,7 @@ func printBrokerUsage(w io.Writer) {
 // ends (a signal) or a part stops, then stops the broker and returns the
 // exit code (DESIGN.md section 15).
 func serveBroker(ctx context.Context, path string, stderr *stderrWatch, log *slog.Logger,
-	hup <-chan os.Signal,
+	hup, usr1 <-chan os.Signal,
 ) (code int) {
 	defer func() {
 		// The runtime would print the panic value, and no line of the
@@ -225,7 +230,7 @@ func serveBroker(ctx context.Context, path string, stderr *stderrWatch, log *slo
 			code = exitFailure
 		}
 	}()
-	b := &brokerParts{log: log, stderr: stderr, stderrFailed: stderr.failed, hup: hup, path: path,
+	b := &brokerParts{log: log, stderr: stderr, stderrFailed: stderr.failed, hup: hup, usr1: usr1, path: path,
 		procStart: ownStart()}
 	bySignal := false
 	switch err := b.start(ctx, path); {
@@ -307,6 +312,15 @@ type brokerParts struct {
 	path      string
 	reloads   uint64
 	procStart uint64
+
+	// usr1 gets SIGUSR1: end every grant (revokeall.go). revokes counts
+	// them, and revoked is how many grants the last one ended.
+	usr1      <-chan os.Signal
+	revokes   uint64
+	revoked   int
+	revokeErr string
+	// status is the last content of the status file.
+	status reloadStatus
 
 	// stopCheck ends the check for a newer release; checkDone is closed
 	// when the check returned. Both are nil when the check is off.
@@ -687,12 +701,15 @@ func (b *brokerParts) serve(srv *transport.Server, ln net.Listener) {
 }
 
 // wait waits until ctx ends, the approver stops, the server stops, or a
-// write to stderr fails. On SIGHUP it reloads the config, and waits again. It reports whether a signal asked to stop.
+// write to stderr fails. On SIGHUP it reloads the config, on SIGUSR1 it
+// ends every grant, and waits again. It reports whether a signal asked to stop.
 func (b *brokerParts) wait(ctx context.Context) bool {
 	for {
 		select {
 		case <-b.hup:
 			b.reload(b.path)
+		case <-b.usr1:
+			b.revokeAll()
 		case <-ctx.Done():
 			b.log.Info("nodkey broker: stopping, as a signal asked")
 			return true

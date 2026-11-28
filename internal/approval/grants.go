@@ -607,6 +607,28 @@ func (c *Core) revoke(a Answer) error {
 	return nil
 }
 
+// RevokeAll ends every grant at once, of every client and kind: the
+// grants of "Approve N min" and of nodkey ssh-grant, the scheduled grants,
+// the login pre-approvals, the standing grants and the renewals that
+// wait. It is the emergency stop of nodkey revoke --all and of the "Revoke
+// all" button (DESIGN.md section 8): since a restart keeps scheduled and
+// standing grants, a restart is no stop any more. Each scheduled or
+// standing grant gets its grant_ended entry with cause revoked, through
+// the function of OnGrantEnded, and its message loses the Revoke button.
+// A window grant has no entry. A request that waits for a tap still waits.
+// It returns how many grants ended.
+func (c *Core) RevokeAll() int {
+	c.mu.Lock()
+	n := 0
+	c.queueEnded(c.endWhere(func(*grant) audit.EndCause {
+		n++
+		return audit.EndRevoked
+	}))
+	c.mu.Unlock()
+	c.deliverEnded()
+	return n
+}
+
 // CancelGrant ends the scheduled or standing grant id of client at the client's
 // request, without a tap. It returns the audit entry, which the caller
 // writes. It reports false for an ID that no grant of client has, and the

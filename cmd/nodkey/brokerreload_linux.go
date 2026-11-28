@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -73,11 +74,16 @@ func readReloadStatus(path string) (reloadStatus, uint32, error) {
 	return st, sys.Uid, nil
 }
 
-// signalBroker sends SIGHUP to the broker of st, after it checked that the
+// signalBroker sends SIGHUP (sigReload) or SIGUSR1 (sigRevokeAll) to the
+// broker of st, after it checked that the
 // process is the one that wrote the status file: it runs as uid, the owner
 // of the file, and it has the same start time. So a stale file never makes
 // the signal go to another process.
-func signalBroker(st reloadStatus, uid uint32) error {
+func signalBroker(st reloadStatus, uid uint32, what brokerSignal) error {
+	sig, name, cmd := syscall.SIGHUP, "SIGHUP", "nodkey broker reload"
+	if what == sigRevokeAll {
+		sig, name, cmd = syscall.SIGUSR1, "SIGUSR1", "nodkey revoke --all"
+	}
 	fi, err := os.Stat("/proc/" + strconv.Itoa(st.PID))
 	start, serr := procStart(st.PID)
 	sys, ok := statOwner(fi)
@@ -85,12 +91,14 @@ func signalBroker(st reloadStatus, uid uint32) error {
 		return errors.New("the broker that wrote the status file does not run any more; start it " +
 			"(systemctl start nodkey), as root")
 	}
-	if err := syscall.Kill(st.PID, syscall.SIGHUP); err != nil {
-		return fmt.Errorf("cannot send SIGHUP to the broker: %w; run nodkey broker reload as root, or as the "+
-			"broker's user", err)
+	if err := syscall.Kill(st.PID, sig); err != nil {
+		return fmt.Errorf("cannot send %s to the broker: %w; run %s as root, or as the broker's user", name, err, cmd)
 	}
 	return nil
 }
+
+// notifyRevokeAll makes SIGUSR1 go to ch: nodkey revoke --all.
+func notifyRevokeAll(ch chan<- os.Signal) { signal.Notify(ch, syscall.SIGUSR1) }
 
 // statOwner returns the owner of fi.
 func statOwner(fi os.FileInfo) (uint32, bool) {
