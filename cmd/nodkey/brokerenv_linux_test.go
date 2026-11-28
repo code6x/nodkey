@@ -347,6 +347,11 @@ type brokerOptions struct {
 	updatesOff bool
 	// standing adds [standing] and standing = true for github-token.
 	standing bool
+	// preapprove adds preapprove = true for github-token.
+	preapprove bool
+	// window makes the rule of github-token ask = "window", with a window
+	// of 10 minutes.
+	window bool
 	// ntfy, if set, gives the broker [ntfy] with this fake server instead
 	// of [telegram].
 	ntfy *fakeNtfy
@@ -520,6 +525,13 @@ hosts = ["db-1"]
 	}
 	if opts.standing {
 		cfg = strings.Replace(cfg, "[secret.github-token]\n", "[secret.github-token]\nstanding = true\n", 1) + "\n[standing]\n"
+	}
+	if opts.preapprove {
+		cfg = strings.Replace(cfg, "[secret.github-token]\n", "[secret.github-token]\npreapprove = true\n", 1)
+	}
+	if opts.window {
+		// The first ask = "always" is the one of [secret.github-token].
+		cfg = strings.Replace(cfg, "ask = \"always\"\n", "ask = \"window\"\nwindow = \"10m\"\n", 1)
 	}
 	if opts.updatesOff {
 		cfg += "\n[updates]\ncheck = false\n"
@@ -848,6 +860,14 @@ func (e *brokerEnv) postWithHeader(c *http.Client, path string, body any, name, 
 // message at the fake Telegram, and returns the answer.
 func (e *brokerEnv) approve(c *http.Client, path string, body any) brokerAnswer {
 	e.t.Helper()
+	return e.answerWith(c, path, body, "o:")
+}
+
+// answerWith sends a request that needs a tap, taps the button with the
+// data prefix ("o:", "w:" or "d:") on its message at the fake Telegram,
+// and returns the answer.
+func (e *brokerEnv) answerWith(c *http.Client, path string, body any, prefix string) brokerAnswer {
+	e.t.Helper()
 	n := e.tg.asked()
 	res := make(chan brokerAnswer, 1)
 	go func() { res <- e.post(c, path, body) }()
@@ -856,7 +876,7 @@ func (e *brokerEnv) approve(c *http.Client, path string, body any) brokerAnswer 
 	// Then the phone shows "Not ready yet. Tap again in a moment.", and
 	// the person taps again.
 	for try := 1; ; try++ {
-		answer := e.tg.waitTapAnswer(e.tg.tap(msgID, "o:"+requestID))
+		answer := e.tg.waitTapAnswer(e.tg.tap(msgID, prefix+requestID))
 		if !strings.Contains(answer, "Not ready yet") {
 			break
 		}
