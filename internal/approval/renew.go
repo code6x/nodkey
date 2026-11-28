@@ -18,8 +18,11 @@ type Warning struct {
 	RequestID, ShortCode string
 	Client               string
 	Secrets              []string
-	// Key is the SSH key of a grant of a key; Secrets is empty then.
-	Key string
+	// Key, Hosts and RemoteUser are the scope of a grant of a key;
+	// Secrets is empty then.
+	Key        string
+	Hosts      []string
+	RemoteUser string
 	// Windows are the windows as text, such as "daily 03:00-05:00", and
 	// Uses the uses in each.
 	Windows []string
@@ -84,7 +87,7 @@ func (c *Core) scanWarnings(now moment) {
 			GrantID: g.id, End: g.end.wall.In(loc)}
 		for _, r := range g.refs {
 			if r.key {
-				w.Key = r.name
+				w.Key, w.Hosts, w.RemoteUser = r.name, slices.Clone(g.origin.Hosts), g.user
 				continue
 			}
 			w.Secrets = append(w.Secrets, r.text())

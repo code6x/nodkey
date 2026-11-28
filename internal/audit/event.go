@@ -548,6 +548,8 @@ func (s *Subject) validate(needRequest bool) error {
 			}
 		}
 	case KindStanding:
+		// A denied request may name only the parts that passed, so the
+		// subject may be partial; it never names both forms.
 		if s.HostKey != "" || (len(s.Secrets) > 0 && (s.Key != "" || len(s.Hosts) > 0 || s.RemoteUser != "")) {
 			return errors.New("a standing request names secrets or one key, not both, and has no single host key")
 		}

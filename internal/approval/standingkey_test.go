@@ -54,7 +54,7 @@ func TestStandingKeyGrant(t *testing.T) {
 			t.Errorf("the prompt is %+v", p)
 		}
 		list := e.core.ListStanding()
-		if len(list) != 1 || list[0].Key != "web" || len(list[0].Secrets) != 0 {
+		if len(list) != 1 || list[0].Key != "web" || list[0].RemoteUser != "deploy" || len(list[0].Hosts) != 1 || len(list[0].Secrets) != 0 {
 			t.Errorf("the list is %+v", list)
 		}
 	})

@@ -671,7 +671,12 @@ func (c *agentConn) sign(ctx context.Context, key, data []byte, flags uint32) []
 		}
 		hdr = http.Header{api.GrantTokenHeader: {tok.Reveal()}}
 	}
-	stop := watchHangUp(c.conn, hangUp)
+	// With a token, a hang-up of ssh does not cancel the request: the
+	// broker may have rotated the token, and the new one must be saved.
+	stop := func() {}
+	if a.tokenFile == "" {
+		stop = watchHangUp(c.conn, hangUp)
+	}
 	// A request with a token is never sent again (postWith sends once).
 	ans, err := postWith[api.SignAnswer](waitCtx, a.broker, api.PathSign, body, func(s string) {
 		code.set(s)
