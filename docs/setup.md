@@ -868,6 +868,26 @@ One fetch can cost more than one request. To see how many, run
 `op service-account ratelimit` before and after a fetch
 ([docs/manual-telegram-test.md](manual-telegram-test.md), check 16).
 
+**Not tested with a real account.** The tests of the `1password` store use
+a fake 1Password; nobody has run it against a real account yet (decided
+2026-11-28, issue #126). So these points are not proven:
+
+- the number of requests for one fetch, and so how many fetches a day your
+  plan allows;
+- which plans let you make a service account: the rate-limit page lists
+  Individual and Families, but no 1Password page says plainly that these
+  plans have service accounts;
+- the exact answers of the real service for a wrong or expired token, a
+  rate limit or a missing item: the broker maps each of them to a denial
+  with a fixed text, but only the fake checks that. If the real service
+  gives a rate limit in another form, the request is still denied, but
+  the log shows a general failure or a time-out, and no alert comes to
+  your phone.
+
+Before you rely on it, run check 16 of
+[docs/manual-telegram-test.md](manual-telegram-test.md) with a throwaway
+vault, and write the results in a new issue.
+
 ### infisical: a project only for nodkey
 
 The `infisical` store uses the official Infisical SDK inside the broker.
