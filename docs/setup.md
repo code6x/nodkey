@@ -874,11 +874,15 @@ a fake 1Password; nobody has run it against a real account yet (decided
 
 - the number of requests for one fetch, and so how many fetches a day your
   plan allows;
-- which plans have service accounts: the rate-limit page names
-  Individual and Families, but no page of 1Password says it plainly;
+- which plans let you make a service account: the rate-limit page lists
+  Individual and Families, but no 1Password page says plainly that these
+  plans have service accounts;
 - the exact answers of the real service for a wrong or expired token, a
   rate limit or a missing item: the broker maps each of them to a denial
-  with a fixed text, but only the fake checks that.
+  with a fixed text, but only the fake checks that. If the real service
+  gives a rate limit in another form, the request is still denied, but
+  the log says `1Password refused the request, or could not be reached`,
+  and no alert comes to your phone.
 
 Before you rely on it, run check 16 of
 [docs/manual-telegram-test.md](manual-telegram-test.md) with a throwaway

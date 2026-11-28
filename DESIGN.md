@@ -4698,7 +4698,10 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
   fetches a day the account allows. It has not run: on 2026-11-28 the
   owner accepted the fake tests without it (issue #126). So the requests
   per fetch, the plans with service accounts and the real answers of
-  1Password to an error are not proven; docs/setup.md says so in
+  1Password to an error are not proven. Every error still means deny,
+  but the rate-limit text and its alert need the SDK's own rate-limit
+  error type, and only the fake shows that it comes. docs/setup.md says
+  so in
   "1password: a vault only for nodkey".
 - **One manual test with a real Infisical machine identity** (optional),
   as check 17 in the same guide. It checks a real project, the Viewer
