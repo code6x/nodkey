@@ -162,6 +162,36 @@ func TestAgentGrantTokenBadAnswer(t *testing.T) {
 	}
 }
 
+// TestAgentGrantTokenSaveFails: when the new token cannot be saved, ssh
+// gets no signature, and the line says why.
+func TestAgentGrantTokenSaveFails(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root can write to a folder without the write bit")
+	}
+	deploy, _ := newSSHKey(t)
+	first := newToken(t)
+	file := tokenFileWith(t, first)
+	tb := newTokenBroker(t, deploy, first, nil)
+	au := startAgent(t, tb.b, agentOptions{tokenFile: file})
+	dir := filepath.Dir(file)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: the test folder of the token file.
+	if sig := signOnce(t, au, deploy.PublicKey(), []byte("data"), 0); sig != nil {
+		t.Fatal("the agent gave ssh a signature without saving the new token")
+	}
+	if lines := au.lines(); len(lines) != 1 || !strings.Contains(lines[0], "cannot make a file") {
+		t.Errorf("the agent wrote %q", lines)
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if strings.Contains(au.log.String(), tb.current.Reveal()) || strings.Contains(au.log.String(), first.Reveal()) {
+		t.Error("a line holds a token")
+	}
+}
+
 // TestAgentRotateToken: the checks of the new token of a sign answer.
 func TestAgentRotateToken(t *testing.T) {
 	t.Parallel()
