@@ -22,7 +22,7 @@ type recordLog struct {
 
 func (l *recordLog) add(evs ...audit.Event) uint64 {
 	for _, ev := range evs {
-		l.recs = append(l.recs, audit.Record{Seq: uint64(len(l.recs) + 1), Time: l.clock.Wall(), Event: ev})
+		l.recs = append(l.recs, audit.Record{Seq: uint64(len(l.recs) + 1), Time: l.clock.Wall().UTC(), Event: ev})
 	}
 	return uint64(len(l.recs))
 }
@@ -313,4 +313,14 @@ func TestRestoreRenewal(t *testing.T) {
 			t.Errorf("the use took grant %q, want the renewal %q", res.UsedGrantID(), renew.GrantID)
 		}
 	})
+}
+
+// TestRestoreInLocalZone runs the restore tests with a clock that is not
+// in UTC. The log holds UTC times, and the windows are in the clock's
+// zone: a use must count in its own window after a restart.
+func TestRestoreInLocalZone(t *testing.T) {
+	old := noon
+	noon = time.Date(2026, 10, 14, 12, 0, 0, 0, time.FixedZone("UTC+3", 3*60*60))
+	t.Cleanup(func() { noon = old })
+	t.Run("standing", TestRestoreStanding)
 }

@@ -182,8 +182,9 @@ func (c *Core) Restore(recs []audit.Record, head uint64) (open, dropped []Restor
 	// windows and ends between it and now passed while the broker was
 	// stopped (DESIGN.md section 8, "Windows missed while stopped").
 	since := now.wall
+	// The log holds UTC times; the windows are in the clock's own zone.
 	if n := len(recs); n > 0 && recs[n-1].Time.Before(since) {
-		since = recs[n-1].Time
+		since = recs[n-1].Time.In(since.Location())
 	}
 	for _, id := range order {
 		lg := grants[id]
@@ -429,6 +430,7 @@ func (c *Core) checkAgain(r *Request, lg *logGrant, now moment, since time.Time)
 	// the missed-window alarm.
 	g.scanned = since
 	for _, t := range lg.useTimes {
+		t = t.In(since.Location())
 		if key, left, in := windowAt(g.windows, t); in {
 			if key.after(g.winKey) {
 				g.winKey, g.winUsed = key, 0
