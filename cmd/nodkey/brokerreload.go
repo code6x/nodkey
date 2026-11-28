@@ -56,6 +56,18 @@ type reloadStatus struct {
 	ConfigSHA256 string `json:"config_sha256"`
 	// GrantsEnded is how many grants the last reload ended.
 	GrantsEnded int `json:"grants_ended"`
+	// Revokes counts the ends of every grant since the start (nodkey
+	// revoke --all, SIGUSR1), and GrantsRevoked is how many grants the
+	// last one ended.
+	Revokes       uint64 `json:"revokes"`
+	GrantsRevoked int    `json:"grants_revoked"`
+	// RevokeAll is true when the broker ends every grant on SIGUSR1. A
+	// broker from before nodkey revoke --all leaves it out, and SIGUSR1
+	// would stop it, so nodkey revoke --all sends it no signal.
+	RevokeAll bool `json:"revoke_all"`
+	// RevokeError says why the last end of every grant failed. It is the
+	// broker's own text, never a value of a secret.
+	RevokeError string `json:"revoke_error,omitempty"`
 	// At is when the broker wrote the file, in RFC 3339.
 	At string `json:"at"`
 }
@@ -71,6 +83,9 @@ func reloadStatusPath(cfg *config.Broker) string {
 // says so.
 func (b *brokerParts) writeReloadStatus(st reloadStatus) {
 	st.PID, st.Start = os.Getpid(), b.procStart
+	st.Reloads, st.Revokes, st.GrantsRevoked, st.RevokeError = b.reloads, b.revokes, b.revoked, b.revokeErr
+	st.RevokeAll = true
+	b.status = st
 	st.At = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.Marshal(st)
 	if err == nil {
@@ -233,7 +248,7 @@ func runBrokerReload(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err.Error())
 	}
-	if err := signalBroker(before, uid); err != nil {
+	if err := signalBroker(before, uid, sigReload); err != nil {
 		return fail(err.Error())
 	}
 	deadline := time.Now().Add(*timeout)

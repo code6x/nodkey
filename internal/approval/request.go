@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"encoding/hex"
 	"slices"
 	"time"
 
@@ -149,24 +150,26 @@ type Result struct {
 	GrantID               string
 	GrantFrom, GrantUntil time.Time
 
-	core     *Core
-	cfg      *config.Broker // the config that the checks used
-	reloaded bool           // StartGrants started nothing: a reload came after the checks
-	at       time.Time      // when the request was decided, on the wall clock
-	tap      moment         // when the request was decided, on both clocks
-	plan     *grant         // the scheduled grant of an approved KindPreapprove request
-	msg      MessageID      // with plan: the message of the request, and its prompt
-	prompt   Prompt
-	su       *standingUse       // the use path of a standing grant
-	usedID   string             // the scheduled grant that allowed the request
-	ended    []audit.GrantEnded // entries of grants that this request ended
-	vias     []audit.Via        // what allowed each secret or key without a tap
-	grants   []grantKey         // the grants of an approve_window answer
-	grantEnd moment
-	seq      uint64 // the number of the answer (see Core.decisions)
-	started  bool   // StartGrants ran; under core.mu
-	live     bool   // the scheduled grant started; under core.mu
-	stopped  bool   // the scheduled grant did not start: the core had stopped; under core.mu
+	core      *Core
+	cfg       *config.Broker // the config that the checks used
+	reloaded  bool           // StartGrants started nothing: a reload came after the checks
+	at        time.Time      // when the request was decided, on the wall clock
+	tap       moment         // when the request was decided, on both clocks
+	plan      *grant         // the scheduled grant of an approved KindPreapprove request
+	msg       MessageID      // with plan: the message of the request, and its prompt
+	asked     MessageID      // the message of the request, if one was sent; for the decision entry
+	firstHash [32]byte       // with a standing plan: the hash of the first token, for the decision entry
+	prompt    Prompt
+	su        *standingUse       // the use path of a standing grant
+	usedID    string             // the scheduled grant that allowed the request
+	ended     []audit.GrantEnded // entries of grants that this request ended
+	vias      []audit.Via        // what allowed each secret or key without a tap
+	grants    []grantKey         // the grants of an approve_window answer
+	grantEnd  moment
+	seq       uint64 // the number of the answer (see Core.decisions)
+	started   bool   // StartGrants ran; under core.mu
+	live      bool   // the scheduled grant started; under core.mu
+	stopped   bool   // the scheduled grant did not start: the core had stopped; under core.mu
 }
 
 // Events returns the audit entries of the request, in order (DESIGN.md
@@ -207,9 +210,14 @@ func (r *Result) mainEvents() []audit.Event {
 	events := []audit.Event{audit.Request{Subject: r.Subject, Message: r.Message}}
 	switch {
 	case r.Answer != "":
-		events = append(events, audit.Decision{
+		d := audit.Decision{
 			Subject: r.Subject, UserID: r.UserID, Channel: r.Channel, Answer: r.Answer, WindowMinutes: r.WindowMinutes,
-		})
+			MessageID: string(r.asked),
+		}
+		if r.Allowed && r.firstHash != [32]byte{} {
+			d.TokenHash = hex.EncodeToString(r.firstHash[:])
+		}
+		events = append(events, d)
 		if !r.Allowed {
 			events = append(events, audit.Denied{Subject: r.Subject, Cause: r.Cause})
 		}

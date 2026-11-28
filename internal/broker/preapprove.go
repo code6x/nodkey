@@ -312,7 +312,7 @@ var stopNoticeTimeout = 5 * time.Second
 // rest is counted.
 const maxStopNoticeGrants = 20
 
-// droppedGrants collects the scheduled grants that a stop dropped.
+// droppedGrants collects the login pre-approvals that a stop dropped.
 type droppedGrants struct {
 	mu  sync.Mutex
 	evs []audit.GrantEnded
@@ -335,8 +335,8 @@ func (d *droppedGrants) list() []audit.GrantEnded {
 	return slices.Clone(d.evs)
 }
 
-// sendStopNotice sends one notice that lists the scheduled grants that the
-// stop dropped: ID, client, secrets or key, and uses left (DESIGN.md
+// sendStopNotice sends one notice that lists the login pre-approvals that
+// the stop dropped: ID, client, secrets or key, and uses left (DESIGN.md
 // section 8). It sends nothing when there are none. It makes one try, with
 // stopNoticeTimeout; a notice that does not go out is logged, and the
 // grant_ended entries are in the audit log.
@@ -346,14 +346,17 @@ func (s *Service) sendStopNotice(ctx context.Context, notice NoticeFunc, dropped
 	}
 	defer s.recoverGoroutine("sending the stop notice")
 	var b strings.Builder
-	fmt.Fprintf(&b, "The broker stopped. It dropped %d scheduled grant(s); jobs that need them will ask for a tap:", len(dropped))
+	fmt.Fprintf(&b, "The broker stopped. It dropped %d login pre-approval(s); a login that needs one will ask for a tap:", len(dropped))
 	for i, ev := range dropped {
 		if i == maxStopNoticeGrants {
 			fmt.Fprintf(&b, "\n... and %d more", len(dropped)-i)
 			break
 		}
 		what := ev.Key
-		if len(ev.Secrets) > 0 {
+		switch {
+		case ev.Logins != "":
+			what = "login " + ev.Logins
+		case len(ev.Secrets) > 0:
 			what = strings.Join(ev.Secrets, ", ")
 		}
 		fmt.Fprintf(&b, "\n%s: %s, %s, %d use(s) left", ev.GrantID, ev.Client, what, ev.UsesLeft)
@@ -361,7 +364,7 @@ func (s *Service) sendStopNotice(ctx context.Context, notice NoticeFunc, dropped
 	nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopNoticeTimeout)
 	defer cancel()
 	if err := notice(nctx, b.String()); err != nil {
-		s.log.Warn("broker: cannot send the stop notice about the dropped scheduled grants",
+		s.log.Warn("broker: cannot send the stop notice about the dropped login pre-approvals",
 			slog.String("error", errorText(err)))
 	}
 }

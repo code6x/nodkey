@@ -52,7 +52,10 @@ what it protects against, and what it does not.
 6. Every request and every decision goes into an audit log. The broker only
    appends to it. Each entry holds the hash of the entry before it.
 7. Fail closed. An error, a timeout, a restart or an unclear answer all mean
-   **deny**.
+   **deny**. A restart still ends every waiting request, every grant from an
+   "Approve N min" tap and every one-use login pre-approval. Only standing
+   grants and scheduled grants are open again, rebuilt only from the audit
+   log (section 8, "Grants after a restart").
 
 ## 3. Not in version 1
 
@@ -873,7 +876,7 @@ start, so a broker that ends sooner sends none. The notice of a
 security release is different and follows below. The notice:
 
 ```
-ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. What is new: nodkey update --notes. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
+ℹ️ nodkey: A newer release is out: nodkey 0.3.0. The broker runs nodkey 0.2.0. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends the grants of an Approve tap; standing and scheduled grants come back. Update the agent machines too: run nodkey update as root. What is new: nodkey update --notes. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.0
 ```
 
 Both versions are release versions: digits and dots. The broker makes
@@ -892,7 +895,7 @@ try that times out after Telegram took the message is tried again 1 hour
 later, so the phone rarely rings more than once in one daily check:
 
 ```
-⚠️ SECURITY UPDATE: <security releases>. The broker runs nodkey 0.2.0. Advisories: GHSA-xxxx-xxxx-xxxx. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends all grants. Update the agent machines too: run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1
+⚠️ SECURITY UPDATE: <security releases>. The broker runs nodkey 0.2.0. Advisories: GHSA-xxxx-xxxx-xxxx. This flag comes from GitHub's answer and is not checked: read the checked notes with nodkey update --notes. To update the broker, run as root on the broker host: nodkey update. Then restart it: systemctl restart nodkey. The restart ends the grants of an Approve tap; standing and scheduled grants come back. Update the agent machines too: run nodkey update as root. This notice comes again each day until the broker runs nodkey 0.3.1 or newer. Release notes: https://github.com/code6x/nodkey/releases/tag/v0.3.1
 ```
 
 When a client claims a release older than a security release that the
@@ -1569,8 +1572,10 @@ name exactly one client. The config check refuses all of these (section
   not started yet. Grants of other clients stay.
 - A window is 1 minute to 8 hours. A shorter one would give grants of 0
   whole minutes, so the rule would quietly act like `always`.
-- Grants live only in memory. A broker restart removes them all. A reload
-  of the config keeps the grants that the new config still allows
+- Grants live in memory. A broker restart removes the grants of an "Approve
+  N min" tap and the one-use login pre-approvals. Standing and scheduled
+  grants are rebuilt from the audit log (below, "Grants after a restart").
+  A reload of the config keeps the grants that the new config still allows
   (section 14, "Reload").
 - A secret or key that is not in the broker config does not exist for the
   client. The client sends names, never store IDs. So the agent cannot ask
@@ -1808,11 +1813,13 @@ its end.
   sends none. If the notice is over the limit or cannot be sent, the
   broker logs it. Nothing else changes: the `grant_ended` entry is
   written before.
-- **A restart** drops all grants, as for every other grant. At a stop,
-  the broker writes `grant_ended` with cause `stopped` for each grant that
-  is open, edits their messages, and sends one **stop notice** (section
-  15, step 2 of the stop). It lists each dropped grant: its ID, the
-  client, the secrets or the key, and the uses left, in at most 20 lines.
+- **A restart** drops the grants of an "Approve N min" tap and the login
+  pre-approvals. Scheduled grants stay open (below, "Grants after a
+  restart"). At a stop, the broker writes `grant_ended` with cause
+  `stopped` for each grant that it drops, edits their messages, and sends
+  one **stop notice** (section 15, step 2 of the stop). It lists each
+  dropped grant: its ID, the client, the secrets or the key, and the uses
+  left, in at most 20 lines.
   It is one `Inform` call to the notice chat, without a sound, with its
   own count (3 in any 60 seconds). It has a time limit of 5 seconds, so a
   stop never waits for a Telegram that does not answer. With no scheduled
@@ -1820,9 +1827,9 @@ its end.
 
 **Answers to the open questions of issue 108.**
 
-1. A broker restart drops the scheduled grants, so a job asks as usual.
-   One notice lists the dropped grants (above). Keeping them across a
-   restart is planned (issue 111).
+1. A broker restart keeps the scheduled grants (issue 111, below). One
+   notice after the start lists the grants that are open again and the
+   ones that were dropped.
 2. Several secrets in one run: one tap makes one grant for all of them,
    as above. A run that asks for a secret outside it is not covered.
 3. Cancel by the client: yes, as above.
@@ -1997,12 +2004,71 @@ many windows, the grant sends one alarm for all of them.
 **End.** A standing grant ends when its end date comes, on Revoke, on an
 alarm that ends it, on a renewal, on a cancel by its own client (`nodkey
 preapprove --cancel`, or the broker, when the answer with the token cannot
-be written; cause `cancelled`), or at a broker stop. A **Deny** of
+be written; cause `cancelled`), or on a command that ends all grants (below). A **Deny** of
 another request of the same client and secret does **not** end it: an
 "Approve once" Deny at noon must not break the night job. The Deny message
-says "standing grants stay; use Revoke to end them". At a stop the grants
-are dropped, written as `stopped`, and listed in the stop notice. Keeping
-them is issue 111.
+says "standing grants stay; use Revoke to end them". A stop
+does not end them: they are open again after the start (below).
+
+**Grants after a restart** (issue 111). A restart is not the end of the
+long grants.
+
+- **Which grants survive.** Standing grants and scheduled grants. A grant
+  from an "Approve N min" tap and the one-use pre-approval of a login do
+  not: they are short and the owner is near. A stop writes `grant_ended`
+  with cause `stopped` for these only.
+- **Rebuild.** At start, the broker reads the whole audit log and rebuilds
+  the grants that are still open. No second file holds grant state. The
+  rules:
+  - The whole chain must verify. The head file (section 9) must match:
+    its entry is in the log with the same hash, and the log ID is the
+    same. A grant-making entry after the head entry makes no grant: its
+    `Append` never returned, so a `decision` added while the broker was
+    stopped brings nothing back, and a standing grant with a `grant_used`
+    after the head is dropped. Other entries after the head, such as a
+    use or an end, still count, so they can only take a grant away.
+  - A `grants_reset` entry (section 9) is a barrier. Only the entries
+    after the last one are read.
+  - A use counts only when its `grant_used` is followed by a `secret_sent`
+    or `signed` entry with the same `request_id`. So a crash right after a
+    use gives no extra use.
+  - The token of a standing grant is the same. The log holds the hash of
+    the first token (`token_hash` on the `decision`) and each
+    `new_token_hash` of a use. The broker never holds a token.
+  - The rebuild reads only the fields it needs, with a strict decoder.
+    Claimed text in an entry never changes what is rebuilt.
+- **Drop checks.** A grant is dropped, with a reason, when: its end passed
+  while the broker was stopped; its secret, key or login item is gone from
+  the config, or its rule no longer allows that kind of grant; its client
+  is gone; the log does not verify or does not match the head file; the
+  wall clock is earlier than the time of the last entry; or an entry does
+  not decode (a format change). The last four drop every grant, the
+  broker sends an alarm, and it writes `grants_reset` so the next start
+  does not trust the bad log again.
+- **Windows missed while stopped** raise the missed-window alarm for a
+  standing grant and the "not used" notice for a scheduled grant, so a gap
+  is seen. The stop time is the time of the last entry. A rebuilt standing
+  grant is scanned for missed windows from then, with the uses of the log,
+  so a window used before the stop raises nothing. A scheduled grant whose
+  end passed while the broker was stopped, with uses left, gets the "not
+  used" notice; it holds no claimed text. The log has no short code, so a
+  rebuilt grant gets a new one for its alarms and notices.
+- **One notice after start** lists the grants that are open again and the
+  grants that were dropped, each with the reason. Dropped grants get a
+  `grant_ended` entry after `broker_started`.
+- **Emergency stop.** A restart is no longer the way to end all grants.
+  `nodkey revoke --all` signals the running broker, as `nodkey broker
+  reload` does (section 15): it reads `reload-status.json`, sends
+  `SIGUSR1` only to the process in that file, and runs as root or as the
+  broker's user. The broker writes `revoke_all: true` in that file; a
+  file without it is of an older broker, which `SIGUSR1` would stop, so
+  the command sends nothing and says to update. The broker counts the
+  ends in `revokes` and `grants_revoked`, with `revoke_error` when it
+  could not end them, and the command waits for the count. It also drops
+  the logins that login pre-approvals keep, and sends one alert. The **Revoke all** button on the answer to `/grants` does
+  the same from the phone, with the checks of section 7. Both end every
+  grant, of every kind, each with a `grant_ended` entry of cause
+  `revoked`. See T55 in THREAT-MODEL.md.
 
 **The honest limit.** The token finds a theft; it does not stop it. The
 same user on the client can read and rewrite the token file, so a thief
@@ -2033,7 +2099,7 @@ and the alarm comes. Run the job as its own system user (see
   request is denied.
 - Events: `broker_started`, `config_reloaded`, `request`, `decision`, `grant_used`,
   `grant_ended`, `grant_alarm`, `secret_sent`, `signed`, `denied`, `foreign_tap`, `error`,
-  `log_recovered`, `broker_stopped`. Each event about a request holds the
+  `log_recovered`, `grants_reset`, `broker_stopped`. Each event about a request holds the
   request ID, the client, the names, the verified host if any, and the
   claimed command and reason (masked as in section 7).
 - The `request` entry holds the exact message text the approver saw. The
@@ -2072,15 +2138,32 @@ and the alarm comes. Run the job as its own system user (see
   hash, and that each open line matches the log (below). The rules are below. The output and the exit codes are in section
   15.
 
+**The log is an input at start.** Since issue 111 the broker reads the log
+at start to rebuild standing and scheduled grants (section 8, "Grants
+after a restart"). It reads it with a strict decoder: an unknown field or
+a bad value is an error, and that error drops every grant.
+
+**The head file.** `audit.jsonl.head` is next to the log, mode `0600`. It
+holds the log ID, the `seq` and the hash of the last grant-making entry:
+an approving or renewing `decision` of kind `preapprove` or `standing`,
+a standing `grant_used`, or a `grants_reset` (so the next start matches
+the barrier). The broker writes it after the log sync: write a
+temporary file, fsync, rename, then sync the directory. At start the head
+entry must be in the log with the same hash. A log with another log ID, or
+one that is shorter than the head, rebuilds nothing. Root can rewrite both
+files (THREAT-MODEL.md section 5); `audit verify --anchors` still finds
+that against the journal.
+
 The fields of each event, after `seq`, `time`, `event` and `prev`:
 
 | event | fields |
 |---|---|
 | `broker_started` | `version` |
 | `broker_stopped` | none |
+| `grants_reset` | `cause`: why the broker refused to rebuild grants (`chain`, `head`, `clock` or `format`). Entries before it never make a grant again |
 | `config_reloaded` | `config_sha256`: the SHA-256 of the new config file, in hex; `grants_ended`: how many grants the reload ended, of every kind (section 14, "Reload") |
 | `request` | the request fields; `message`: the exact text the approver saw, if a message was sent |
-| `decision` | the request fields; `user_id`: the Telegram user that answered, or 0 with ntfy; `channel`: only with ntfy, `ntfy:` and the answer topic, such as `ntfy:nodkey-answers`; `answer`: `approve_once`, `approve_window`, `deny` or `renew`; `window_minutes` for `approve_window`; for `renew`, the fields of the new standing grant (a new `request_id` and `grant_id`, `not_before` the time of the tap) and `renew_of`, the ID of the grant it renews |
+| `decision` | the request fields; `user_id`: the Telegram user that answered, or 0 with ntfy; `message_id`: the message of the request, so the Revoke button of an old message still works after a restart. It is text, as the approver names the message (for Telegram the chat and the message number, `CHAT:NUMBER`), not the number of `foreign_tap`; `channel`: only with ntfy, `ntfy:` and the answer topic, such as `ntfy:nodkey-answers`; `answer`: `approve_once`, `approve_window`, `deny` or `renew`; `window_minutes` for `approve_window`; `token_hash`: for an approved standing request (`approve_once`), the hash of its first token; a `renew` has none, because the new grant keeps the token of the grant in `renew_of`; for `renew`, the fields of the new standing grant (a new `request_id` and `grant_id`, `not_before` the time of the tap) and `renew_of`, the ID of the grant it renews |
 | `grant_used` | the request fields; `via`: `grant`, `never_rule`, `scheduled` or `standing` (then `grant_id` is in the request fields); for `standing` also `new_token_hash` |
 | `grant_ended` | the request fields of the `preapprove` request that made the grant, with its `grant_id`; `cause`: `used_up`, `ended`, `cancelled`, `denied`, `revoked`, `stopped`, `alarm`, `renewed` or `config_changed`; `uses_left` |
 | `grant_alarm` | the request fields; `grant_id` (none for an unknown token); `cause`: `old_token`, `over_uses`, `outside_window`, `unknown_token` or `missed_window` |
@@ -3391,7 +3474,7 @@ and `project_secrets` holds its ID: `[{"name": "ci/GITHUB_TOKEN", "id":
 
 A change of the config needs no restart (issue 29). `SIGHUP` asks the
 broker to load its config again; `nodkey broker reload` sends it and waits
-for the result (section 15). A restart ends every grant; a reload ends only
+for the result (section 15). A restart ends the short grants (section 8); a reload ends only
 the grants that the new config takes away.
 
 1. The broker loads the config file, `known_hosts` and the SSH keys with
@@ -3458,6 +3541,7 @@ nodkey broker [--config FILE]
 nodkey broker reload [--config FILE] [--timeout DURATION]
 nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
 nodkey broker config-diff [--short] [--max-chars N] OLD NEW
+nodkey revoke --all [--config FILE] [--timeout DURATION]
 nodkey run [--secret VAR=NAME]... [--totp VAR=NAME] [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
@@ -3589,6 +3673,15 @@ reload, when the broker restarted or did not answer in time, or when the
 command cannot parse the config (then it sends no signal); 64 on wrong
 usage. A tool that applies config changes, such as from git, runs it
 after each change and undoes the change when it fails.
+
+`nodkey revoke --all` is the emergency stop (section 8, "Emergency
+stop"). It finds and checks the broker as `nodkey broker reload` does,
+and sends SIGUSR1. SIGUSR1 never stops the broker: it ends every grant.
+The command reads the status file until the count of `revokes` goes up,
+at most `--timeout` (default 60s), and prints how many grants ended. It
+exits 1 when the broker could not end them, restarted, did not answer in
+time, or is older than the command (then it sends no signal); 64 on
+wrong usage, also without `--all`.
 
 `nodkey broker check` checks a config without a start, such as a new
 config before it is applied (issue #173). It starts nothing, opens no

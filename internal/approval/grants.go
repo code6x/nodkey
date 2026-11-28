@@ -430,7 +430,7 @@ func (c *Core) retryHold(u msgUpdate) {
 func (c *Core) updateMessage(ctx context.Context, u msgUpdate) bool {
 	ectx, cancel := context.WithTimeout(ctx, endTimeout)
 	defer cancel()
-	if err := c.approver.End(ectx, u.msg, u.prompt, u.ending); err != nil {
+	if err := c.endMessage(ectx, u); err != nil {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -456,6 +456,15 @@ func (c *Core) updateMessage(ctx context.Context, u msgUpdate) bool {
 			slog.String("request_id", n.RequestID), slog.Any("error", err))
 	}
 	return true
+}
+
+// endMessage updates the message of u. A u with no message, the notice of
+// a grant from before a restart, has nothing to update.
+func (c *Core) endMessage(ctx context.Context, u msgUpdate) error {
+	if u.msg == "" {
+		return nil
+	}
+	return c.approver.End(ctx, u.msg, u.prompt, u.ending)
 }
 
 // deliverEnded gives the queued entries to the function of OnGrantEnded.
@@ -541,14 +550,19 @@ func (c *Core) nextEnd() (time.Time, bool) {
 	return next, found
 }
 
-// dropScheduled ends every scheduled grant with cause stopped, when the
-// core stops: grants live only in memory, so a restart would lose them
-// anyway (DESIGN.md section 8). It hands out the audit entries; the
-// updates of the messages wait for FlushMessages.
+// dropScheduled ends every login pre-approval with cause stopped, when
+// the core stops (DESIGN.md section 8, "Grants after a restart"). Window
+// grants go with the core, and have no entry. Scheduled and standing
+// grants get no entry: the next start opens them again from the log. It
+// hands out the audit entries; the updates of the messages wait for
+// FlushMessages.
 func (c *Core) dropScheduled() {
 	c.mu.Lock()
 	c.queueEnded(c.endWhere(func(g *grant) audit.EndCause {
-		if g.audited() {
+		// Scheduled and standing grants stay in the log, and the next
+		// start opens them again (Restore). A login pre-approval is short,
+		// and its login is only in memory.
+		if g.audited() && g.loginOrigin != "" {
 			return audit.EndStopped
 		}
 		return ""
@@ -591,6 +605,28 @@ func (c *Core) revoke(a Answer) error {
 		return ""
 	}))
 	return nil
+}
+
+// RevokeAll ends every grant at once, of every client and kind: the
+// grants of "Approve N min" and of nodkey ssh-grant, the scheduled grants,
+// the login pre-approvals, the standing grants and the renewals that
+// wait. It is the emergency stop of nodkey revoke --all and of the "Revoke
+// all" button (DESIGN.md section 8): since a restart keeps scheduled and
+// standing grants, a restart is no stop any more. Each scheduled or
+// standing grant gets its grant_ended entry with cause revoked, through
+// the function of OnGrantEnded, and its message loses the Revoke button.
+// A window grant has no entry. A request that waits for a tap still waits.
+// It returns how many grants ended.
+func (c *Core) RevokeAll() int {
+	c.mu.Lock()
+	n := 0
+	c.queueEnded(c.endWhere(func(*grant) audit.EndCause {
+		n++
+		return audit.EndRevoked
+	}))
+	c.mu.Unlock()
+	c.deliverEnded()
+	return n
 }
 
 // CancelGrant ends the scheduled or standing grant id of client at the client's

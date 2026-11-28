@@ -28,7 +28,8 @@ func TestEventsOfEachEnd(t *testing.T) {
 		evs := r.Events()
 		want := []audit.Event{
 			audit.Request{Subject: r.Subject, Message: e.fake.Asked()[0].Text},
-			audit.Decision{Subject: r.Subject, UserID: approverID, Answer: audit.AnswerApproveWindow, WindowMinutes: 15},
+			audit.Decision{Subject: r.Subject, UserID: approverID, Answer: audit.AnswerApproveWindow, WindowMinutes: 15,
+				MessageID: "message-1"},
 		}
 		if !reflect.DeepEqual(evs, want) {
 			t.Errorf("events\n%#v\nwant\n%#v", evs, want)
@@ -46,7 +47,7 @@ func TestEventsOfEachEnd(t *testing.T) {
 		if err := json.Unmarshal(data, &fields); err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{"request_id", "client", "kind", "secrets", "command", "reason", "user_id", "answer", "window_minutes"} {
+		for _, name := range []string{"request_id", "client", "kind", "secrets", "command", "reason", "user_id", "answer", "window_minutes", "message_id"} {
 			if _, ok := fields[name]; !ok {
 				t.Errorf("the decision entry has no %q: %s", name, data)
 			}

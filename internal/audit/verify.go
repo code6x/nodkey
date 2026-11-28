@@ -117,7 +117,7 @@ func problem(line uint64, format string, args ...uint64) *VerifyError {
 // without a clock battery. seq and prev prove the order, and an attacker
 // who can compute the chain again can fix the times too.
 func Verify(r io.Reader, anchors ...Anchor) (Result, error) {
-	return verify(r, func(LogID) []Anchor { return anchors })
+	return verify(r, func(LogID) []Anchor { return anchors }, nil)
 }
 
 // VerifyJournal checks a log from r, like Verify, with the lines of its
@@ -167,7 +167,7 @@ func VerifyJournal(r io.Reader, journal []JournalLine, extra, accept []Anchor) (
 			proven[a.Seq] = true
 		}
 		return append(anchors, accept...)
-	})
+	}, nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -288,9 +288,11 @@ func checkOpens(res *Result, journal []JournalLine, accept []Anchor) error {
 }
 
 // verify is Verify. anchors gets the log ID, once line 1 is read, and
-// returns the anchors to check.
-func verify(r io.Reader, anchors func(LogID) []Anchor) (Result, error) {
-	v := verifier{found: make(map[uint64]bool)}
+// returns the anchors to check. onEntry, if it is not nil, gets each entry
+// of the chain, in order, after its checks passed; its line holds the
+// bytes of the line. An error from onEntry stops verify with that error.
+func verify(r io.Reader, anchors func(LogID) []Anchor, onEntry func(*logLine) error) (Result, error) {
+	v := verifier{found: make(map[uint64]bool), onEntry: onEntry}
 	var want []Anchor
 	setAnchors := func(id LogID) error {
 		v.res.LogID = id
@@ -335,7 +337,7 @@ func verify(r io.Reader, anchors func(LogID) []Anchor) (Result, error) {
 		}
 		if len(raw) > 0 {
 			no++
-			cur := readLine(no, raw)
+			cur := readLine(no, raw, onEntry != nil)
 			if no == 1 {
 				// Line 1 is applied only with line 2, so the anchors are
 				// set before any entry is checked.
@@ -386,6 +388,7 @@ type verifier struct {
 	found    map[uint64]bool              // the anchors that matched
 	res      Result
 	lastLine uint64 // the line of the last entry
+	onEntry  func(*logLine) error
 }
 
 // apply checks l as the next entry of the chain, and adds it.
@@ -413,6 +416,9 @@ func (v *verifier) apply(l *logLine) error {
 	v.res.Entries++
 	v.res.Last = Anchor{Seq: l.e.seq, Hash: l.hash}
 	v.lastLine = l.no
+	if v.onEntry != nil {
+		return v.onEntry(l)
+	}
 	return nil
 }
 
@@ -425,17 +431,21 @@ type logLine struct {
 	problem  string            // why the line is not a valid entry; a fixed text
 	newline  bool              // the line ends in a newline
 	recovery bool              // the line is the log_recovered entry of the torn line before it
+	line     []byte            // a copy of the line, without its newline, if readLine was asked to keep it
 }
 
 // readLine reads the line raw, with its newline if it has one. It keeps no
-// reference to raw.
-func readLine(no uint64, raw []byte) *logLine {
+// reference to raw; with keep, it keeps a copy.
+func readLine(no uint64, raw []byte, keep bool) *logLine {
 	l := &logLine{no: no}
 	if n := len(raw); n > 0 && raw[n-1] == '\n' {
 		raw, l.newline = raw[:n-1], true
 	}
 	l.hash = sha256.Sum256(raw)
 	l.length = len(raw)
+	if keep {
+		l.line = bytes.Clone(raw)
+	}
 	l.e, l.problem = parseEntry(raw)
 	return l
 }
@@ -450,6 +460,7 @@ func (l *logLine) recovers(torn *logLine) bool {
 type entry struct {
 	seq        uint64
 	event      string
+	time       string
 	prev       [sha256.Size]byte
 	tornLength int               // log_recovered only
 	tornHash   [sha256.Size]byte // log_recovered only
@@ -577,7 +588,7 @@ func parseEntry(line []byte) (entry, string) {
 	if e.seq, ok = parseNumber(values["seq"]); !ok || e.seq == 0 {
 		return e, problemSeq
 	}
-	if t, ok := parseString(values["time"]); !ok || !isUTCTime(t) {
+	if e.time, ok = parseString(values["time"]); !ok || !isUTCTime(e.time) {
 		return e, problemTime
 	}
 	if e.event, ok = parseString(values["event"]); !ok || !eventPattern.MatchString(e.event) {

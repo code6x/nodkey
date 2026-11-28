@@ -48,6 +48,9 @@ Commands:
             time span, for a number of uses
   agent-browser-plugin
             the credential plugin of agent-browser; agent-browser runs it
+  revoke --all [--config FILE]
+            end every grant of the broker at once; run it on the broker
+            host, as root
   audit verify FILE [--anchor SEQ:HASH]... [--anchors FILE|-]
             check the hash chain of an audit log, and its anchors
   update [--version X.Y.Z] [--gh PATH] [--reinstall | --notes]
@@ -116,6 +119,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runPreapprove(rest, stdout, stderr)
 	case "agent-browser-plugin":
 		return runAgentBrowserPlugin(rest, stdin, stdout, stderr)
+	case "revoke":
+		return runRevoke(rest, stdout, stderr)
 	case "update":
 		return runUpdate(rest, stdout, stderr)
 	case "changes":
@@ -210,7 +215,7 @@ func runHelp(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 // commands are the commands of nodkey that "nodkey help COMMAND" knows.
 // Each must handle --help before it does any work.
-var commands = []string{"broker", "try", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "agent-browser-plugin", "update", "changes", "doctor", "version"}
+var commands = []string{"broker", "try", "keygen", "audit", "run", "ssh-agent", "ssh-grant", "preapprove", "agent-browser-plugin", "revoke", "update", "changes", "doctor", "version"}
 
 // recordingWriter keeps the first write error, because the usage
 // functions of the commands ignore it.

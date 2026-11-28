@@ -1935,12 +1935,30 @@ log, the open line has a zero head and a zero LOGID, and comes before the
 first anchor. When something is wrong, the
 broker logs why ([section 14](#14-when-something-does-not-work)).
 
-A restart of the broker ends all grants, and denies the requests that
-wait for a tap:
+A restart of the broker denies the requests that wait for a tap. It
+ends the grants of "Approve N min", of `nodkey ssh-grant` and the login
+pre-approvals. Scheduled and standing grants stay: the next start opens
+them again from the audit log.
 
 ```sh
 systemctl restart nodkey
 ```
+
+### End every grant at once
+
+When you doubt an agent machine or the broker host, end every grant of
+every client at once. Run this as root on the broker host:
+
+```sh
+nodkey revoke --all
+```
+
+It asks the broker to end every grant (with `SIGUSR1`), and waits for
+the result. Each grant gets a `grant_ended` entry with the cause
+`revoked`, and you get one alert. After it, each request needs your tap
+again. A broker older than this command refuses: update it first
+([section 13](#a-new-version-of-nodkey)). Until then, `systemctl stop
+nodkey` ends every grant of the old broker.
 
 ### Change the config without a restart
 

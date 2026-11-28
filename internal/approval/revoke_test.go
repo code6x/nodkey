@@ -178,7 +178,6 @@ func TestGrantEndChangesMessage(t *testing.T) {
 			e.tap(2, audit.AnswerDeny)
 			mustResult(e.t, ch)
 		}},
-		{audit.EndStopped, 1, func(e *env, g *approval.Result) { e.stop(); e.core.FlushMessages() }},
 	} {
 		t.Run(string(tc.cause), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -193,6 +192,29 @@ func TestGrantEndChangesMessage(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestLoginGrantStopChangesMessage: a stop ends a login pre-approval with
+// cause stopped, and the last update of its message says so, without a
+// button. A scheduled grant at the same stop keeps its button: its message
+// is not edited as ended.
+func TestLoginGrantStopChangesMessage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := loginEnv(t, allowScheduled)
+		e.grant(webPre(e, "laptop", itemA), 1)
+		e.grant(preSecrets("laptop", 1, 0, time.Hour, "github-token"), 2)
+		e.stop()
+		e.core.FlushMessages()
+		end := e.lastUpdate(1, 3)
+		if end.Revoke || end.GrantEnd != audit.EndStopped || end.UsesLeft != 1 || end.At.IsZero() {
+			t.Errorf("last update %+v; want the end by a stop, 1 left, no button", end)
+		}
+		for _, u := range e.updates(2) {
+			if u.Ending.GrantEnd != "" {
+				t.Errorf("scheduled grant message edited as ended: %+v", u.Ending)
+			}
+		}
+	})
 }
 
 // TestNotUsedNotice: a grant that reaches its end with uses left sends one
@@ -298,15 +320,34 @@ func (b *blockingApprover) End(ctx context.Context, m approval.MessageID, p appr
 	}
 }
 
+// loginConfig adds the [logins.web] section of loginEnv to cfg.
+func loginConfig(cfg *config.Broker) {
+	cfg.Preapprove = config.DefaultPreapprove()
+	cfg.Logins = map[string]config.Logins{"web": {
+		Name: "web", Store: "vault", Collection: loginsColl, Clients: []string{"laptop", "build"},
+		Rule: config.Rule{Ask: config.AskWindow, Window: 15 * time.Minute, Preapprove: true},
+	}}
+}
+
+// loginPre asks for a login pre-approval, for a test that has no env.
+func loginPre(cfg *config.Broker, client, item string) *approval.Request {
+	clients, rule, _ := cfg.Logins["web"].RuleFor(item)
+	return &approval.Request{
+		Client: client, Kind: audit.KindPreapprove, Uses: 1,
+		Login: &approval.LoginScope{
+			Section: "web", Item: item, Name: "Example shop", Username: "alice@example.com", Origin: pageOrigin,
+			Clients: clients, Rule: rule,
+		},
+		Claim: approval.Claim{Reason: "check the order"},
+	}
+}
+
 // TestStopDoesNotHangOnMessages: when Telegram does not answer, the stop
 // of the core waits at most a few seconds for the updates of the messages.
 func TestStopDoesNotHangOnMessages(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cfg, _ := testConfig(t)
-		cfg.Preapprove = config.DefaultPreapprove()
-		s := cfg.Secrets["github-token"]
-		s.Rule.Preapprove = true
-		cfg.Secrets["github-token"] = s
+		loginConfig(cfg)
 		clock := approvaltest.NewClock(noon)
 		b := &blockingApprover{Approver: approvaltest.NewApprover(approverID), block: make(chan struct{})}
 		core, err := approval.New(cfg, b, approval.Options{Clock: clock})
@@ -320,7 +361,7 @@ func TestStopDoesNotHangOnMessages(t *testing.T) {
 		var rec endedRecorder
 		core.OnGrantEnded(rec.add)
 		ch := make(chan *approval.Result, 1)
-		go func() { ch <- core.Decide(context.Background(), preSecrets("laptop", 1, 0, time.Hour, "github-token")) }()
+		go func() { ch <- core.Decide(context.Background(), loginPre(cfg, "laptop", itemA)) }()
 		synctest.Wait()
 		asked := b.Asked()
 		if len(asked) != 1 {
@@ -358,10 +399,7 @@ func TestStopDoesNotHangOnMessages(t *testing.T) {
 func TestStopSkipsRevokeEdit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cfg, _ := testConfig(t)
-		cfg.Preapprove = config.DefaultPreapprove()
-		s := cfg.Secrets["github-token"]
-		s.Rule.Preapprove = true
-		cfg.Secrets["github-token"] = s
+		loginConfig(cfg)
 		b := &blockingApprover{Approver: approvaltest.NewApprover(approverID), block: make(chan struct{}), revokeBlock: true}
 		core, err := approval.New(cfg, b, approval.Options{Clock: approvaltest.NewClock(noon)})
 		if err != nil {
@@ -372,7 +410,7 @@ func TestStopSkipsRevokeEdit(t *testing.T) {
 		go func() { done <- core.Run(ctx) }()
 		synctest.Wait()
 		ch := make(chan *approval.Result, 1)
-		go func() { ch <- core.Decide(context.Background(), preSecrets("laptop", 1, 0, time.Hour, "github-token")) }()
+		go func() { ch <- core.Decide(context.Background(), loginPre(cfg, "laptop", itemA)) }()
 		synctest.Wait()
 		if err := b.Tap(b.Asked()[0].Prompt.RequestID, audit.AnswerApproveOnce); err != nil {
 			t.Fatal(err)
