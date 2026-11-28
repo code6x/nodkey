@@ -4026,7 +4026,7 @@ Unix socket until `SIGINT` or `SIGTERM` (section 6). It holds no SSH key.
 - With `--grant-token FILE`, each signature uses the standing grant of
   that token file, and rotates it (section 8, "An SSH key"). The agent
   checks the file at start, as `nodkey run` does (its own file, mode 0600
-  at most), and does not start if it fails (exit 77). It never asks for a
+  at most), and does not start if it fails (exit 64). It never asks for a
   tap. If the new token cannot be saved, `ssh` gets `SSH_AGENT_FAILURE`.
 
 - The default socket is `$XDG_RUNTIME_DIR/nodkey/agent.sock`. Without

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/config"
+	"github.com/code6x/nodkey/internal/grantkey"
 	"github.com/code6x/nodkey/internal/transport"
 )
 
@@ -103,7 +105,7 @@ const maxProcReads = 4
 const stopWait = 5 * time.Second
 
 // agentUsage is the help of nodkey ssh-agent.
-const agentUsage = `Usage: nodkey ssh-agent [--socket PATH]
+const agentUsage = `Usage: nodkey ssh-agent [--socket PATH] [--grant-token FILE]
 
 Serve an SSH agent on a Unix socket, for ssh, git and Ansible. The SSH keys
 stay on the broker. For each login, the agent asks the broker for a
@@ -115,13 +117,19 @@ socket:
   --socket PATH  the socket. The default is $XDG_RUNTIME_DIR/nodkey/agent.sock.
                  Its directory must have mode 0700; nodkey makes it if it is
                  missing.
+  --grant-token FILE
+                 use the standing grant of this token file for each
+                 login, and never ask for a tap (nodkey preapprove --key
+                 ... --daily or --weekly). One login is one use; the agent
+                 saves the new token before ssh gets the signature. A
+                 login that the grant does not cover is denied.
 
 The message shows NODKEY_REASON from the environment of ssh as the reason.
 The agent cannot add, remove or lock keys. The client config is
 ~/.config/nodkey/client.toml. nodkey ssh-agent runs until SIGINT or
-SIGTERM, and then removes the socket. It exits with 64 (wrong usage), 69
-(the client config or the TLS key cannot be read) or 1 (the socket cannot
-be made).
+SIGTERM, and then removes the socket. It exits with 64 (wrong usage, or a
+token file that is not safe), 69 (the client config or the TLS key cannot
+be read) or 1 (the socket cannot be made).
 `
 
 // SSHAgent runs nodkey ssh-agent with args, the arguments after
@@ -199,7 +207,7 @@ func (r agentRunner) run(ctx context.Context, args []string, w io.Writer) int {
 		_, _ = io.WriteString(log, agentUsage)
 		return exitOK
 	}
-	path, err := parseAgentArgs(args)
+	path, tokenFile, err := parseAgentArgs(args)
 	if err == nil && path == "" {
 		path, err = defaultSocket(r.getenv)
 	}
@@ -208,6 +216,12 @@ func (r agentRunner) run(ctx context.Context, args []string, w io.Writer) int {
 	}
 	if err != nil {
 		return UsageError(log, "ssh-agent", err.Error())
+	}
+	// Check the token file before the agent serves, as nodkey run does.
+	if tokenFile != "" {
+		if _, err := readGrantToken(tokenFile); err != nil {
+			return fail(log, exitUsage, err.Error())
+		}
 	}
 	configPath, err := r.configPath()
 	if err != nil {
@@ -231,6 +245,7 @@ func (r agentRunner) run(ctx context.Context, args []string, w io.Writer) int {
 		return fail(log, exitAgentFailed, err.Error())
 	}
 	a := newSSHAgent(b, log, r.proc, r.peer, self)
+	a.tokenFile = tokenFile
 	if r.tune != nil {
 		r.tune(a)
 	}
@@ -261,39 +276,43 @@ func stoppedBySignal(ctx context.Context, log io.Writer) (int, bool) {
 }
 
 // parseAgentArgs reads the arguments of nodkey ssh-agent: at most one
-// --socket PATH, also with one dash and with "=" before the value, as the
-// flag package reads them. It returns "" when --socket is not given.
-func parseAgentArgs(args []string) (string, error) {
-	socket, set := "", false
+// --socket PATH and --grant-token FILE, also with one dash and with "="
+// before the value, as the flag package reads them. It returns "" for an
+// option that is not given.
+func parseAgentArgs(args []string) (socket, tokenFile string, err error) {
+	values := map[string]string{}
 	for rest := args; len(rest) > 0; {
 		arg := rest[0]
 		rest = rest[1:]
 		name, value, hasValue := splitOption(arg)
 		switch name {
-		case "socket":
+		case "socket", "grant-token":
 		case "h", "help":
-			return "", errors.New("--help must be the only argument")
+			return "", "", errors.New("--help must be the only argument")
 		default:
 			if !strings.HasPrefix(arg, "-") {
-				return "", fmt.Errorf("unexpected argument %.64q", arg)
+				return "", "", fmt.Errorf("unexpected argument %.64q", arg)
 			}
-			return "", fmt.Errorf("unknown option %.64q", arg)
+			return "", "", fmt.Errorf("unknown option %.64q", arg)
 		}
 		if !hasValue {
 			if len(rest) == 0 {
-				return "", errors.New("--socket needs a value")
+				return "", "", fmt.Errorf("--%s needs a value", name)
 			}
 			value, rest = rest[0], rest[1:]
 		}
-		if set {
-			return "", errors.New("--socket is given twice")
+		if _, set := values[name]; set {
+			return "", "", fmt.Errorf("--%s is given twice", name)
 		}
 		if value == "" {
-			return "", errors.New("--socket needs a path")
+			if name == "socket" {
+				return "", "", errors.New("--socket needs a path")
+			}
+			return "", "", errors.New("--grant-token: give the path of a file")
 		}
-		socket, set = value, true
+		values[name] = value
 	}
-	return socket, nil
+	return values["socket"], values["grant-token"], nil
 }
 
 // currentUID returns the user ID that runs nodkey.
@@ -354,6 +373,11 @@ type sshAgent struct {
 	// stopWait is the longest wait for the connections at the end:
 	// stopWait.
 	stopWait time.Duration
+	// tokenFile is the file of --grant-token, or "". tokenMu lets one
+	// request with the token run at a time: each use rotates the token
+	// (DESIGN.md section 8, "An SSH key").
+	tokenFile string
+	tokenMu   sync.Mutex
 
 	procReads atomic.Int32 // reads of /proc that run now
 
@@ -634,12 +658,35 @@ func (c *agentConn) sign(ctx context.Context, key, data []byte, flags uint32) []
 	// (DESIGN.md section 7).
 	waitCtx, hangUp := context.WithCancelCause(reqCtx)
 	defer hangUp(nil)
+	var hdr http.Header
+	if a.tokenFile != "" {
+		// One request with the token at a time. The token is read again
+		// for each request: the last one saved it.
+		a.tokenMu.Lock()
+		defer a.tokenMu.Unlock()
+		tok, err := readGrantToken(a.tokenFile)
+		if err != nil {
+			a.log.note("no signature: %s", err.Error())
+			return failureMessage
+		}
+		hdr = http.Header{api.GrantTokenHeader: {tok.Reveal()}}
+	}
 	stop := watchHangUp(c.conn, hangUp)
-	ans, err := Post[api.SignAnswer](waitCtx, a.broker, api.PathSign, body, func(s string) {
+	// A request with a token is never sent again (postWith sends once).
+	ans, err := postWith[api.SignAnswer](waitCtx, a.broker, api.PathSign, body, func(s string) {
 		code.set(s)
 		a.log.waitingFor(s)
-	})
+	}, hdr)
 	stop()
+	if ans != nil {
+		// The broker rotated the token: save the new one before anything
+		// else, also when ssh hung up meanwhile, so the next login does not
+		// send an old token. If it cannot be saved, ssh gets no signature.
+		if rerr := a.rotateToken(string(ans.GrantToken)); rerr != nil {
+			a.log.note("no signature%s: %s", code.label(), rerr.Error())
+			return failureMessage
+		}
+	}
 	if cause := context.Cause(waitCtx); cause != nil {
 		// The request was cancelled: ssh hung up, the deadline passed, or the
 		// agent stops. Go's HTTP client can still return an answer that came
@@ -1005,4 +1052,23 @@ func (l *agentLog) flushLocked(b *lineBudget) {
 // line writes "nodkey: " and text as one line. l.mu must be held.
 func (l *agentLog) line(text string) {
 	_, _ = io.WriteString(l.w, "nodkey: "+oneLine(text)+"\n")
+}
+
+// rotateToken saves raw, the new token of a sign answer, to the token
+// file. With a file, the answer must have a valid new token; without one,
+// it must have none. The errors never hold the token.
+func (a *sshAgent) rotateToken(raw string) error {
+	switch {
+	case a.tokenFile == "" && raw != "":
+		return errors.New("the answer of the broker is not valid: it has a token for a request without one")
+	case a.tokenFile == "":
+		return nil
+	case raw == "":
+		return errors.New("the answer of the broker is not valid: it has no new token")
+	}
+	tok, err := grantkey.Parse(raw)
+	if err != nil {
+		return errors.New("the answer of the broker is not valid: its new token is not a token")
+	}
+	return SaveGrantToken(a.tokenFile, tok)
 }

@@ -217,6 +217,8 @@ type agentOptions struct {
 	maxConns                                        int
 	// now replaces the clock of the agent's lines.
 	now func() time.Time
+	// tokenFile is the file of --grant-token.
+	tokenFile string
 }
 
 // noDirCheck takes the place of config.CheckParentDirs, which refuses
@@ -246,6 +248,7 @@ func startAgent(t *testing.T, b *Broker, opts agentOptions) *agentUnderTest {
 	au.alog = log
 	a := newSSHAgent(b, log, procFS{root: t.TempDir()}, peerCredentials, self)
 	au.agent = a
+	a.tokenFile = opts.tokenFile
 	if opts.proc != nil {
 		a.proc = *opts.proc
 	}
