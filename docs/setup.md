@@ -881,8 +881,8 @@ a fake 1Password; nobody has run it against a real account yet (decided
   rate limit or a missing item: the broker maps each of them to a denial
   with a fixed text, but only the fake checks that. If the real service
   gives a rate limit in another form, the request is still denied, but
-  the log says `1Password refused the request, or could not be reached`,
-  and no alert comes to your phone.
+  the log shows a general failure or a time-out, and no alert comes to
+  your phone.
 
 Before you rely on it, run check 16 of
 [docs/manual-telegram-test.md](manual-telegram-test.md) with a throwaway
