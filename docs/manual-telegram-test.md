@@ -746,6 +746,41 @@ Expected:
 At the end, delete the machine identity, the project and the file with
 the client secret.
 
+### Check 18: nodkey try --telegram (optional)
+
+New in 0.8.0: skip it with nodkey 0.7.0 or older.
+
+This checks the trial with Telegram (issue #125). It needs no broker
+files: stop the broker of terminal 1 first. Make a second new bot in
+BotFather for it, not the test bot of the other checks.
+
+1. Terminal 1: `HOME="$T/home" "$T/nodkey" try --telegram`. Paste the
+   token of the second bot. Check that the token is not shown while you
+   paste it.
+2. Open the link that it prints on the phone, and tap **Start**.
+   Terminal 1 shows your first name and user ID. Type `yes`.
+3. Terminal 2: run the `nodkey try run` command that terminal 1 prints,
+   with `"$T/nodkey"` in place of `nodkey` and `HOME="$T/home"` before
+   it. Tap **Approve once**. Then run it again and tap **Deny**.
+4. Start the broker of terminal 1 again, in a third terminal, with the
+   bot of the trial: put the second bot's token in the token file
+   for a moment. Within a minute, one of the two stops. Then put the
+   token of the test bot back.
+5. Press Ctrl-C in terminal 1.
+
+Expected:
+
+- Step 2: the name is yours, and nothing starts before `yes`.
+- Step 3: each message starts with `TRY MODE · `. Approve once: the
+  command prints its line, and exit code 0. Deny: exit code 77. Each line
+  of `nodkey try run` starts with `TRY MODE`.
+- Step 4: nodkey try stops with `Telegram says another program polls
+  this bot` and exit code 1, or the broker stops with exit code 76.
+- Step 5: the trial ends, and `ls "$XDG_RUNTIME_DIR/nodkey-try"` says
+  there is no such file.
+
+Delete the second bot in BotFather after the test.
+
 ## Clean up
 
 1. Terminal 1: stop the broker with Ctrl-C, if it still runs.
@@ -758,7 +793,8 @@ the client secret.
 
 ## Results
 
-Copy this table into a comment on issue #17, and fill it in. The issue is
+Copy this table into a comment on issue #17 (the rows of check 18: on
+issue #125), and fill it in. The issue is
 public. Leave out the token, your user ID, the name of the bot, every
 raw answer of the Bot API, and the lines of the log with `user_id` or
 `chat_id`.
@@ -801,3 +837,7 @@ raw answer of the Bot API, and the lines of the log with `user_id` or
 | 17 | an Infisical store (optional) | the command gets the value; after the access token ended, the next fetch works | | |
 | 17 | a missing name; a value with `${` | exit 77 for both; the log says why | | |
 | 17 | the client secret and the values in the logs | `0` for `broker.log` and `audit.jsonl` | | |
+| 18 | `try --telegram`: hidden token, link, name | the token is not shown; your name and ID; starts only after `yes` | | |
+| 18 | `try --telegram`: Approve once, Deny | `TRY MODE · ` on each message; exit 0, then 77 | | |
+| 18 | `try --telegram`: the bot of a broker | nodkey try stops and says to use a new bot, or the broker stops with 76 | | |
+| 18 | `try --telegram`: Ctrl-C | the directory of the trial is gone | | |

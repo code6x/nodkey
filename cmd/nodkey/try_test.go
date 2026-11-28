@@ -17,16 +17,20 @@ import (
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/store"
+	"github.com/code6x/nodkey/internal/telegram"
 )
 
 // tryFiles are the files of nodkey try. Only they may use its parts.
-var tryFiles = map[string]bool{"try.go": true, "tryapprover.go": true, "trystore.go": true}
+var tryFiles = map[string]bool{"try.go": true, "tryapprover.go": true, "trystore.go": true, "trytelegram.go": true}
 
 // tryOnly are the names of the parts of nodkey try: the terminal
 // approver, the test store, the config without a file, and the trial.
 var tryOnly = map[string]bool{
 	"tryApprover": true, "newTryApprover": true, "tryStore": true, "newTryStore": true, "tryConfig": true,
 	"trial": true, "serveTry": true, "runTryRun": true, "tryUserID": true,
+	"tryTelegram": true, "setupTryTelegram": true, "tryPrefix": true,
+	// The parts of package telegram that only nodkey try uses.
+	"NewWithToken": true, "NewPairing": true, "Prefix": true,
 }
 
 // nodkey broker has no way to turn on the approval in the terminal, or
@@ -80,7 +84,7 @@ func TestBrokerHasNoTerminalApproval(t *testing.T) {
 // The trial's config has only the trial store, with no type, so no real
 // store can serve it, and nodkey broker cannot make it from a file.
 func TestTryConfigHasOnlyTheTrialStore(t *testing.T) {
-	cfg := tryConfig("/nonexistent", config.Pin{})
+	cfg := tryConfig("/nonexistent", config.Pin{}, tryUserID)
 	if len(cfg.Stores) != 1 || cfg.Stores[tryStoreName].Type != "" {
 		t.Fatalf("stores %v, want only %q with no type", cfg.Stores, tryStoreName)
 	}
@@ -242,7 +246,7 @@ func TestTryApproverTooEarly(t *testing.T) {
 
 // The trial allows no scheduled and no standing grant.
 func TestTryConfigAllowsNoScheduledOrStandingGrants(t *testing.T) {
-	cfg := tryConfig("/nonexistent", config.Pin{})
+	cfg := tryConfig("/nonexistent", config.Pin{}, tryUserID)
 	if cfg.Preapprove != (config.PreapproveLimits{}) {
 		t.Errorf("preapprove limits %+v, want none", cfg.Preapprove)
 	}
@@ -273,5 +277,28 @@ func TestTryLinesConcurrent(t *testing.T) {
 	wg.Wait()
 	if want := strings.Repeat("TRY MODE line\n", 400); b.String() != want {
 		t.Fatal("lines are mixed")
+	}
+}
+
+// Each error of the Telegram part says how to fix it, once: only an error
+// of a Bot API call gets the hint about the network.
+func TestTryTelegramErr(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "start nodkey try --telegram again"},
+		{telegram.ErrPollConflict, "never the broker's bot"},
+		{telegram.ErrTokenRefused, "from @BotFather again"},
+		{errors.New("telegram: this is not a bot token; copy it again"), "telegram: this is not a bot token; copy it again"},
+	} {
+		got := tryTelegramErr(tc.err)
+		if !strings.Contains(got, tc.want) || strings.Count(got, "start nodkey try --telegram again") > 1 {
+			t.Errorf("tryTelegramErr(%v) = %q", tc.err, got)
+		}
+		if tc.err != nil && !errors.Is(tc.err, telegram.ErrPollConflict) && !errors.Is(tc.err, telegram.ErrTokenRefused) &&
+			strings.Contains(got, "api.telegram.org") {
+			t.Errorf("tryTelegramErr(%v) adds the network hint: %q", tc.err, got)
+		}
 	}
 }
