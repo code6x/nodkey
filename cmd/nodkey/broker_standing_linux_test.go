@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"syscall"
@@ -81,7 +82,11 @@ func TestBrokerStandingAlarmThroughTelegram(t *testing.T) {
 
 	e.signal(syscall.SIGINT)
 	e.mustExit(exitOK)
-	texts := e.tg.bodies() + e.stderr.text() + strings.Join(eventNames(e.auditEntries()), " ")
+	auditLog, err := os.ReadFile(e.auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts := e.tg.bodies() + e.stderr.text() + string(auditLog)
 	for _, tok := range []string{tok0, rotated.GrantToken} {
 		if strings.Contains(texts, tok) {
 			t.Error("a grant token is in the calls to Telegram, the journal or the audit log")
@@ -150,7 +155,11 @@ func TestBrokerStandingKeyThroughTelegram(t *testing.T) {
 	}
 	e.signal(syscall.SIGINT)
 	e.mustExit(exitOK)
-	texts := e.tg.bodies() + e.stderr.text() + strings.Join(eventNames(e.auditEntries()), " ")
+	auditLog, err := os.ReadFile(e.auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts := e.tg.bodies() + e.stderr.text() + string(auditLog)
 	for _, tok := range []string{tok0, string(ans.GrantToken)} {
 		if strings.Contains(texts, tok) {
 			t.Error("a grant token is in the calls to Telegram, the journal or the audit log")
@@ -170,9 +179,11 @@ func TestBrokerStandingKeyAlarmsThroughTelegram(t *testing.T) {
 	e := startListening(t, brokerOptions{standing: true})
 	e.stderr.wait(t, lineListening)
 	c := e.httpClient()
+	// Two signatures must fall in one window: not near 08:00, 16:00 or
+	// the end of the day.
 	now := time.Now()
-	if now.Hour() == 23 && now.Minute() >= 58 {
-		t.Skip("too close to midnight, outside the windows")
+	if h := now.Hour(); (h == 7 || h == 15 || h == 23) && now.Minute() >= 58 {
+		t.Skip("too close to the end of a window")
 	}
 	allDay := []api.Window{
 		{Kind: api.WindowDaily, From: "00:00", To: "08:00"},
@@ -182,7 +193,7 @@ func TestBrokerStandingKeyAlarmsThroughTelegram(t *testing.T) {
 	// One hour that is at least two hours away from now, in local time.
 	h := (now.Hour() + 12) % 24
 	if h == 23 {
-		h = 11
+		h = 22 // now is 11:xx
 	}
 	later := []api.Window{{Kind: api.WindowDaily, From: fmt.Sprintf("%02d:00", h), To: fmt.Sprintf("%02d:00", h+1)}}
 	preapprove := func(windows []api.Window) string {
@@ -233,7 +244,11 @@ func TestBrokerStandingKeyAlarmsThroughTelegram(t *testing.T) {
 
 	e.signal(syscall.SIGINT)
 	e.mustExit(exitOK)
-	texts := e.tg.bodies() + e.stderr.text() + strings.Join(eventNames(e.auditEntries()), " ")
+	auditLog, err := os.ReadFile(e.auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts := e.tg.bodies() + e.stderr.text() + string(auditLog)
 	for _, tok := range []string{tok0, string(ans.GrantToken), tokLater} {
 		if strings.Contains(texts, tok) {
 			t.Error("a grant token is in the calls to Telegram, the journal or the audit log")

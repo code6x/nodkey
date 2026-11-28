@@ -182,13 +182,13 @@ func TestAgentGrantTokenSaveFails(t *testing.T) {
 	if sig := signOnce(t, au, deploy.PublicKey(), []byte("data"), 0); sig != nil {
 		t.Fatal("the agent gave ssh a signature without saving the new token")
 	}
-	if lines := au.lines(); len(lines) != 1 || !strings.Contains(lines[0], "cannot make a file") {
-		t.Errorf("the agent wrote %q", lines)
-	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	if strings.Contains(au.log.String(), tb.current.Reveal()) || strings.Contains(au.log.String(), first.Reveal()) {
-		t.Error("a line holds a token")
+		t.Fatal("a line holds a token")
+	}
+	if lines := au.lines(); len(lines) != 1 || !strings.Contains(lines[0], "cannot make a file") {
+		t.Errorf("the agent wrote %q", lines)
 	}
 }
 
