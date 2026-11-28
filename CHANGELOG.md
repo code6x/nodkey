@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.0](https://github.com/code6x/nodkey/compare/v0.10.0...v0.11.0) (2026-11-28)
+
+
+### Features
+
+* standing grants for SSH keys ([#128](https://github.com/code6x/nodkey/issues/128)) ([#236](https://github.com/code6x/nodkey/issues/236)) ([3c336b0](https://github.com/code6x/nodkey/commit/3c336b07d4663a11a91647cd7bfdb4e95ddef4e0))
+
+
+### Documentation
+
+* say what the fake 1Password tests do not prove ([#233](https://github.com/code6x/nodkey/issues/233)) ([998026b](https://github.com/code6x/nodkey/commit/998026b03f718943dc809a601b1b0576652989e6))
+* say what the fake Infisical tests do not prove ([#235](https://github.com/code6x/nodkey/issues/235)) ([190f57d](https://github.com/code6x/nodkey/commit/190f57d28d67e6b8b21a453944d2a9c2eeeb1aba))
+
 ## [0.10.0](https://github.com/code6x/nodkey/compare/v0.9.0...v0.10.0) (2026-11-26)
 
 
