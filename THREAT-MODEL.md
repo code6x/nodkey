@@ -1508,6 +1508,9 @@ What nodkey does:
   the file (never root) and has the start time in the file. It does not
   follow a symbolic link to the file. So a stale file, or one that the
   broker's user wrote, cannot make root signal another user's process.
+  `nodkey revoke --all` sends SIGUSR1 with the same checks, and only when
+  the file says the broker takes it (`revoke_all`): SIGUSR1 would stop an
+  older broker.
 
 Risk that remains: low. An answer that passed the last check just before
 the reload ends can still go out. Whoever can

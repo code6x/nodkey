@@ -2058,9 +2058,14 @@ long grants.
   `grant_ended` entry after `broker_started`.
 - **Emergency stop.** A restart is no longer the way to end all grants.
   `nodkey revoke --all` signals the running broker, as `nodkey broker
-  reload` does (section 15): it reads `reload-status.json`, sends the
-  signal only to the process in that file, and runs as root or as the
-  broker's user. The **Revoke all** button on the answer to `/grants` does
+  reload` does (section 15): it reads `reload-status.json`, sends
+  `SIGUSR1` only to the process in that file, and runs as root or as the
+  broker's user. The broker writes `revoke_all: true` in that file; a
+  file without it is of an older broker, which `SIGUSR1` would stop, so
+  the command sends nothing and says to update. The broker counts the
+  ends in `revokes` and `grants_revoked`, with `revoke_error` when it
+  could not end them, and the command waits for the count. It also drops
+  the logins that login pre-approvals keep, and sends one alert. The **Revoke all** button on the answer to `/grants` does
   the same from the phone, with the checks of section 7. Both end every
   grant, of every kind, each with a `grant_ended` entry of cause
   `revoked`. See T55 in THREAT-MODEL.md.
@@ -3536,6 +3541,7 @@ nodkey broker [--config FILE]
 nodkey broker reload [--config FILE] [--timeout DURATION]
 nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
 nodkey broker config-diff [--short] [--max-chars N] OLD NEW
+nodkey revoke --all [--config FILE] [--timeout DURATION]
 nodkey run [--secret VAR=NAME]... [--totp VAR=NAME] [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
 nodkey ssh-agent [--socket PATH]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
@@ -3667,6 +3673,15 @@ reload, when the broker restarted or did not answer in time, or when the
 command cannot parse the config (then it sends no signal); 64 on wrong
 usage. A tool that applies config changes, such as from git, runs it
 after each change and undoes the change when it fails.
+
+`nodkey revoke --all` is the emergency stop (section 8, "Emergency
+stop"). It finds and checks the broker as `nodkey broker reload` does,
+and sends SIGUSR1. SIGUSR1 never stops the broker: it ends every grant.
+The command reads the status file until the count of `revokes` goes up,
+at most `--timeout` (default 60s), and prints how many grants ended. It
+exits 1 when the broker could not end them, restarted, did not answer in
+time, or is older than the command (then it sends no signal); 64 on
+wrong usage, also without `--all`.
 
 `nodkey broker check` checks a config without a start, such as a new
 config before it is applied (issue #173). It starts nothing, opens no
