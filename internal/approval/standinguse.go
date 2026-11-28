@@ -6,9 +6,10 @@ import (
 	"log/slog"
 	"slices"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/grantkey"
-	"golang.org/x/crypto/ssh"
 )
 
 // MaxUnknownTokensPerMinute is the most unknown tokens of one client that

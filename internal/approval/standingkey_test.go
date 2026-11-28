@@ -9,11 +9,12 @@ import (
 	"testing/synctest"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/code6x/nodkey/internal/approval"
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/config"
 	"github.com/code6x/nodkey/internal/grantkey"
-	"golang.org/x/crypto/ssh"
 )
 
 // keyStandEnv is standEnv with standing = true on the key web too.

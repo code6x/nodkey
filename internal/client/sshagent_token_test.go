@@ -200,7 +200,7 @@ func TestAgentGrantTokenArgs(t *testing.T) {
 	if err := SaveGrantToken(bad, newToken(t)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(bad, 0o644); err != nil {
+	if err := os.Chmod(bad, 0o644); err != nil { //nolint:gosec // G302: the test makes a bad mode.
 		t.Fatal(err)
 	}
 	var out syncBuffer

@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/code6x/nodkey/internal/api"
 	"github.com/code6x/nodkey/internal/grantkey"
-	"golang.org/x/crypto/ssh"
 )
 
 // TestBrokerStandingAlarmThroughTelegram: the alarm of an old token reaches
