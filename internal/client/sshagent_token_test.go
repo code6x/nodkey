@@ -175,7 +175,7 @@ func TestAgentGrantTokenSaveFails(t *testing.T) {
 	tb := newTokenBroker(t, deploy, first, nil)
 	au := startAgent(t, tb.b, agentOptions{tokenFile: file})
 	dir := filepath.Dir(file)
-	if err := os.Chmod(dir, 0o500); err != nil {
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // G302: a test folder without the write bit.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: the test folder of the token file.
