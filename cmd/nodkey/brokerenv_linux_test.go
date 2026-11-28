@@ -345,7 +345,8 @@ type brokerOptions struct {
 	securityRelease bool
 	// updatesOff adds [updates] check = false to the config.
 	updatesOff bool
-	// standing adds [standing] and standing = true for github-token.
+	// standing adds [standing] and standing = true for github-token and
+	// the key deploy.
 	standing bool
 	// ntfy, if set, gives the broker [ntfy] with this fake server instead
 	// of [telegram].
@@ -519,7 +520,8 @@ hosts = ["db-1"]
 `
 	}
 	if opts.standing {
-		cfg = strings.Replace(cfg, "[secret.github-token]\n", "[secret.github-token]\nstanding = true\n", 1) + "\n[standing]\n"
+		cfg = strings.Replace(cfg, "[secret.github-token]\n", "[secret.github-token]\nstanding = true\n", 1)
+		cfg = strings.Replace(cfg, "[key.deploy]\n", "[key.deploy]\nstanding = true\n", 1) + "\n[standing]\n"
 	}
 	if opts.updatesOff {
 		cfg += "\n[updates]\ncheck = false\n"

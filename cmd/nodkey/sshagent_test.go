@@ -17,7 +17,7 @@ func TestSSHAgentCommand(t *testing.T) { // not parallel: it changes the global 
 	t.Cleanup(func() { log.SetOutput(prev) })
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"ssh-agent", "-h"}, strings.NewReader(""), &stdout, &stderr); code != exitOK ||
-		!strings.HasPrefix(stderr.String(), "Usage: nodkey ssh-agent [--socket PATH]\n") || stdout.Len() != 0 {
+		!strings.HasPrefix(stderr.String(), "Usage: nodkey ssh-agent [--socket PATH] [--grant-token FILE]\n") || stdout.Len() != 0 {
 		t.Errorf("nodkey ssh-agent -h: exit code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 	if log.Writer() != io.Discard {
