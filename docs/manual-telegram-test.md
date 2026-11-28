@@ -647,7 +647,9 @@ Expected:
 
 ### Check 16: A 1Password store (optional)
 
-This checks the `1password` store against a real account. It needs a
+This checks the `1password` store against a real account. It has not
+run yet (2026-11-28): the store is tested only with a fake 1Password
+(issue #126). It needs a
 1Password account, the `op` CLI on your own computer (not on the broker
 host), and a **test vault** with one test item. Use a throwaway vault
 and a throwaway service account with `read_items` only on that vault
