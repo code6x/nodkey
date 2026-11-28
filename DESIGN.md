@@ -4706,7 +4706,13 @@ Infisical SDK in the broker (section 4, `internal/store/infisical.go`):
 - **One manual test with a real Infisical machine identity** (optional),
   as check 17 in the same guide. It checks a real project, the Viewer
   role, the TTLs and the refusal of a secret that the identity may not
-  read.
+  read. It has not run: on 2026-11-28 the owner accepted the fake tests
+  without it (issue #127). So the real cloud and self-hosted servers,
+  the Viewer role, a new login after the token ends, the real answers
+  to an error and the free plan's rate limits are not proven. Every
+  error still means deny, but the rate-limit text and its alert need a
+  429 status in the SDK's API error, and only the fake shows that.
+  docs/setup.md says so in "infisical: a project only for nodkey".
 
 ## 18. Build, CI and releases
 
