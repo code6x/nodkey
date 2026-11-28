@@ -105,7 +105,7 @@ func (c *Core) scanMissed(now moment) {
 			c.alarmQueue = append(c.alarmQueue, missedAlarm{
 				ev: audit.GrantAlarm{Subject: sub, Cause: audit.AlarmMissedWindow},
 				al: Alarm{RequestID: g.reqID, ShortCode: g.code, Client: g.client, GrantID: g.id,
-					Secrets: slices.Clone(sub.Secrets), Cause: audit.AlarmMissedWindow},
+					Secrets: slices.Clone(sub.Secrets), Key: sub.Key, Cause: audit.AlarmMissedWindow},
 			})
 		})
 	}

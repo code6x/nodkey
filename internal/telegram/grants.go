@@ -101,7 +101,8 @@ func grantsText(list []approval.GrantInfo, weekly bool) (*text, error) {
 		return t, nil
 	}
 	for _, g := range list {
-		if !namePattern.MatchString(g.Client) || !allSecrets(g.Secrets) || len(g.Secrets) == 0 ||
+		if !namePattern.MatchString(g.Client) || (len(g.Secrets) == 0) == (g.Key == "") ||
+			(len(g.Secrets) > 0 && !allSecrets(g.Secrets)) || (g.Key != "" && !namePattern.MatchString(g.Key)) ||
 			g.End.IsZero() {
 			return nil, errors.New("telegram: a standing grant in the list is not valid")
 		}
@@ -110,7 +111,11 @@ func grantsText(list []approval.GrantInfo, weekly bool) (*text, error) {
 	for i, g := range list {
 		var e text
 		e.write("\n\n✅ machine: " + g.Client)
-		e.write("\nsecrets: " + strings.Join(g.Secrets, ", "))
+		if g.Key != "" {
+			e.write("\nkey: " + g.Key)
+		} else {
+			e.write("\nsecrets: " + strings.Join(g.Secrets, ", "))
+		}
 		e.write("\nwindows: " + strings.Join(g.Windows, "; "))
 		last := "never"
 		if !g.LastUse.IsZero() {

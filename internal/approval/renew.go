@@ -18,6 +18,8 @@ type Warning struct {
 	RequestID, ShortCode string
 	Client               string
 	Secrets              []string
+	// Key is the SSH key of a grant of a key; Secrets is empty then.
+	Key string
 	// Windows are the windows as text, such as "daily 03:00-05:00", and
 	// Uses the uses in each.
 	Windows []string
@@ -81,6 +83,10 @@ func (c *Core) scanWarnings(now moment) {
 		w := Warning{RequestID: g.reqID, ShortCode: g.code, Client: g.client, Uses: g.perWindow,
 			GrantID: g.id, End: g.end.wall.In(loc)}
 		for _, r := range g.refs {
+			if r.key {
+				w.Key = r.name
+				continue
+			}
 			w.Secrets = append(w.Secrets, r.text())
 		}
 		for _, x := range g.windows {
@@ -182,6 +188,7 @@ func (c *Core) renew(a Answer) error {
 	}
 	n := &grant{
 		kind: kindStanding, id: id, client: g.client, refs: slices.Clone(g.refs),
+		hostKeys: slices.Clone(g.hostKeys), user: g.user,
 		end: moment{wall: end, mono: now.mono.Add(end.Sub(now.wall))}, uses: noLimit,
 		reqID: reqID, code: g.code, approved: now.wall,
 		windows: slices.Clone(g.windows), perWindow: g.perWindow, scanned: now.wall,
@@ -191,15 +198,17 @@ func (c *Core) renew(a Answer) error {
 	n.origin.RequestID, n.origin.GrantID = reqID, id
 	n.origin.Secrets = slices.Clone(g.origin.Secrets)
 	n.origin.Windows = slices.Clone(g.origin.Windows)
-	n.origin.Hosts = nil
+	n.origin.Hosts = slices.Clone(g.origin.Hosts)
 	n.origin.NotBefore = now.wall.UTC().Truncate(time.Second).Format(time.RFC3339)
 	n.origin.NotAfter = end.UTC().Format(time.RFC3339)
 	loc := c.clock.Wall().Location()
 	n.prompt = Prompt{RequestID: reqID, ShortCode: g.code, Kind: audit.KindStanding, Client: g.client,
-		Secrets: slices.Clone(n.origin.Secrets), Uses: g.perWindow, From: now.wall.In(loc), Until: end.In(loc),
+		Secrets: slices.Clone(n.origin.Secrets), Key: n.origin.Key, Hosts: slices.Clone(n.origin.Hosts),
+		RemoteUser: n.origin.RemoteUser, Uses: g.perWindow, From: now.wall.In(loc), Until: end.In(loc),
 		Windows: slices.Clone(g.origin.Windows)}
 	ev := audit.Decision{Subject: n.origin, UserID: a.UserID, Channel: c.channel(), Answer: audit.AnswerRenew, RenewOf: g.id}
 	ev.Secrets = slices.Clone(n.origin.Secrets)
+	ev.Hosts = slices.Clone(n.origin.Hosts)
 	ev.Windows = slices.Clone(n.origin.Windows)
 	f := c.onRenewed
 	g.renewing = true // a second tap waits for nothing: it is refused
