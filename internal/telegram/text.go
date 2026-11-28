@@ -269,8 +269,8 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 	case notice && p.Via != "" && p.Via != audit.ViaScheduled && p.Via != audit.ViaStanding, !notice && p.Via != "":
 		return bad("the via")
 	}
-	if p.Via == audit.ViaStanding && p.Kind != audit.KindSecrets {
-		return bad("a standing use outside a secrets request")
+	if p.Via == audit.ViaStanding && p.Kind != audit.KindSecrets && p.Kind != audit.KindSSHLogin {
+		return bad("a standing use outside a secrets or SSH login request")
 	}
 	if err := checkLoginPrompt(p, notice); err != nil {
 		return err
@@ -324,8 +324,10 @@ func checkPrompt(p approval.Prompt, notice bool) error {
 			return bad("the fields of a scheduled grant")
 		}
 	case audit.KindStanding:
-		if notice || len(p.Secrets) == 0 || !allSecrets(p.Secrets) || p.Key != "" || len(p.Hosts) != 0 ||
-			p.RemoteUser != "" || p.HostKey != "" || !p.GrantEnds.IsZero() || p.WindowMinutes != 0 ||
+		named := len(p.Secrets) > 0 && allSecrets(p.Secrets) && p.Key == "" && len(p.Hosts) == 0 && p.RemoteUser == ""
+		keyed := len(p.Secrets) == 0 && namePattern.MatchString(p.Key) && len(p.Hosts) > 0 &&
+			len(p.Hosts) <= approval.MaxGrantHosts && allNames(p.Hosts) && remoteUserPattern.MatchString(p.RemoteUser)
+		if notice || (!named && !keyed) || p.HostKey != "" || !p.GrantEnds.IsZero() || p.WindowMinutes != 0 ||
 			p.Uses < 1 || p.From.IsZero() || !p.From.Before(p.Until) || p.Via != "" ||
 			p.GrantID != "" || p.UsesLeft != 0 || !p.Once || len(p.Windows) < 1 ||
 			len(p.Windows) > approval.MaxStandingWindows {
@@ -524,7 +526,13 @@ func body(p approval.Prompt, notice bool, cv claimedValues, c caps) *text {
 		verified("from", p.From.Format(dateTimeFormat))
 		verified("until", p.Until.Format(dateTimeFormat))
 	case audit.KindStanding:
-		verified("secrets", strings.Join(p.Secrets, ", "))
+		if len(p.Secrets) > 0 {
+			verified("secrets", strings.Join(p.Secrets, ", "))
+		} else {
+			verified("key", p.Key)
+			verified("hosts", strings.Join(p.Hosts, ", "))
+			verified("remote user", p.RemoteUser)
+		}
 		for _, w := range p.Windows {
 			verified("window", w)
 		}
@@ -766,7 +774,7 @@ func standingEndLine(cause audit.EndCause, at string) string {
 }
 
 // alarmText returns the text of the alarm of a standing grant. It holds
-// the client, the secret names, the grant ID and a fixed text for the
+// the client, the secret names or the key, the grant ID and a fixed text for the
 // cause; no token and no claimed text.
 func alarmText(a approval.Alarm) (*text, error) {
 	bad := func(what string) error { return errors.New("telegram: the alarm is not valid: " + what) }
@@ -779,6 +787,8 @@ func alarmText(a approval.Alarm) (*text, error) {
 		return nil, bad("the client name")
 	case len(a.Secrets) > 0 && !allSecrets(a.Secrets):
 		return nil, bad("the secrets")
+	case a.Key != "" && (len(a.Secrets) > 0 || !namePattern.MatchString(a.Key)):
+		return nil, bad("the key")
 	case (a.GrantID == "") != (a.Cause == audit.AlarmUnknownToken) || (a.GrantID != "" && !validRequestID(a.GrantID)):
 		return nil, bad("the grant ID")
 	case a.Owner != "" && (a.GrantID == "" || a.Owner == a.Client || !namePattern.MatchString(a.Owner)):
@@ -807,6 +817,9 @@ func alarmText(a approval.Alarm) (*text, error) {
 	t.write("\n✅ machine: " + a.Client)
 	if len(a.Secrets) > 0 {
 		t.write("\n✅ secrets: " + strings.Join(a.Secrets, ", "))
+	}
+	if a.Key != "" {
+		t.write("\n✅ key: " + a.Key)
 	}
 	if a.GrantID != "" {
 		t.write("\n✅ grant: " + a.GrantID)

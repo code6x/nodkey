@@ -2653,8 +2653,8 @@ New in 0.3.0: nodkey 0.2.0 does not have it.
 A scheduled grant covers one time span. A job that runs every night for
 weeks would need a new grant, and a tap, each day. A standing grant lets
 you approve it once: this client may use these secrets in these daily or
-weekly windows, N times in each window, until a date. It is for secrets
-only, not for SSH keys.
+weekly windows, N times in each window, until a date. It works for an
+SSH key too: see "An SSH key in a nightly job" below.
 
 Turn it on for the secret, in `broker.toml`. It is off by default, and
 it is a separate flag from `preapprove`. The rule must have `ask =
@@ -2758,6 +2758,73 @@ later, outside the window, and that gives an alarm. Each use needs no
 tap and sends a silent notice. `nodkey run` writes a new token to the
 file before it runs the command. If it cannot save the file, the command
 does not run (exit 77).
+
+**An SSH key in a nightly job.** A standing grant can also cover one SSH
+key, for one remote user and the hosts you list. Each SSH login is one
+use, so `--uses` is the number of SSH connections in one window. A job
+that runs `git fetch` and then `git push` needs `--uses 2`. Turn it on
+for the key, in `broker.toml`:
+
+```toml
+[key.deploy]
+# ...
+clients = ["backup"]
+ask = "always"
+hosts = ["web-1"]
+standing = true
+```
+
+Ask for the grant as the job user, with `--key`, `--user` and `--host`:
+
+```sh
+sudo -H -u nightly-backup nodkey preapprove --key deploy --user deploy --host web-1 \
+  --daily 03:00-05:00 --uses 2 --until 2026-12-31T00:00 \
+  --grant-token /var/lib/nightly-backup/ssh-token --reason "job nightly-deploy"
+```
+
+The job starts `nodkey ssh-agent --grant-token FILE` and points ssh to
+its socket. The agent sends the token with each signature, and saves the
+new token before ssh gets the signature. It never asks for a tap: a
+login that the grant does not cover is denied. Use one token file for
+one grant, and one agent for one token file.
+
+```ini
+# /etc/systemd/system/nightly-deploy.service
+[Unit]
+Description=Nightly deploy
+
+[Service]
+Type=oneshot
+User=nightly-backup
+Group=nightly-backup
+StateDirectory=nightly-backup
+StateDirectoryMode=0700
+RuntimeDirectory=nightly-deploy
+RuntimeDirectoryMode=0700
+Environment=HOME=/var/lib/nightly-backup
+Environment=SSH_AUTH_SOCK=/run/nightly-deploy/agent.sock
+ExecStart=/usr/local/bin/nightly-deploy
+```
+
+```sh
+#!/bin/sh
+# /usr/local/bin/nightly-deploy
+set -eu
+nodkey ssh-agent --socket "$SSH_AUTH_SOCK" \
+  --grant-token /var/lib/nightly-backup/ssh-token &
+agent=$!
+trap 'kill "$agent"' EXIT
+while [ ! -S "$SSH_AUTH_SOCK" ]; do sleep 0.1; done
+cd /var/lib/nightly-backup/site
+git fetch origin
+git push deploy main
+```
+
+The timer is as for the backup job above. If the job needs more SSH
+connections than `--uses`, the next login gets the alarm "more uses than
+allowed in one window", and the grant ends. To use fewer logins, let
+`ssh` share one connection, with `ControlMaster auto` and
+`ControlPersist 60` in the job user's `~/.ssh/config`.
 
 Things to know:
 

@@ -459,27 +459,62 @@ type SignAnswer struct {
 	Format string `json:"format"`
 	// Blob is the signature.
 	Blob []byte `json:"blob"`
+	// GrantToken is the new token of a standing grant (DESIGN.md section
+	// 8, "An SSH key"), in the answer to a request with the header
+	// GrantTokenHeader, and only there. It is a secret: never print or
+	// log it. Its type hides it in String and Format.
+	GrantToken HiddenToken `json:"grant_token"`
 }
 
-// MarshalJSON writes a nil blob as "".
+// HiddenToken is the token of a standing grant in an answer. It prints as
+// "token hidden" with every verb, and in slog, so a log or an error never
+// holds it. Use string(t) only to save it.
+type HiddenToken string
+
+// String returns "token hidden", or "" for no token.
+func (t HiddenToken) String() string {
+	if t == "" {
+		return ""
+	}
+	return "token hidden"
+}
+
+// GoString returns the same text as String.
+func (t HiddenToken) GoString() string { return t.String() }
+
+// Format prints the same text as String for every verb.
+func (t HiddenToken) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, t.String()) }
+
+// LogValue returns the same text as String, so slog never logs the token.
+func (t HiddenToken) LogValue() slog.Value { return slog.StringValue(t.String()) }
+
+// MarshalJSON writes a nil blob as "", and no field "grant_token" when
+// there is no token.
 func (a SignAnswer) MarshalJSON() ([]byte, error) {
 	type plain SignAnswer
 	p := plain(a)
 	p.Blob = orEmpty(p.Blob)
+	if p.GrantToken == "" {
+		return json.Marshal(struct {
+			plain
+			GrantToken *struct{} `json:"grant_token,omitempty"`
+		}{plain: p})
+	}
 	return json.Marshal(p)
 }
 
 // UnmarshalJSON decodes strictly, and checks the caps.
 func (a *SignAnswer) UnmarshalJSON(data []byte) error {
 	var v SignAnswer
-	err := decodeObject(data, map[string]field{
-		"format": text(&v.Format),
-		"blob":   binary(&v.Blob),
-	})
+	err := decodeObjectOptional(data, map[string]field{
+		"format":      text(&v.Format),
+		"blob":        binary(&v.Blob),
+		"grant_token": text((*string)(&v.GrantToken)),
+	}, map[string]bool{"grant_token": true})
 	if err != nil {
 		return err
 	}
-	if len(v.Format) > MaxName || len(v.Blob) > MaxKey {
+	if len(v.Format) > MaxName || len(v.Blob) > MaxKey || len(v.GrantToken) > MaxGrantToken {
 		return errTooLong
 	}
 	*a = v

@@ -972,3 +972,32 @@ func TestSecretRefKind(t *testing.T) {
 		t.Errorf("a plain secret is written as %s, %v", b, err)
 	}
 }
+
+// TestSignAnswerGrantToken: the token of a standing grant in a sign answer
+// is optional, capped, and never printed (DESIGN.md section 8, "An SSH
+// key").
+func TestSignAnswerGrantToken(t *testing.T) {
+	plain, err := json.Marshal(SignAnswer{Format: "ssh-ed25519", Blob: []byte{1}})
+	if err != nil || strings.Contains(string(plain), "grant_token") {
+		t.Fatalf("an answer without a token is %s, %v", plain, err)
+	}
+	const tok = "nkg_secretvalue"
+	a := SignAnswer{Format: "ssh-ed25519", Blob: []byte{1}, GrantToken: tok}
+	for _, f := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x"} {
+		if got := fmt.Sprintf(f, a); strings.Contains(got, "secretvalue") || strings.Contains(got, "736563726574") {
+			t.Errorf("%s prints the token: %s", f, got)
+		}
+	}
+	data, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back SignAnswer
+	if err := json.Unmarshal(data, &back); err != nil || string(back.GrantToken) != tok {
+		t.Fatalf("the token did not come back: %v", err)
+	}
+	long := `{"format":"ssh-ed25519","blob":"AQ==","grant_token":"` + strings.Repeat("a", MaxGrantToken+1) + `"}`
+	if err := json.Unmarshal([]byte(long), &back); err == nil {
+		t.Error("a token over MaxGrantToken was read")
+	}
+}

@@ -55,7 +55,9 @@ func (rq *request) secrets(ctx context.Context, r *http.Request) {
 	var rc receipt
 	if tokens := r.Header.Values(api.GrantTokenHeader); len(tokens) > 0 {
 		// A request with a token never asks the person (DESIGN.md section 8).
-		res, rc, ok = rq.decideStanding(ctx, names, cl, tokens)
+		res, rc, ok = rq.decideStanding(ctx, approval.StandingRequest{
+			Client: rq.client, Secrets: names, Projects: rq.projects, Claim: cl,
+		}, tokens)
 	} else {
 		res, rc, ok = rq.decide(ctx, &approval.Request{
 			Client: rq.client, Kind: audit.KindSecrets, Secrets: names, Projects: rq.projects, Claim: cl,
@@ -274,13 +276,13 @@ func (rq *request) fetcher(name string) (string, func(context.Context) (store.Va
 	return sec.Store, func(ctx context.Context) (store.Value, error) { return rq.s.stores[sec.Store].Fetch(ctx, ref) }
 }
 
-// decideStanding decides a request that has the header of a standing grant
-// token (DESIGN.md section 8). The core never asks the person. It writes
+// decideStanding decides a request for secrets or for a signature that has
+// the header of a standing grant token (DESIGN.md section 8). The core never asks the person. It writes
 // the entries, sends the alarm of a denied request, and sends the silent
 // notice of an allowed one. It returns ok only when every step worked; the
 // request has its answer otherwise. If a step fails after the new token
 // was made, the use is undone, so the old token stays valid.
-func (rq *request) decideStanding(ctx context.Context, names []string, cl approval.Claim, tokens []string) (*approval.Result, receipt, bool) {
+func (rq *request) decideStanding(ctx context.Context, sr approval.StandingRequest, tokens []string) (*approval.Result, receipt, bool) {
 	var hash *[32]byte
 	if len(tokens) == 1 {
 		if t, err := grantkey.Parse(tokens[0]); err == nil {
@@ -289,9 +291,8 @@ func (rq *request) decideStanding(ctx context.Context, names []string, cl approv
 		}
 	}
 	rq.failCode = audit.CodeApproverFailed
-	res := rq.core.UseStanding(approval.StandingRequest{
-		Client: rq.client, Secrets: names, Projects: rq.projects, Claim: cl, Token: hash,
-	})
+	sr.Token = hash
+	res := rq.core.UseStanding(sr)
 	res, rc, ok := rq.settle(res)
 	if !ok {
 		if res.Allowed {

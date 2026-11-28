@@ -1844,10 +1844,10 @@ the person cannot check that "job nightly-backup" exists. A tap means
 
 A scheduled grant covers one time span. A job that runs every night for
 weeks would need a tap each day. A standing grant lets the person approve
-it once: **this client may use these secrets in these daily or weekly
-windows, N times in each window, until this date.** It needs a tap, and it
-is bound to a token that changes at each use. Secrets only; SSH keys are
-planned for later.
+it once: **this client may use these secrets, or this SSH key, in these
+daily or weekly windows, N times in each window, until this date.** It
+needs a tap, and it is bound to a token that changes at each use. For a
+key, see "An SSH key" below.
 
 **The request.** The same command and the same endpoint as a scheduled
 grant, with the audit kind `standing`. `nodkey preapprove` takes one of
@@ -1932,6 +1932,36 @@ over the old file. Only then does it use the secrets. If the write
 fails, it does not run the command. It never retries a request that had a
 token by itself. For each use, the broker keeps one 32-byte hash until the
 grant ends, to know the old tokens.
+
+**An SSH key.** A standing grant may name one key, with a remote user
+and hosts, as a scheduled grant does: `nodkey preapprove --key deploy
+--user deploy --host web-1 --daily 03:00-05:00 --until 2026-12-31
+--grant-token FILE`. The checks are those of a key in a scheduled grant
+(the key, the user, the hosts in `known_hosts` and in the key's `hosts`),
+and the key's rule needs `standing = true`. The message shows the key,
+the remote user and the hosts instead of the secrets.
+
+- **The use.** `nodkey ssh-agent --grant-token FILE` sends the token with
+  each signature request. One signature is one use: it is one SSH login,
+  to a listed host (any of its host keys) as the remote user. `ssh` opens
+  one login for each connection, unless connections share one
+  (`ControlMaster`, `ControlPersist`). So `--uses` (at most `max_uses`,
+  10) is the number of SSH connections in one window: a job that runs
+  `git fetch` and `git push` needs 2, or 1 with a shared connection.
+- **The rotation.** Each signature rotates the token, as a run does. The
+  broker sends the signature and the new token in one answer. The agent
+  sends one signature request with the token at a time, and the others
+  wait. It reads the token file before each request, and writes the new
+  token to it (temp file, sync, rename) before it gives the signature to
+  `ssh`. If the write fails, `ssh` gets no signature. The agent never
+  retries a request with a token.
+- **Only the grant.** An agent with `--grant-token` never asks for a tap.
+  A login that the grant does not cover (another key, user or host) is
+  denied, without an alarm, as for a run. Use another agent, without
+  `--grant-token`, for logins with a tap.
+- **The alarms** are those of secrets: an old token, more logins in a
+  window than allowed, a token outside the windows, and a missed window.
+  The alarm names the key instead of the secrets.
 
 **Alarms.** An alarm is a Telegram message with sound, and a `grant_alarm`
 entry with a cause. It counts toward the limit of 20 notices in all. One
@@ -3047,6 +3077,7 @@ clients = ["laptop"]
 ask = "window"
 window = "15m"
 hosts = ["web-1", "web-2"]          # optional; empty means any known host
+standing = false                    # optional; as for [secret.*], for SSH logins (section 8)
 ```
 
 The broker's `known_hosts` uses the OpenSSH format with stricter rules: one
@@ -3459,10 +3490,10 @@ nodkey broker reload [--config FILE] [--timeout DURATION]
 nodkey broker check [--config FILE] [--files DIR] [--credentials DIR]
 nodkey broker config-diff [--short] [--max-chars N] OLD NEW
 nodkey run [--secret VAR=NAME]... [--totp VAR=NAME] [--grant-token FILE] [--reason TEXT] [--mask | --no-mask] -- COMMAND [ARGS...]
-nodkey ssh-agent [--socket PATH]
+nodkey ssh-agent [--socket PATH] [--grant-token FILE]
 nodkey ssh-grant --key NAME --user USER --host NAME... --for DURATION [--reason TEXT]
 nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) --until TIME --uses N [--from TIME] [--reason TEXT]
-nodkey preapprove --secret NAME... (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM) --until TIME [--from TIME] [--uses N] --grant-token FILE [--reason TEXT]
+nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...) (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM) --until TIME [--from TIME] [--uses N] --grant-token FILE [--reason TEXT]
 nodkey preapprove --cancel ID
 nodkey preapprove --login ITEM --url URL [--reason TEXT]
 nodkey agent-browser-plugin
@@ -3842,7 +3873,9 @@ Before it, it may print one warning about the version of the broker
 `--grant-token FILE` is a must; the client writes the token there after the
 tap (mode 0600, new file or its own file) and prints no token. `nodkey run
 --grant-token FILE` uses it and rotates it, as section 8 says; if the
-file cannot be saved, the command does not run (exit 77). After an
+file cannot be saved, the command does not run (exit 77). With `--key`,
+`--user` and `--host`, the grant is for SSH logins, and `nodkey
+ssh-agent --grant-token FILE` uses it (section 8, "An SSH key"). After an
 approval, its last line on stderr names the window, the uses in each
 window and the span: `nodkey: standing grant ID: 1 use in each window,
 daily 03:00-05:00 (broker time), from 2026-10-30T15:54:02+02:00 until
@@ -3989,6 +4022,12 @@ The lookup, of `nodkey version` and of the broker (step 10 of the start):
 
 `nodkey ssh-agent [--socket PATH]` serves the SSH agent protocol on a
 Unix socket until `SIGINT` or `SIGTERM` (section 6). It holds no SSH key.
+
+- With `--grant-token FILE`, each signature uses the standing grant of
+  that token file, and rotates it (section 8, "An SSH key"). The agent
+  checks the file at start, as `nodkey run` does (its own file, mode 0600
+  at most), and does not start if it fails (exit 64). It never asks for a
+  tap. If the new token cannot be saved, `ssh` gets `SSH_AGENT_FAILURE`.
 
 - The default socket is `$XDG_RUNTIME_DIR/nodkey/agent.sock`. Without
   `XDG_RUNTIME_DIR`, give `--socket`. The path must be absolute and

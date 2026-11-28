@@ -60,35 +60,59 @@ func toWindow(s WindowSpec) (window, bool) {
 }
 
 // checkStanding checks a request for a standing grant (DESIGN.md section
-// 8): secrets only, each with standing = true in a rule that is not
-// "never", the end inside max_days, 1 to 7 valid windows each not longer
+// 8): secrets, or one key with a remote user and hosts, each with
+// standing = true in a rule that is not "never", the end inside max_days, 1 to 7 valid windows each not longer
 // than max_window, and the uses per window inside max_uses. A config without
 // [standing] allows nothing. The count of grants is checked in begin.
 func (c *Core) checkStanding(r *Request, p *pending) bool {
 	lim := p.cfg.Standing
-	ok := lim.Enabled && r.HostKey == nil && r.For == 0 && r.Key == "" && r.RemoteUser == "" &&
-		len(r.Hosts) == 0 && len(r.Secrets) > 0 && p.client != "" && r.TokenHash != [32]byte{}
-	var refs []ref
-	seen := make(map[string]bool)
-	for _, name := range r.Secrets {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		it, clients, label, known := secretItem(p, name, r.Projects)
-		if !known || p.client == "" || !slices.Contains(clients, p.client) ||
-			!it.rule.Standing || it.rule.Ask == config.AskNever || !validRule(it.rule, clients) {
-			ok = false
-			continue
-		}
-		if !p.addSecret(name, label, it, r.Projects) {
-			ok = false
-			continue
-		}
-		refs = append(refs, it.ref)
+	ok := lim.Enabled && r.HostKey == nil && r.For == 0 && r.Login == nil &&
+		p.client != "" && r.TokenHash != [32]byte{}
+	allowed := func(rule config.Rule, clients []string) bool {
+		return rule.Standing && rule.Ask != config.AskNever && validRule(rule, clients)
 	}
-	if len(refs) > MaxPreapproveSecrets {
-		ok = false
+	var refs []ref
+	var hostKeys []string
+	if len(r.Secrets) > 0 {
+		ok = ok && r.Key == "" && r.RemoteUser == "" && len(r.Hosts) == 0
+		seen := make(map[string]bool)
+		for _, name := range r.Secrets {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			it, clients, label, known := secretItem(p, name, r.Projects)
+			if !known || p.client == "" || !slices.Contains(clients, p.client) || !allowed(it.rule, clients) {
+				ok = false
+				continue
+			}
+			if !p.addSecret(name, label, it, r.Projects) {
+				ok = false
+				continue
+			}
+			refs = append(refs, it.ref)
+		}
+		if len(refs) > MaxPreapproveSecrets {
+			ok = false
+		}
+	} else {
+		// One key, with a remote user and hosts, as in a scheduled grant.
+		// Each signature is one use (DESIGN.md section 8, "An SSH key").
+		k, keyOK := c.checkKey(r.Key, p)
+		if keyOK && !allowed(k.Rule, k.Clients) {
+			keyOK = false
+		}
+		ok = keyOK && ok
+		ok = c.checkUser(r.RemoteUser, p) && ok
+		hostsOK, valid := c.addGrantHosts(r.Hosts, k, keyOK, p)
+		if !valid {
+			return false
+		}
+		ok = hostsOK && ok
+		if keyOK {
+			refs = []ref{p.items[0].ref}
+		}
+		hostKeys = p.grantHostKeys
 	}
 	if len(r.Windows) < 1 || len(r.Windows) > maxStandingWindows {
 		ok = false
@@ -129,7 +153,7 @@ func (c *Core) checkStanding(r *Request, p *pending) bool {
 	p.subject.NotAfter = r.NotAfter.UTC().Format(time.RFC3339)
 	p.subject.Windows = texts
 	p.plan = &grant{
-		kind: kindStanding, client: p.client, refs: refs,
+		kind: kindStanding, client: p.client, refs: refs, hostKeys: hostKeys, user: p.user,
 		start: r.NotBefore, end: moment{wall: r.NotAfter}, uses: noLimit,
 		windows: ws, perWindow: r.Uses, tokenHash: r.TokenHash, oldHashes: [][32]byte{},
 	}

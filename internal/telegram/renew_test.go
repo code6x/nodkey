@@ -120,3 +120,28 @@ func TestWarnAndRenewTap(t *testing.T) {
 		t.Errorf("the core got %+v, want %+v", got, want)
 	}
 }
+
+// TestWarningTextKey: the warning of a grant of a key shows the key, the
+// hosts and the remote user, and refuses a key without them.
+func TestWarningTextKey(t *testing.T) {
+	w := warningOf()
+	w.Secrets, w.Key, w.Hosts, w.RemoteUser = nil, "deploy", []string{"web-1"}, "deploy"
+	tx, err := warningText(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tx.plain.String(); !strings.Contains(got, "✅ key: deploy\n✅ hosts: web-1\n✅ remote user: deploy\n") {
+		t.Errorf("the warning is %q", got)
+	}
+	for _, bad := range []func(*approval.Warning){
+		func(w *approval.Warning) { w.Hosts = nil },
+		func(w *approval.Warning) { w.RemoteUser = "" },
+		func(w *approval.Warning) { w.Secrets = []string{"backup-token"} },
+	} {
+		x := w
+		bad(&x)
+		if _, err := warningText(x); err == nil {
+			t.Errorf("a bad warning passed: %+v", x)
+		}
+	}
+}

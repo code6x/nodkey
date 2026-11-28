@@ -30,8 +30,17 @@ func TestStandingNotice(t *testing.T) {
 	k := p
 	k.Kind, k.Secrets, k.Key, k.Hosts, k.HostKey, k.RemoteUser = audit.KindSSHLogin, nil, "web", []string{"web-1"},
 		"SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", "deploy"
-	if _, err := noticeText(k); err == nil {
-		t.Error("a standing via in an SSH notice was accepted")
+	tx, err = noticeText(k)
+	if err != nil {
+		t.Fatalf("a standing via in an SSH login notice was refused: %v", err)
+	}
+	if got := tx.plain.String(); !strings.Contains(got, "\n"+standingNoticeLine+"\n") || !strings.Contains(got, "key: web") {
+		t.Errorf("the SSH notice is %q", got)
+	}
+	g := k
+	g.Kind = audit.KindSSHGrant
+	if _, err := noticeText(g); err == nil {
+		t.Error("a standing via in an SSH grant notice was accepted")
 	}
 }
 

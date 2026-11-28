@@ -26,7 +26,7 @@ import (
 // preapproveUsage is the help of nodkey preapprove.
 const preapproveUsage = `Usage: nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...)
                          --until TIME --uses N [--from TIME] [--reason TEXT]
-       nodkey preapprove --secret NAME...
+       nodkey preapprove (--secret NAME... | --key NAME --user USER --host NAME...)
                          (--daily HH:MM-HH:MM | --weekly DAYS HH:MM-HH:MM)
                          --until TIME [--from TIME] [--uses N]
                          --grant-token FILE [--reason TEXT]
@@ -53,7 +53,7 @@ planned.
                   2026-10-28T03:00, which is the broker's local time.
                   Give an offset near the change to summer time.
   --uses N        how many uses the grant has
-  --daily W       a standing grant (secrets only): the window W, such as
+  --daily W       a standing grant: the window W, such as
                   03:00-05:00, every day, in the broker's local time
   --weekly D W    the same, on the days D, such as mon,thu (mon tue wed
                   thu fri sat sun). Give --daily or --weekly, not both.
@@ -76,7 +76,8 @@ planned.
                   what nodkey preapprove printed on its standard output
 
 After an approval, the ID of the grant is printed on standard output. For a
-standing grant, nodkey run --grant-token FILE uses the token. The
+standing grant, nodkey run --grant-token FILE uses the token, or for a
+key nodkey ssh-agent --grant-token FILE, where one use is one SSH login. The
 client config is ~/.config/nodkey/client.toml. nodkey preapprove exits with
 0 when the person approved or the grant is cancelled, or with 64 (wrong
 usage), 69 (the broker cannot be reached) or 77 (denied, or not a grant of
@@ -551,14 +552,19 @@ func newPreapprove(o *preapproveOptions, reason string) (string, []byte, error) 
 	return path, body, nil
 }
 
-// checkStandingGiven checks the options of a standing grant: secrets,
-// --until and --grant-token are a must; --from and --uses are optional.
+// checkStandingGiven checks the options of a standing grant: secrets, or
+// a key with --user and --host, --until and --grant-token are a must;
+// --from and --uses are optional.
 func checkStandingGiven(o *preapproveOptions, given map[string]bool) error {
 	switch {
-	case given["key"] || given["user"] || len(o.hosts) > 0:
-		return errors.New("a standing grant is for secrets only; give them with --secret")
-	case len(o.secrets) == 0:
-		return errors.New("give the secrets with --secret NAME")
+	case len(o.secrets) > 0 && (given["key"] || given["user"] || len(o.hosts) > 0):
+		return errors.New("give secrets with --secret, or a key with --key, --user and --host, not both")
+	case len(o.secrets) == 0 && !given["key"]:
+		return errors.New("give the secrets with --secret NAME, or the key with --key NAME")
+	case len(o.secrets) == 0 && !given["user"]:
+		return errors.New("give the remote user with --user USER")
+	case len(o.secrets) == 0 && len(o.hosts) == 0:
+		return errors.New("give at least one host with --host NAME")
 	case !given["until"]:
 		return errors.New("a standing grant needs its end: give --until TIME, such as --until 2026-12-28T00:00")
 	case !given["grant-token"]:

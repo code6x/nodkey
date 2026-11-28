@@ -27,8 +27,11 @@ func warningText(w approval.Warning) (*text, error) {
 		return nil, bad("the short code")
 	case !namePattern.MatchString(w.Client):
 		return nil, bad("the client name")
-	case len(w.Secrets) == 0 || !allSecrets(w.Secrets):
+	case (len(w.Secrets) == 0) == (w.Key == "") || (len(w.Secrets) > 0 && !allSecrets(w.Secrets)):
 		return nil, bad("the secrets")
+	case w.Key != "" && (!namePattern.MatchString(w.Key) || len(w.Hosts) == 0 ||
+		len(w.Hosts) > approval.MaxGrantHosts || !allNames(w.Hosts) || !remoteUserPattern.MatchString(w.RemoteUser)):
+		return nil, bad("the key")
 	case len(w.Windows) == 0 || len(w.Windows) > 7:
 		return nil, bad("the windows")
 	case !validRequestID(w.GrantID):
@@ -44,7 +47,13 @@ func warningText(w approval.Warning) (*text, error) {
 	t := &text{}
 	t.write("⏳ Standing grant ends soon · request " + w.ShortCode)
 	t.write("\n✅ machine: " + w.Client)
-	t.write("\n✅ secrets: " + strings.Join(w.Secrets, ", "))
+	if w.Key != "" {
+		t.write("\n✅ key: " + w.Key)
+		t.write("\n✅ hosts: " + strings.Join(w.Hosts, ", "))
+		t.write("\n✅ remote user: " + w.RemoteUser)
+	} else {
+		t.write("\n✅ secrets: " + strings.Join(w.Secrets, ", "))
+	}
 	t.write("\n✅ windows: " + strings.Join(w.Windows, ", ") + ", " + strconv.Itoa(w.Uses) + " use(s) in each")
 	t.write("\n✅ grant: " + w.GrantID)
 	t.write("\n✅ ends: " + w.End.Format(dateTimeFormat))

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"slices"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/code6x/nodkey/internal/audit"
 	"github.com/code6x/nodkey/internal/grantkey"
 )
@@ -21,6 +23,8 @@ type Alarm struct {
 	RequestID, ShortCode string
 	Client               string
 	Secrets              []string
+	// Key is the SSH key of a signature request; Secrets is empty then.
+	Key string
 	// GrantID is "" for an unknown token.
 	GrantID string
 	// Owner is the machine of the grant when it is not Client: Client sent
@@ -38,11 +42,17 @@ type Alarmer interface {
 	Alarm(ctx context.Context, a Alarm) error
 }
 
-// StandingRequest is a request for secrets with a standing grant token
-// (DESIGN.md section 8). The broker has checked the secret names.
+// StandingRequest is a request for secrets, or for one SSH signature,
+// with a standing grant token (DESIGN.md section 8). The broker has
+// checked the secret names, or the data to sign.
 type StandingRequest struct {
 	Client  string
 	Secrets []string
+	// Key, HostKey and RemoteUser are those of a signature request, as
+	// in Request; Secrets is empty then.
+	Key        string
+	HostKey    ssh.PublicKey
+	RemoteUser string
 	// Projects are as in Request.
 	Projects map[string]ProjectSecret
 	Claim    Claim
@@ -82,8 +92,13 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 		return &Result{Cause: audit.CauseError, Err: err, at: p.start.wall}
 	}
 	defer c.leave(p)
-	p.deadline = p.start.add(c.timeout(audit.KindSecrets))
-	if !c.check(&Request{Client: r.Client, Kind: audit.KindSecrets, Secrets: r.Secrets, Projects: r.Projects, Claim: r.Claim}, p) {
+	req := &Request{Client: r.Client, Kind: audit.KindSecrets, Secrets: r.Secrets, Projects: r.Projects, Claim: r.Claim}
+	if len(r.Secrets) == 0 {
+		req = &Request{Client: r.Client, Kind: audit.KindSSHLogin, Key: r.Key, HostKey: r.HostKey,
+			RemoteUser: r.RemoteUser, Claim: r.Claim}
+	}
+	p.deadline = p.start.add(c.timeout(req.Kind))
+	if !c.check(req, p) {
 		return c.denied(p, audit.CauseNotAllowed)
 	}
 	tok, err := grantkey.New()
@@ -168,7 +183,7 @@ func (c *Core) UseStanding(r StandingRequest) *Result {
 		g = c.handOver(g)
 	}
 	for _, it := range p.items {
-		if !g.covers(p.client, it.ref, "", "") {
+		if !g.covers(p.client, it.ref, p.hostKey, p.user) {
 			return c.denied(p, audit.CauseNotAllowed) // a client's mistake, not an alarm
 		}
 	}
@@ -273,7 +288,7 @@ func (r *Result) SendAlarm(ctx context.Context) {
 	defer cancel()
 	err := al.Alarm(actx, Alarm{
 		RequestID: r.RequestID, ShortCode: r.ShortCode, Client: r.Subject.Client,
-		Secrets: slices.Clone(r.Subject.Secrets), GrantID: su.grantID, Owner: su.owner, Cause: su.alarm, Ended: su.ended,
+		Secrets: slices.Clone(r.Subject.Secrets), Key: r.Subject.Key, GrantID: su.grantID, Owner: su.owner, Cause: su.alarm, Ended: su.ended,
 	})
 	if err != nil {
 		c.giveBackMark(su)

@@ -13,6 +13,11 @@ import (
 type GrantInfo struct {
 	Client  string
 	Secrets []string
+	// Key, Hosts and RemoteUser are the scope of a grant of a key;
+	// Secrets is empty then.
+	Key        string
+	Hosts      []string
+	RemoteUser string
 	// Windows are the windows as text, such as "daily 03:00-05:00".
 	Windows []string
 	// LastUse is the wall time of the last use, or the zero time for a
@@ -35,6 +40,10 @@ func (c *Core) ListStanding() []GrantInfo {
 		}
 		gi := GrantInfo{Client: g.client, LastUse: g.lastUse, End: g.end.wall}
 		for _, r := range g.refs {
+			if r.key {
+				gi.Key, gi.Hosts, gi.RemoteUser = r.name, slices.Clone(g.origin.Hosts), g.user
+				continue
+			}
 			gi.Secrets = append(gi.Secrets, r.text())
 		}
 		for _, w := range g.windows {
@@ -44,7 +53,7 @@ func (c *Core) ListStanding() []GrantInfo {
 	}
 	slices.SortFunc(out, func(a, b GrantInfo) int {
 		return cmp.Or(strings.Compare(a.Client, b.Client), a.End.Compare(b.End),
-			strings.Compare(strings.Join(a.Secrets, ","), strings.Join(b.Secrets, ",")))
+			strings.Compare(strings.Join(a.Secrets, ","), strings.Join(b.Secrets, ",")), strings.Compare(a.Key, b.Key))
 	})
 	return out
 }
