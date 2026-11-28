@@ -976,7 +976,7 @@ yet (decided 2026-11-28, issue #127). So these points are not proven:
   maps each of them to a denial with a fixed text, but only the fake checks
   that. If the real server answers in another form, the request is still
   denied, but the log shows another fixed text (a refused login, a
-  refused read, or a general failure), and no rate-limit alert comes to
+  refused read, a missing secret, or a general failure), and no rate-limit alert comes to
   your phone;
 - the rate limits of the free plan.
 
