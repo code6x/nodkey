@@ -1228,8 +1228,8 @@ agent machine (section 5, item 1). Choose short spans, few uses and
 narrow secrets, as for a "never ask" rule.
 
 **T36. A standing grant is used by something else on the same client.**
-A standing grant (DESIGN.md section 8) lets a client use named secrets in
-daily or weekly windows for weeks, without a tap. The broker knows the
+A standing grant (DESIGN.md section 8) lets a client use named secrets,
+or one SSH key, in daily or weekly windows for weeks, without a tap. The broker knows the
 client only by its TLS key, so the grant also has a token that changes at
 each use. The token is in a file on the client.
 - **The honest limit.** The token finds a theft; it does not stop it. The
@@ -1273,6 +1273,16 @@ each use. The token is in a file on the client.
   and an alarm or Revoke of the old grant also ends a renewal that waits.
 - Standing grants live in memory and are dropped at a broker stop. The
   stop notice lists them (T35).
+- **An SSH key.** A standing grant may cover one key, for one remote user
+  and listed hosts. Each signature is one use and rotates the token, so
+  each SSH login is counted and a stolen token is found as for secrets.
+  The private key never leaves the broker: a thief gets signatures for
+  the covered logins only, inside the windows, at most `uses` in each.
+  `nodkey ssh-agent --grant-token` sends one request with the token at a
+  time and saves the new token before `ssh` gets the signature, so the
+  job does not race with itself into an old-token alarm. It never asks
+  for a tap, so a login outside the grant cannot turn into a message
+  that the person approves by habit at night.
 
 Risk that remains: the same as T35, for weeks. Choose few uses, short
 windows, narrow secrets and a near end date.
