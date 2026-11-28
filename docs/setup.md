@@ -964,6 +964,26 @@ store in each hour.
 Without trusted IPs, the client secret gets an access token from
 anywhere. So keep it on the broker host only.
 
+**Not tested with a real account.** The tests of the `infisical` store use
+a fake Infisical server; nobody has run it against a real machine identity
+yet (decided 2026-11-28, issue #127). So these points are not proven:
+
+- that the login and the read work with the real cloud (US or EU) and with
+  a self-hosted server, and with the Viewer role;
+- that a new login works when the real access token ends;
+- the exact answers of the real server for a refused login, a secret that
+  the identity may not read, a missing secret or a rate limit: the broker
+  maps each of them to a denial with a fixed text, but only the fake checks
+  that. If the real server answers in another form, the request is still
+  denied, but the log shows another fixed text (a refused login, a
+  refused read, a missing secret, or a general failure), and no rate-limit alert comes to
+  your phone;
+- the rate limits of the free plan.
+
+Before you rely on it, run check 17 of
+[docs/manual-telegram-test.md](manual-telegram-test.md) with a throwaway
+project, and write the results in a new issue.
+
 ### bw: a separate Bitwarden account
 
 The Password Manager CLI cannot unlock the vault without the master

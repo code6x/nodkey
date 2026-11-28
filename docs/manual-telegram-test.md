@@ -699,8 +699,10 @@ token.
 ### Check 17: An Infisical store (optional)
 
 This checks the `infisical` store against a real Infisical project. It
-needs an Infisical account (cloud or your own server), and a **test
-project** with two test secrets. Use a throwaway project and a throwaway
+has not run yet (2026-11-28): the store is tested only with a fake
+Infisical (issue #127). It needs an Infisical account (cloud or your
+own server), and a **test project** with two test secrets. Use a
+throwaway project and a throwaway
 machine identity with Universal Auth, the Viewer role, a short access
 token TTL (60 seconds) and a client secret with a short TTL. Never use a
 real project. Keep the client secret in a file with mode `0600`, outside
